@@ -46,9 +46,30 @@ function createAltTextRouter({
   const router = express.Router();
 
   router.post('/', async (req, res) => {
+    const logger = require('../lib/logger');
+    
+    // Log request for debugging
+    logger.info('[altText] Request validation', {
+      hasBody: !!req.body,
+      bodyKeys: req.body ? Object.keys(req.body) : [],
+      hasImage: !!(req.body?.image),
+      imageKeys: req.body?.image ? Object.keys(req.body.image) : [],
+      hasBase64: !!(req.body?.image?.base64 || req.body?.image?.image_base64),
+      hasUrl: !!req.body?.image?.url,
+      hasContext: !!req.body?.context
+    });
+    
     const parsed = requestSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'INVALID_REQUEST', message: 'Invalid payload', details: parsed.error.flatten() });
+      logger.error('[altText] Schema validation failed', {
+        errors: parsed.error.flatten(),
+        bodyPreview: JSON.stringify(req.body).substring(0, 500)
+      });
+      return res.status(400).json({ 
+        error: 'INVALID_REQUEST', 
+        message: 'Invalid payload - request does not match expected schema',
+        details: parsed.error.flatten() 
+      });
     }
 
     const { image, context = {} } = parsed.data;
@@ -86,7 +107,27 @@ function createAltTextRouter({
     // Validate and normalize image payload FIRST to get clean base64
     const { errors, warnings, normalized } = validateImagePayload(image);
     if (errors.length) {
-      return res.status(400).json({ error: 'INVALID_REQUEST', errors, warnings });
+      logger.error('[altText] Image validation failed', {
+        errors,
+        warnings,
+        imageKeys: Object.keys(image),
+        hasBase64: !!(image.base64 || image.image_base64),
+        base64Length: (image.base64 || image.image_base64 || '').length,
+        hasUrl: !!image.url,
+        width: image.width,
+        height: image.height
+      });
+      return res.status(400).json({ 
+        error: 'INVALID_REQUEST', 
+        message: 'Image validation failed',
+        errors, 
+        warnings 
+      });
+    }
+    
+    // Log warnings if any
+    if (warnings.length) {
+      logger.warn('[altText] Image validation warnings', { warnings });
     }
 
     // Generate cache key from NORMALIZED base64 (after stripping data URL prefix)

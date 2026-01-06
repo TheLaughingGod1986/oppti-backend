@@ -2,12 +2,23 @@ const axios = require('axios');
 
 function buildPrompt(context = {}) {
   const lines = [
-    'Write a concise, specific alt text for the image.',
-    'Rules:',
-    '- 10-16 words, under ~110 characters.',
-    '- Mention subjects, action, setting, colors; include any legible text verbatim.',
-    '- Use 1-2 relevant keywords from context/filename naturally.',
-    '- No filler like "image of" or "picture of".',
+    'Write clear, descriptive alt text that accurately describes what the image IS and shows. Focus on accessibility and SEO.',
+    '',
+    'Guidelines:',
+    '- Length: 8-16 words, ideally under 125 characters (optimal for Google Images SEO)',
+    '- Describe WHAT the image is: What type (photo, illustration, screenshot, diagram, meme, etc.)? What does it show?',
+    '- Include key elements: Main subjects, actions, setting, colors, and any important text visible in the image',
+    '- Be specific and factual: Describe what is actually visible, not implied meaning',
+    '- Use natural language: Write conversationally, as if describing the image to someone who cannot see it',
+    '- Context awareness: If provided, incorporate relevant keywords from title, caption, or page context naturally',
+    '- Important text: Include any visible text verbatim (quotes, labels, headlines, etc.)',
+    '- Avoid redundancy: Never use "image of" or "picture of" - just describe what it is',
+    '',
+    'Examples:',
+    '- Good: "Aerial view of downtown Chicago skyline at sunset with Lake Michigan in foreground"',
+    '- Good: "Screenshot of mobile app interface showing login form with email and password fields"',
+    '- Good: "Group photo of five colleagues at a conference table reviewing documents"',
+    '- Avoid: "Image of a city" or "Picture showing people"',
   ];
 
   const hints = [];
@@ -19,12 +30,12 @@ function buildPrompt(context = {}) {
 
   if (hints.length) {
     lines.push('');
-    lines.push('Context:');
+    lines.push('Additional context (use to inform description but focus on what the image actually shows):');
     lines.push(...hints);
   }
 
   lines.push('');
-  lines.push('Return only the alt text.');
+  lines.push('Return only the alt text description, nothing else.');
   return lines.join('\n');
 }
 
@@ -94,9 +105,9 @@ async function generateAltText({ image, context }) {
         {
           model: modelUsed,
           temperature: 0.2,
-          max_tokens: 50,
+          max_tokens: 75,
           messages: [
-            { role: 'system', content: 'You are an accessibility assistant that writes excellent alternative text.' },
+            { role: 'system', content: 'You are an expert accessibility and SEO specialist who writes clear, descriptive alt text. Your alt text helps visually impaired users understand images and improves SEO. Always describe what the image IS and what it actually shows, using natural, conversational language.' },
             {
               role: 'user',
               content: [
@@ -124,7 +135,7 @@ async function generateAltText({ image, context }) {
           {
             model: modelUsed,
             temperature: 0.2,
-            max_tokens: 50,
+            max_tokens: 75,
             messages: [
               { role: 'system', content: 'You are an accessibility assistant that writes excellent alternative text.' },
               {

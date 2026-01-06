@@ -50,27 +50,40 @@ function validateImagePayload(image = {}) {
     const bytesPerPixel = pixelCount ? decodedBytes / pixelCount : null;
 
     // Gray zone detection: prevent high token costs from corrupted/small base64
+    // Only apply strict validation to larger images (>50K pixels) to avoid rejecting simple/solid color images
     if (pixelCount && pixelCount > 50000) { // Images > 50K pixels
       const expectedMinRawKB = (pixelCount * 0.00625) / 1024;
       const expectedMinSizeKB = Math.max(Math.round(expectedMinRawKB * 1.33), 2);
       const grayZoneThreshold = expectedMinSizeKB * 5;
 
       if (base64SizeKB >= expectedMinSizeKB && base64SizeKB < grayZoneThreshold) {
-        errors.push(`Base64 size (${base64SizeKB}KB) is suspiciously small for ${width}x${height}. Expected at least ${grayZoneThreshold}KB. This may cause OpenAI to process at full resolution (3,000+ tokens instead of ~85). Resize to 512px and re-encode.`);
-      } else if (base64SizeKB < expectedMinSizeKB) {
-        errors.push(`Base64 size (${base64SizeKB}KB) is too small for ${width}x${height}. Expected minimum ${expectedMinSizeKB}KB. Image may be truncated or corrupted.`);
+        // This is a warning, not an error - simple images can be legitimately small
+        warnings.push(`Base64 size (${base64SizeKB}KB) is smaller than expected for ${width}x${height}. This may cause OpenAI to process at full resolution. Consider resizing to 512px for cost savings.`);
+      } else if (base64SizeKB < expectedMinSizeKB && base64SizeKB < 1) {
+        // Only error if it's extremely small (<1KB) which likely indicates corruption
+        // Simple images (solid colors, icons) can be very small legitimately
+        errors.push(`Base64 size (${base64SizeKB}KB) is extremely small for ${width}x${height}. Expected minimum ${expectedMinSizeKB}KB. Image may be truncated or corrupted.`);
+      }
+    } else if (pixelCount && pixelCount <= 50000) {
+      // For smaller images, be more lenient - simple/solid color images can be very small
+      if (base64SizeKB < 0.5) {
+        // Only error if absolutely tiny (<0.5KB) which suggests corruption
+        errors.push(`Base64 size (${base64SizeKB}KB) is extremely small for ${width}x${height}. Image may be corrupted or truncated.`);
       }
     }
 
     // Expected range based on light compression; only warn, do not block.
+    // Simple images (solid colors, icons) can have very low bytes/pixel - this is normal
     if (bytesPerPixel !== null) {
-      if (bytesPerPixel < 0.01 && !pixelCount) {
+      // Only warn if bytes/pixel is suspiciously low AND we have a large pixel count (suggests corruption)
+      if (bytesPerPixel < 0.01 && pixelCount && pixelCount > 100000) {
         warnings.push(`Payload seems tiny for ${width}x${height} (${bytesPerPixel.toFixed(4)} bytes/px). Verify the image is fully encoded.`);
       } else if (bytesPerPixel > 0.35) {
         warnings.push(`Payload seems large for ${width}x${height} (${bytesPerPixel.toFixed(3)} bytes/px). Resize or compress before sending.`);
       }
-    } else if (base64SizeKB < 5 && !pixelCount) {
-      warnings.push('Base64 payload is under 5KB; ensure the image is not truncated.');
+    } else if (base64SizeKB < 5 && !pixelCount && base64SizeKB < 0.5) {
+      // Only warn if extremely small without dimensions - simple images can legitimately be small
+      warnings.push('Base64 payload is very small; ensure the image is not truncated.');
     }
 
     // Guardrails against enormous blobs: warn above 1MB, hard-fail above 4MB.
