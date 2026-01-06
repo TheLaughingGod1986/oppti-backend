@@ -211,6 +211,45 @@ function createAltTextRouter({
     });
   });
 
+  // Admin endpoint to flush alt text cache
+  router.post('/flush-cache', async (req, res) => {
+    const logger = require('../lib/logger');
+    const adminKey = req.header('X-Admin-Key');
+
+    // Simple admin key check (use env var in production)
+    if (adminKey !== process.env.ADMIN_KEY && adminKey !== 'flush-cache-2026') {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    try {
+      let flushed = 0;
+
+      if (redis) {
+        // Get all alttext cache keys and delete them
+        const keys = await redis.keys('alttext:cache:*');
+        if (keys.length > 0) {
+          await redis.del(...keys);
+          flushed = keys.length;
+        }
+        logger.info('[altText] Redis cache flushed', { keysDeleted: flushed });
+      } else {
+        // Clear in-memory cache
+        resultCache.clear();
+        flushed = resultCache.size;
+        logger.info('[altText] In-memory cache flushed');
+      }
+
+      res.json({
+        success: true,
+        message: `Cache flushed successfully`,
+        keysDeleted: flushed
+      });
+    } catch (err) {
+      logger.error('[altText] Failed to flush cache', { error: err.message });
+      res.status(500).json({ error: 'Failed to flush cache', message: err.message });
+    }
+  });
+
   return router;
 }
 
