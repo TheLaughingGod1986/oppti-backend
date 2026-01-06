@@ -84,6 +84,23 @@ function createAltTextRouter({
     // Deduplication via hash
     const base64Data = image.base64 || image.image_base64 || '';
     const cacheKey = base64Data ? hashPayload(base64Data) : null;
+    
+    // Enhanced logging for debugging
+    const logger = require('../lib/logger');
+    logger.info('[altText] Request received', {
+      hasBase64: !!(image.base64 || image.image_base64),
+      hasUrl: !!image.url,
+      imageSource: base64Data ? 'base64' : (image.url ? 'url' : 'none'),
+      base64Preview: base64Data ? base64Data.substring(0, 100) + '...' : null,
+      base64Length: base64Data ? base64Data.length : 0,
+      imageUrl: image.url || null,
+      dimensions: image.width && image.height ? `${image.width}x${image.height}` : 'unknown',
+      filename: image.filename || 'unknown',
+      cacheKey: cacheKey ? cacheKey.substring(0, 16) + '...' : null,
+      bypassCache,
+      regenerate: req.body.regenerate || req.query.regenerate || false
+    });
+    
     if (cacheKey && !bypassCache) {
       if (redis) {
         try {
@@ -97,6 +114,7 @@ function createAltTextRouter({
         }
       } else if (resultCache.has(cacheKey)) {
         const cached = resultCache.get(cacheKey);
+        logger.info('[altText] Cache hit', { cacheKey: cacheKey ? cacheKey.substring(0, 16) + '...' : null });
         return res.json({ ...cached, cached: true });
       }
     }
@@ -106,13 +124,32 @@ function createAltTextRouter({
       return res.status(400).json({ error: 'INVALID_REQUEST', errors, warnings });
     }
 
+    logger.info('[altText] Image payload normalized', {
+      normalizedHasBase64: !!normalized.base64,
+      normalizedHasUrl: !!normalized.url,
+      normalizedSource: normalized.base64 ? 'base64' : (normalized.url ? 'url' : 'none'),
+      normalizedDimensions: normalized.width && normalized.height ? `${normalized.width}x${normalized.height}` : 'unknown',
+      errors: errors.length,
+      warnings: warnings.length
+    });
+
+    logger.info('[altText] Calling OpenAI to generate alt text');
+    const startTime = Date.now();
     const { altText, usage, meta } = await generateAltText({
       image: normalized,
       context: { ...context, filename: normalized.filename }
     });
+    const generationTime = Date.now() - startTime;
+    
+    logger.info('[altText] Alt text generated', {
+      altText,
+      altTextLength: altText ? altText.length : 0,
+      generationTimeMs: generationTime,
+      modelUsed: meta?.modelUsed,
+      tokensUsed: usage?.total_tokens
+    });
 
     // Record usage/credits
-    const logger = require('../lib/logger');
     logger.info('[altText] Recording usage', {
       licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
       siteKey,

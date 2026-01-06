@@ -40,13 +40,38 @@ async function generateAltText({ image, context }) {
     ? `data:${image.mime_type};base64,${image.base64}`
     : image.url;
 
+  // Enhanced logging for debugging image processing
+  const logger = require('./logger');
+  logger.info('[OpenAI] Image processing details', {
+    hasBase64: !!image.base64,
+    hasUrl: !!image.url,
+    imageSource: image.base64 ? 'base64' : (image.url ? 'url' : 'none'),
+    base64Preview: image.base64 ? image.base64.substring(0, 100) + '...' : null,
+    base64Length: image.base64 ? image.base64.length : 0,
+    imageUrl: image.url || null,
+    imageUrlPreview: image.url ? image.url.substring(0, 100) + '...' : null,
+    dimensions: image.width && image.height ? `${image.width}x${image.height}` : 'unknown',
+    mimeType: image.mime_type || 'unknown',
+    filename: image.filename || 'unknown',
+    dataUrlPreview: imageUrl ? imageUrl.substring(0, 150) + '...' : null,
+    dataUrlLength: imageUrl ? imageUrl.length : 0
+  });
+
   if (!apiKey) {
+    logger.error('[OpenAI] Missing API key - check OPENAI_API_KEY or ALTTEXT_OPENAI_API_KEY in .env.local');
     return {
       altText: fallbackAltText(context),
       usage: null,
       meta: { usedFallback: true, reason: 'Missing OpenAI API key' }
     };
   }
+  
+  // Log API key status (first few chars only for security)
+  logger.debug('[OpenAI] Using API key', { 
+    keyPrefix: apiKey.substring(0, 10) + '...',
+    keyLength: apiKey.length,
+    model: preferredModel
+  });
 
   try {
     let response;
@@ -114,6 +139,27 @@ async function generateAltText({ image, context }) {
     const choice = response.data?.choices?.[0];
     const altText = choice?.message?.content?.trim();
 
+    // Log the full response for debugging
+    logger.info('[OpenAI] Raw AI response received', {
+      model: modelUsed,
+      fullResponse: JSON.stringify(response.data),
+      choiceContent: choice?.message?.content,
+      usage: response.data?.usage
+    });
+
+    if (altText) {
+      logger.info('[OpenAI] Alt text generated', { 
+        model: modelUsed,
+        altTextLength: altText.length,
+        altTextPreview: altText.substring(0, 50) + (altText.length > 50 ? '...' : '')
+      });
+    } else {
+      logger.error('[OpenAI] Empty alt text response', { 
+        model: modelUsed,
+        response: JSON.stringify(response.data).substring(0, 200)
+      });
+    }
+
     return {
       altText: altText || fallbackAltText(context),
       usage: response.data?.usage || null,
@@ -121,10 +167,30 @@ async function generateAltText({ image, context }) {
     };
   } catch (error) {
     const message = error?.response?.data?.error?.message || error.message || 'OpenAI request failed';
+    const errorCode = error?.response?.data?.error?.code || error?.response?.status || 'UNKNOWN';
+    
+    // Check for API key errors specifically
+    const isApiKeyError = /incorrect.*api.*key|invalid.*api.*key|authentication.*failed/i.test(message);
+    
+    logger.error('[OpenAI] Alt text generation failed', {
+      error: message,
+      code: errorCode,
+      status: error?.response?.status,
+      model: modelUsed,
+      hasApiKey: !!apiKey,
+      apiKeyPrefix: apiKey ? apiKey.substring(0, 10) + '...' : 'missing',
+      isApiKeyError: isApiKeyError
+    });
+    
+    // If it's an API key error, log it prominently
+    if (isApiKeyError) {
+      logger.error('[OpenAI] CRITICAL: Invalid or missing OpenAI API key. Please check your .env.local file and ensure OPENAI_API_KEY is set correctly.');
+    }
+    
     return {
       altText: fallbackAltText(context),
       usage: null,
-      meta: { usedFallback: true, reason: message }
+      meta: { usedFallback: true, reason: message, errorCode, isApiKeyError }
     };
   }
 }
