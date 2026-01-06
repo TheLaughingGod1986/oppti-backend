@@ -56,7 +56,9 @@ function createAltTextRouter({
     // Get license key from header OR from JWT-authenticated user
     const licenseKey = req.header('X-License-Key') || req.license?.license_key;
     const userInfo = extractUserInfo(req);
-    const bypassCache = req.header('X-Bypass-Cache') === 'true' || req.query.no_cache === '1';
+    // Support regenerate flag in body or query, plus cache bypass headers
+    const regenerate = req.body.regenerate === true || req.query.regenerate === 'true' || req.query.regenerate === '1';
+    const bypassCache = regenerate || req.header('X-Bypass-Cache') === 'true' || req.query.no_cache === '1';
 
     // Quota enforcement
     try {
@@ -81,24 +83,33 @@ function createAltTextRouter({
       });
     }
 
-    // Deduplication via hash
-    const base64Data = image.base64 || image.image_base64 || '';
-    const cacheKey = base64Data ? hashPayload(base64Data) : null;
+    // Validate and normalize image payload FIRST to get clean base64
+    const { errors, warnings, normalized } = validateImagePayload(image);
+    if (errors.length) {
+      return res.status(400).json({ error: 'INVALID_REQUEST', errors, warnings });
+    }
+
+    // Generate cache key from NORMALIZED base64 (after stripping data URL prefix)
+    // This ensures cache consistency even if frontend sends data URLs vs raw base64
+    const normalizedBase64 = normalized.base64 || '';
+    const cacheKey = normalizedBase64 ? hashPayload(normalizedBase64) : null;
     
     // Enhanced logging for debugging
     const logger = require('../lib/logger');
     logger.info('[altText] Request received', {
       hasBase64: !!(image.base64 || image.image_base64),
       hasUrl: !!image.url,
-      imageSource: base64Data ? 'base64' : (image.url ? 'url' : 'none'),
-      base64Preview: base64Data ? base64Data.substring(0, 100) + '...' : null,
-      base64Length: base64Data ? base64Data.length : 0,
-      imageUrl: image.url || null,
-      dimensions: image.width && image.height ? `${image.width}x${image.height}` : 'unknown',
-      filename: image.filename || 'unknown',
+      imageSource: normalizedBase64 ? 'base64' : (normalized.url ? 'url' : 'none'),
+      rawBase64Preview: (image.base64 || image.image_base64 || '').substring(0, 100) + '...',
+      normalizedBase64Preview: normalizedBase64 ? normalizedBase64.substring(0, 100) + '...' : null,
+      normalizedBase64Length: normalizedBase64 ? normalizedBase64.length : 0,
+      imageUrl: normalized.url || null,
+      dimensions: normalized.width && normalized.height ? `${normalized.width}x${normalized.height}` : 'unknown',
+      filename: normalized.filename || 'unknown',
       cacheKey: cacheKey ? cacheKey.substring(0, 16) + '...' : null,
       bypassCache,
-      regenerate: req.body.regenerate || req.query.regenerate || false
+      regenerate,
+      warnings: warnings.length
     });
     
     if (cacheKey && !bypassCache) {
@@ -114,24 +125,16 @@ function createAltTextRouter({
         }
       } else if (resultCache.has(cacheKey)) {
         const cached = resultCache.get(cacheKey);
-        logger.info('[altText] Cache hit', { cacheKey: cacheKey ? cacheKey.substring(0, 16) + '...' : null });
+        logger.info('[altText] Cache hit - returning cached result', { 
+          cacheKey: cacheKey ? cacheKey.substring(0, 16) + '...' : null,
+          cachedAltText: cached.altText,
+          cachedModel: cached.meta?.modelUsed
+        });
         return res.json({ ...cached, cached: true });
       }
+    } else if (bypassCache) {
+      logger.info('[altText] Cache bypassed', { reason: regenerate ? 'regenerate flag' : 'explicit bypass' });
     }
-
-    const { errors, warnings, normalized } = validateImagePayload(image);
-    if (errors.length) {
-      return res.status(400).json({ error: 'INVALID_REQUEST', errors, warnings });
-    }
-
-    logger.info('[altText] Image payload normalized', {
-      normalizedHasBase64: !!normalized.base64,
-      normalizedHasUrl: !!normalized.url,
-      normalizedSource: normalized.base64 ? 'base64' : (normalized.url ? 'url' : 'none'),
-      normalizedDimensions: normalized.width && normalized.height ? `${normalized.width}x${normalized.height}` : 'unknown',
-      errors: errors.length,
-      warnings: warnings.length
-    });
 
     logger.info('[altText] Calling OpenAI to generate alt text');
     const startTime = Date.now();

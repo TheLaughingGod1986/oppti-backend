@@ -54,8 +54,21 @@ async function generateAltText({ image, context }) {
     mimeType: image.mime_type || 'unknown',
     filename: image.filename || 'unknown',
     dataUrlPreview: imageUrl ? imageUrl.substring(0, 150) + '...' : null,
-    dataUrlLength: imageUrl ? imageUrl.length : 0
+    dataUrlLength: imageUrl ? imageUrl.length : 0,
+    dataUrlStartsWith: imageUrl ? imageUrl.substring(0, 30) : null
   });
+  
+  // CRITICAL: Verify we're using the correct image source
+  if (image.base64 && image.url) {
+    logger.warn('[OpenAI] WARNING: Both base64 and URL provided - base64 will be used, URL ignored', {
+      base64Length: image.base64.length,
+      url: image.url
+    });
+  }
+  
+  if (!image.base64 && !image.url) {
+    logger.error('[OpenAI] ERROR: No image data provided - neither base64 nor URL');
+  }
 
   if (!apiKey) {
     logger.error('[OpenAI] Missing API key - check OPENAI_API_KEY or ALTTEXT_OPENAI_API_KEY in .env.local');
@@ -144,7 +157,8 @@ async function generateAltText({ image, context }) {
       model: modelUsed,
       fullResponse: JSON.stringify(response.data),
       choiceContent: choice?.message?.content,
-      usage: response.data?.usage
+      usage: response.data?.usage,
+      imageSourceUsed: image.base64 ? 'base64' : (image.url ? 'url' : 'none')
     });
 
     if (altText) {
