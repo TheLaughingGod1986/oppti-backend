@@ -12,6 +12,7 @@ const { createAltTextRouter } = require('./routes/altText');
 const { createJobsRouter } = require('./routes/jobs');
 const { createLicenseRouter } = require('./routes/license');
 const { createDashboardRouter } = require('./routes/dashboard');
+const { createAdminRouter } = require('./routes/admin');
 const rateLimitMiddleware = require('./middleware/rateLimit');
 const { authMiddleware } = require('./middleware/auth');
 const requestId = require('./middleware/requestId');
@@ -78,6 +79,9 @@ app.use(rateLimitMiddleware({
 
 // Auth routes (public - no auth required)
 app.use('/auth', createAuthRouter({ supabase }));
+
+// Admin routes (public - protected by admin key, not license)
+app.use('/admin', createAdminRouter({ redis, resultCache: new Map() }));
 
 // Auth for protected routes (license-key or API token)
 app.use(authMiddleware({ supabase }));
