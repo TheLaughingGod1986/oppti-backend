@@ -101,7 +101,7 @@ async function generateAltText({ image, context }) {
               role: 'user',
               content: [
                 { type: 'text', text: prompt },
-                { type: 'image_url', image_url: { url: imageUrl, detail: 'low' } }
+                { type: 'image_url', image_url: { url: imageUrl, detail: 'auto' } }
               ]
             }
           ]
@@ -131,7 +131,7 @@ async function generateAltText({ image, context }) {
                 role: 'user',
                 content: [
                   { type: 'text', text: prompt },
-                  { type: 'image_url', image_url: { url: imageUrl, detail: 'low' } }
+                  { type: 'image_url', image_url: { url: imageUrl, detail: 'auto' } }
                 ]
               }
             ]
