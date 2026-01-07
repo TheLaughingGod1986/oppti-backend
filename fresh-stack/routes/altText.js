@@ -134,9 +134,8 @@ function createAltTextRouter({
     // This ensures cache consistency even if frontend sends data URLs vs raw base64
     const normalizedBase64 = normalized.base64 || '';
     const cacheKey = normalizedBase64 ? hashPayload(normalizedBase64) : null;
-    
+
     // Enhanced logging for debugging
-    const logger = require('../lib/logger');
     logger.info('[altText] Request received', {
       hasBase64: !!(image.base64 || image.image_base64),
       hasUrl: !!image.url,
@@ -226,6 +225,61 @@ function createAltTextRouter({
       logger.info('[altText] Usage recorded successfully');
     }
 
+    // Get updated quota status to return accurate credits_remaining
+    // This ensures the frontend gets the correct remaining credits after usage was recorded
+    const { getQuotaStatus } = require('../services/quota');
+    let creditsRemaining = null;
+    let totalLimit = null;
+    let creditsUsed = 1; // Default to 1 since we just used 1 credit
+    
+    try {
+      const quotaStatus = await getQuotaStatus(supabase, { licenseKey, siteHash: siteKey });
+      if (!quotaStatus.error) {
+        creditsRemaining = quotaStatus.credits_remaining;
+        totalLimit = quotaStatus.total_limit;
+        creditsUsed = quotaStatus.credits_used;
+        logger.info('[altText] Quota status fetched after usage', {
+          credits_remaining: creditsRemaining,
+          total_limit: totalLimit,
+          credits_used: creditsUsed,
+          licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
+          siteKey
+        });
+      } else {
+        logger.warn('[altText] Failed to fetch quota status', { 
+          error: quotaStatus.error,
+          message: quotaStatus.message,
+          licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing'
+        });
+        // Fallback: calculate remaining from limit if we have it
+        if (totalLimit === null) {
+          // Try to get limit from license
+          const { data: license } = await supabase
+            .from('licenses')
+            .select('plan')
+            .eq('license_key', licenseKey)
+            .single();
+          if (license) {
+            const { getLimits } = require('../services/license');
+            const limits = getLimits(license.plan);
+            totalLimit = limits.credits;
+            creditsRemaining = Math.max(totalLimit - creditsUsed, 0);
+            logger.info('[altText] Calculated credits from license plan', {
+              plan: license.plan,
+              total_limit: totalLimit,
+              credits_remaining: creditsRemaining
+            });
+          }
+        }
+      }
+    } catch (err) {
+      logger.error('[altText] Error fetching quota status', { 
+        error: err.message,
+        stack: err.stack,
+        licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing'
+      });
+    }
+
     if (cacheKey && !bypassCache) {
       const payload = { altText, warnings, usage, meta };
       if (redis) {
@@ -235,10 +289,11 @@ function createAltTextRouter({
       }
     }
 
-    res.json({
+    const response = {
       altText,
-      credits_used: 1,
-      credits_remaining: usage?.credits_remaining,
+      credits_used: creditsUsed,
+      credits_remaining: creditsRemaining !== null ? creditsRemaining : undefined,
+      limit: totalLimit !== null ? totalLimit : undefined,
       usage: {
         prompt_tokens: usage?.prompt_tokens,
         completion_tokens: usage?.completion_tokens,
@@ -249,7 +304,17 @@ function createAltTextRouter({
         cached: false,
         generation_time_ms: meta?.generation_time_ms
       }
+    };
+    
+    // Log the response being sent
+    logger.info('[altText] Sending response with credits', {
+      credits_used: response.credits_used,
+      credits_remaining: response.credits_remaining,
+      limit: response.limit,
+      has_altText: !!response.altText
     });
+    
+    res.json(response);
   });
 
   // Admin endpoint to flush alt text cache
