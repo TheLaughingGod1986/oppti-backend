@@ -153,24 +153,47 @@ function createAltTextRouter({
     });
     
     if (cacheKey && !bypassCache) {
+      let cachedData = null;
+
       if (redis) {
         try {
           const cached = await redis.get(`alttext:cache:${cacheKey}`);
           if (cached) {
-            const parsed = JSON.parse(cached);
-            return res.json({ ...parsed, cached: true });
+            cachedData = JSON.parse(cached);
           }
         } catch (e) {
           // ignore cache errors
         }
       } else if (resultCache.has(cacheKey)) {
-        const cached = resultCache.get(cacheKey);
-        logger.info('[altText] Cache hit - returning cached result', { 
+        cachedData = resultCache.get(cacheKey);
+      }
+
+      if (cachedData) {
+        logger.info('[altText] Cache hit - returning cached result', {
           cacheKey: cacheKey ? cacheKey.substring(0, 16) + '...' : null,
-          cachedAltText: cached.altText,
-          cachedModel: cached.meta?.modelUsed
+          cachedAltText: cachedData.altText,
+          cachedModel: cachedData.meta?.modelUsed
         });
-        return res.json({ ...cached, cached: true });
+
+        // Fetch current quota status to include accurate credits in cached response
+        // This ensures the plugin gets up-to-date usage info even from cache
+        const { getQuotaStatus } = require('../services/quota');
+        let creditsInfo = {};
+        try {
+          const quotaStatus = await getQuotaStatus(supabase, { licenseKey, siteHash: siteKey });
+          if (!quotaStatus.error) {
+            creditsInfo = {
+              credits_used: quotaStatus.credits_used,
+              credits_remaining: quotaStatus.credits_remaining,
+              limit: quotaStatus.total_limit
+            };
+            logger.info('[altText] Quota status fetched for cached response', creditsInfo);
+          }
+        } catch (err) {
+          logger.warn('[altText] Failed to fetch quota for cached response', { error: err.message });
+        }
+
+        return res.json({ ...cachedData, ...creditsInfo, cached: true });
       }
     } else if (bypassCache) {
       logger.info('[altText] Cache bypassed', { reason: regenerate ? 'regenerate flag' : 'explicit bypass' });
