@@ -25,23 +25,24 @@ async function recordUsage(supabase, {
   errorMessage = null
 }) {
   const payload = {
-    license_key: licenseKey,
-    site_hash: siteHash,
+    license_key: licenseKey || null,
+    license_id: licenseId || null,
+    site_hash: siteHash || null,
     user_id: userId || null,
     user_email: userEmail || null,
     credits_used: creditsUsed,
-    prompt_tokens: promptTokens,
-    completion_tokens: completionTokens,
+    prompt_tokens: promptTokens || null,
+    completion_tokens: completionTokens || null,
     total_tokens: totalTokens ?? (promptTokens && completionTokens ? promptTokens + completionTokens : null),
     cached,
     model_used: modelUsed,
-    generation_time_ms: generationTimeMs,
-    image_url: imageUrl,
-    image_filename: imageFilename,
-    plugin_version: pluginVersion,
-    endpoint,
-    status,
-    error_message: errorMessage
+    generation_time_ms: generationTimeMs || null,
+    image_url: imageUrl || null,
+    image_filename: imageFilename || null,
+    plugin_version: pluginVersion || null,
+    endpoint: endpoint || 'api/alt-text',
+    status: status || 'success',
+    error_message: errorMessage || null
   };
 
   logger.debug('[usage] Inserting usage log', { 

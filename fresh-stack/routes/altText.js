@@ -216,8 +216,24 @@ function createAltTextRouter({
     });
 
     // Record usage/credits
+    // Look up license_id if we have license_key
+    let licenseId = null;
+    if (licenseKey) {
+      try {
+        const { data: licenseData } = await supabase
+          .from('licenses')
+          .select('id')
+          .eq('license_key', licenseKey)
+          .maybeSingle();
+        licenseId = licenseData?.id || null;
+      } catch (err) {
+        logger.warn('[altText] Failed to look up license_id', { error: err.message });
+      }
+    }
+    
     logger.info('[altText] Recording usage', {
       licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
+      licenseId: licenseId ? `${licenseId.substring(0, 8)}...` : 'missing',
       siteKey,
       userId: userInfo.user_id,
       creditsUsed: 1
@@ -225,6 +241,7 @@ function createAltTextRouter({
     
     const usageResult = await recordUsage(supabase, {
       licenseKey,
+      licenseId,
       siteHash: siteKey,
       userId: userInfo.user_id,
       userEmail: userInfo.user_email,
