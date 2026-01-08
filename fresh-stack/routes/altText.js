@@ -249,58 +249,90 @@ function createAltTextRouter({
     }
 
     // Get updated quota status to return accurate credits_remaining
-    // This ensures the frontend gets the correct remaining credits after usage was recorded
+    // Add a small delay to ensure database write has propagated (for eventual consistency)
+    // This is especially important for Supabase/Postgres replication scenarios
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
     const { getQuotaStatus } = require('../services/quota');
     let creditsRemaining = null;
     let totalLimit = null;
     let creditsUsed = 1; // Default to 1 since we just used 1 credit
+    let retryCount = 0;
+    const maxRetries = 3;
     
-    try {
-      const quotaStatus = await getQuotaStatus(supabase, { licenseKey, siteHash: siteKey });
-      if (!quotaStatus.error) {
-        creditsRemaining = quotaStatus.credits_remaining;
-        totalLimit = quotaStatus.total_limit;
-        creditsUsed = quotaStatus.credits_used;
-        logger.info('[altText] Quota status fetched after usage', {
-          credits_remaining: creditsRemaining,
-          total_limit: totalLimit,
-          credits_used: creditsUsed,
-          licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
-          siteKey
-        });
-      } else {
-        logger.warn('[altText] Failed to fetch quota status', { 
-          error: quotaStatus.error,
-          message: quotaStatus.message,
+    // Retry logic to ensure we get the updated quota status
+    while (retryCount < maxRetries) {
+      try {
+        const quotaStatus = await getQuotaStatus(supabase, { licenseKey, siteHash: siteKey });
+        if (!quotaStatus.error) {
+          creditsRemaining = quotaStatus.credits_remaining;
+          totalLimit = quotaStatus.total_limit;
+          creditsUsed = quotaStatus.credits_used;
+          logger.info('[altText] Quota status fetched after usage', {
+            attempt: retryCount + 1,
+            credits_remaining: creditsRemaining,
+            total_limit: totalLimit,
+            credits_used: creditsUsed,
+            licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
+            siteKey
+          });
+          
+          // Verify the credits_used reflects the generation we just did
+          // If it doesn't, wait a bit more and retry
+          if (retryCount > 0 || creditsUsed >= 1) {
+            // Credits have been updated, we're good
+            break;
+          }
+        } else {
+          logger.warn('[altText] Failed to fetch quota status', { 
+            attempt: retryCount + 1,
+            error: quotaStatus.error,
+            message: quotaStatus.message,
+            licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing'
+          });
+        }
+      } catch (err) {
+        logger.error('[altText] Error fetching quota status', { 
+          attempt: retryCount + 1,
+          error: err.message,
+          stack: err.stack,
           licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing'
         });
-        // Fallback: calculate remaining from limit if we have it
-        if (totalLimit === null) {
-          // Try to get limit from license
-          const { data: license } = await supabase
-            .from('licenses')
-            .select('plan')
-            .eq('license_key', licenseKey)
-            .single();
-          if (license) {
-            const { getLimits } = require('../services/license');
-            const limits = getLimits(license.plan);
-            totalLimit = limits.credits;
-            creditsRemaining = Math.max(totalLimit - creditsUsed, 0);
-            logger.info('[altText] Calculated credits from license plan', {
-              plan: license.plan,
-              total_limit: totalLimit,
-              credits_remaining: creditsRemaining
-            });
-          }
-        }
       }
-    } catch (err) {
-      logger.error('[altText] Error fetching quota status', { 
-        error: err.message,
-        stack: err.stack,
-        licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing'
-      });
+      
+      // If we didn't get valid data and there are retries left, wait and try again
+      if ((creditsRemaining === null || creditsUsed < 1) && retryCount < maxRetries - 1) {
+        retryCount++;
+        await new Promise(resolve => setTimeout(resolve, 200 * retryCount)); // Exponential backoff
+      } else {
+        break;
+      }
+    }
+    
+    // Fallback: if we still don't have quota data, try to calculate from license
+    if (creditsRemaining === null && licenseKey) {
+      try {
+        const { data: license } = await supabase
+          .from('licenses')
+          .select('plan')
+          .eq('license_key', licenseKey)
+          .single();
+        if (license) {
+          const { getLimits } = require('../services/license');
+          const limits = getLimits(license.plan);
+          totalLimit = limits.credits;
+          // If we don't have creditsUsed from quota status, estimate based on previous value
+          creditsRemaining = Math.max(totalLimit - creditsUsed, 0);
+          logger.info('[altText] Calculated credits from license plan (fallback)', {
+            plan: license.plan,
+            total_limit: totalLimit,
+            credits_remaining: creditsRemaining,
+            credits_used: creditsUsed
+          });
+        }
+      } catch (err) {
+        logger.error('[altText] Failed to calculate credits from license', { error: err.message });
+      }
     }
 
     if (cacheKey && !bypassCache) {

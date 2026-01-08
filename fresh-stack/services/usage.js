@@ -104,7 +104,7 @@ async function updateQuotaSummary(supabase, licenseKey, creditsUsed, siteHash) {
     const siteUsage = existing.site_usage || {};
     siteUsage[siteHash] = (siteUsage[siteHash] || 0) + creditsUsed;
 
-    await supabase
+    const { error: updateError } = await supabase
       .from('quota_summaries')
       .update({
         total_credits_used: newTotalCredits,
@@ -112,10 +112,21 @@ async function updateQuotaSummary(supabase, licenseKey, creditsUsed, siteHash) {
         updated_at: new Date().toISOString()
       })
       .eq('id', existing.id);
+    
+    if (updateError) {
+      logger.error('[usage] Failed to update quota summary', { error: updateError.message });
+      return;
+    }
+    
+    logger.debug('[usage] Quota summary updated', {
+      licenseKey: `${licenseKey.substring(0, 8)}...`,
+      newTotalCredits,
+      siteUsage
+    });
   } else {
     // Create new summary
     const siteUsage = { [siteHash]: creditsUsed };
-    await supabase
+    const { error: insertError } = await supabase
       .from('quota_summaries')
       .insert({
         license_key: licenseKey,
@@ -125,6 +136,17 @@ async function updateQuotaSummary(supabase, licenseKey, creditsUsed, siteHash) {
         total_limit: totalLimit,
         site_usage: siteUsage
       });
+    
+    if (insertError) {
+      logger.error('[usage] Failed to insert quota summary', { error: insertError.message });
+      return;
+    }
+    
+    logger.debug('[usage] Quota summary created', {
+      licenseKey: `${licenseKey.substring(0, 8)}...`,
+      creditsUsed,
+      siteUsage
+    });
   }
 }
 
