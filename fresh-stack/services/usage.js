@@ -51,12 +51,23 @@ async function recordUsage(supabase, {
     credits_used: creditsUsed 
   });
   
-  const { error } = await supabase.from('usage_logs').insert(payload);
+  const { error, data } = await supabase.from('usage_logs').insert(payload).select();
 
   if (error) {
-    logger.error('[usage] Failed to insert usage log', { error: error.message, code: error.code });
+    logger.error('[usage] Failed to insert usage log', { 
+      error: error.message, 
+      code: error.code,
+      details: error.details,
+      hint: error.hint,
+      payload: {
+        ...payload,
+        license_key: payload.license_key ? `${payload.license_key.substring(0, 8)}...` : null,
+        user_id: payload.user_id || null,
+        license_id: payload.license_id || null
+      }
+    });
   } else {
-    logger.info('[usage] Usage log inserted successfully');
+    logger.info('[usage] Usage log inserted successfully', { inserted_id: data?.[0]?.id });
   }
 
   // Update quota summary for this period
