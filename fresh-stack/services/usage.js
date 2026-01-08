@@ -85,11 +85,10 @@ async function recordUsage(supabase, {
     logger.info('[usage] Usage log inserted successfully', { inserted_id: data?.[0]?.id });
   }
 
-  // Update quota summary for this period
-  if (!error && licenseKey) {
-    logger.debug('[usage] Updating quota summary', { licenseKey: `${licenseKey.substring(0, 8)}...` });
-    await updateQuotaSummary(supabase, licenseKey, creditsUsed, siteHash);
-  }
+  // Note: We do NOT manually call updateQuotaSummary() here because:
+  // The database trigger `trg_update_quota_summary` automatically updates quota_summaries
+  // when a row is inserted into usage_logs. Calling it manually would cause double-counting.
+  // The trigger handles quota updates to ensure data consistency even if code paths skip manual updates.
 
   return { error };
 }
