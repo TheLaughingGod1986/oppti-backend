@@ -2,6 +2,15 @@ const { computePeriodStart } = require('./quota');
 const logger = require('../lib/logger');
 
 /**
+ * Check if a string is a valid UUID format
+ */
+function isValidUUID(str) {
+  if (!str || typeof str !== 'string') return false;
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(str);
+}
+
+/**
  * Record usage with per-user and per-site tracking.
  */
 async function recordUsage(supabase, {
@@ -24,11 +33,15 @@ async function recordUsage(supabase, {
   status = 'success',
   errorMessage = null
 }) {
+  // Validate UUID fields - only include if they're valid UUIDs, otherwise null
+  const validatedUserId = (userId && isValidUUID(userId)) ? userId : null;
+  const validatedLicenseId = (licenseId && isValidUUID(licenseId)) ? licenseId : null;
+  
   const payload = {
     license_key: licenseKey || null,
-    license_id: licenseId || null,
+    license_id: validatedLicenseId,
     site_hash: siteHash || null,
-    user_id: userId || null,
+    user_id: validatedUserId,
     user_email: userEmail || null,
     credits_used: creditsUsed,
     prompt_tokens: promptTokens || null,
@@ -47,6 +60,8 @@ async function recordUsage(supabase, {
 
   logger.debug('[usage] Inserting usage log', { 
     license_key: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
+    license_id: validatedLicenseId ? `${validatedLicenseId.substring(0, 8)}...` : 'null (invalid or missing)',
+    user_id: validatedUserId ? `${validatedUserId.substring(0, 8)}...` : `null (original: ${userId || 'missing'}, valid UUID: ${userId ? isValidUUID(userId) : false})`,
     site_hash: siteHash,
     credits_used: creditsUsed 
   });
