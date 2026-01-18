@@ -13,6 +13,7 @@ const { createJobsRouter } = require('./routes/jobs');
 const { createLicenseRouter } = require('./routes/license');
 const { createDashboardRouter } = require('./routes/dashboard');
 const { createAdminRouter } = require('./routes/admin');
+const { createContactRouter } = require('./routes/contact');
 const rateLimitMiddleware = require('./middleware/rateLimit');
 const { authMiddleware } = require('./middleware/auth');
 const requestId = require('./middleware/requestId');
@@ -82,6 +83,9 @@ app.use('/auth', createAuthRouter({ supabase }));
 
 // Admin routes (public - protected by admin key, not license)
 app.use('/admin', createAdminRouter({ redis, resultCache: new Map() }));
+
+// Contact form route (public - requires site headers for abuse prevention, not full auth)
+app.use('/api/contact', createContactRouter({ redis }));
 
 // Auth for protected routes (license-key or API token)
 app.use(authMiddleware({ supabase }));
