@@ -40,6 +40,13 @@ services:
         value: gpt-4o-mini
 
       # Optional
+      # Email (Resend)
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: RESEND_CONTACT_EMAIL
+        sync: false
       - key: ALT_API_TOKEN
         sync: false
       - key: FRONTEND_URL
