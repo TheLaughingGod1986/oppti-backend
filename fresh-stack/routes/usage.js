@@ -8,25 +8,34 @@ function createUsageRouter({ supabase }) {
   // GET /usage - current quota status
   router.get('/', async (req, res) => {
     const licenseKey = req.header('X-License-Key') || req.license?.license_key;
-    const siteKey = req.header('X-Site-Key');
+    const siteKey = req.header('X-Site-Key') || req.header('X-Site-Hash');
 
     const status = await getQuotaStatus(supabase, { licenseKey, siteHash: siteKey });
     if (status.error) {
       return res.status(status.status || 401).json(status);
     }
 
+    // Return in format expected by plugin
     return res.json({
-      credits_used: status.credits_used,
-      credits_remaining: status.credits_remaining,
-      total_limit: status.total_limit,
-      plan_type: status.plan_type,
-      reset_date: status.reset_date,
-      billing_cycle: 'monthly',
-      warning_threshold: status.warning_threshold,
-      is_near_limit: status.is_near_limit,
-      rate_limit: {
-        requests_per_minute: status.plan_type === 'agency' ? 240 : status.plan_type === 'pro' ? 120 : 60,
-        burst_limit: status.plan_type === 'agency' ? 240 : status.plan_type === 'pro' ? 120 : 60
+      success: true,
+      data: {
+        usage: {
+          used: status.credits_used,
+          remaining: status.credits_remaining,
+          limit: status.total_limit,
+          plan: status.plan_type,
+          plan_type: status.plan_type,
+          resetDate: status.reset_date,
+          reset_date: status.reset_date,
+          billing_cycle: 'monthly',
+          warning_threshold: status.warning_threshold,
+          is_near_limit: status.is_near_limit
+        },
+        credits_used: status.credits_used,
+        credits_remaining: status.credits_remaining,
+        total_limit: status.total_limit,
+        plan_type: status.plan_type,
+        reset_date: status.reset_date
       }
     });
   });
@@ -34,8 +43,8 @@ function createUsageRouter({ supabase }) {
   // GET /usage/users - per-user breakdown
   router.get('/users', async (req, res) => {
     const licenseKey = req.header('X-License-Key') || req.license?.license_key;
-    const siteKey = req.header('X-Site-Key');
-    if (!siteKey) return res.status(400).json({ error: 'INVALID_REQUEST', message: 'X-Site-Key required' });
+    const siteKey = req.header('X-Site-Key') || req.header('X-Site-Hash');
+    if (!siteKey) return res.status(400).json({ error: 'INVALID_REQUEST', message: 'X-Site-Key or X-Site-Hash required' });
 
     const { periodStart, periodEnd } = getPeriodBounds(new Date().getUTCDate());
     const result = await getUserUsage(supabase, { licenseKey, siteHash: siteKey, periodStart, periodEnd });
