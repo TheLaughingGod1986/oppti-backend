@@ -64,12 +64,31 @@ async function getQuotaStatus(supabase, { licenseKey, siteHash }) {
 
   if (!summary || summary.total_credits_used === 0) {
     // Fallback: aggregate from usage_logs for this billing period
-    const { data: usageLogs } = await supabase
+    // For credit sharing: query by site_hash if available, otherwise by license_key
+    let usageQuery = supabase
       .from('usage_logs')
-      .select('credits_used, site_hash')
-      .eq('license_key', license.license_key)
+      .select('credits_used, site_hash, license_key')
       .gte('created_at', periodStart.toISOString())
       .lt('created_at', periodEnd.toISOString());
+
+    if (siteHash) {
+      // Query by site_hash to get ALL usage for the site (credit sharing)
+      usageQuery = usageQuery.eq('site_hash', siteHash);
+    } else {
+      // No site context, query by license_key
+      usageQuery = usageQuery.eq('license_key', license.license_key);
+    }
+
+    const { data: usageLogs, error: usageError } = await usageQuery;
+
+    logger.info('[Quota] Fallback usage query', {
+      siteHash: siteHash || 'none',
+      license_key: license.license_key.substring(0, 8) + '...',
+      period_start: periodStart.toISOString(),
+      period_end: periodEnd.toISOString(),
+      logs_found: usageLogs?.length || 0,
+      error: usageError?.message || null
+    });
 
     if (usageLogs && usageLogs.length > 0) {
       creditsUsed = usageLogs.reduce((sum, log) => sum + (log.credits_used || 1), 0);
@@ -79,8 +98,8 @@ async function getQuotaStatus(supabase, { licenseKey, siteHash }) {
           siteUsageFromLogs[log.site_hash] = (siteUsageFromLogs[log.site_hash] || 0) + (log.credits_used || 1);
         }
       });
-      logger.info('[Quota] Aggregated usage from logs (no summary)', {
-        license_key: license.license_key.substring(0, 8) + '...',
+      logger.info('[Quota] Aggregated usage from logs', {
+        query_by: siteHash ? 'site_hash' : 'license_key',
         credits_used: creditsUsed,
         log_count: usageLogs.length
       });
