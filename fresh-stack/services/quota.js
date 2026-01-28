@@ -57,12 +57,41 @@ async function getQuotaStatus(supabase, { licenseKey, siteHash }) {
     .maybeSingle();
 
   const totalLimit = limits.credits;
-  const creditsUsed = summary?.total_credits_used || 0;
+
+  // If no summary exists, count usage directly from usage_logs
+  let creditsUsed = summary?.total_credits_used || 0;
+  let siteUsageFromLogs = {};
+
+  if (!summary || summary.total_credits_used === 0) {
+    // Fallback: aggregate from usage_logs for this billing period
+    const { data: usageLogs } = await supabase
+      .from('usage_logs')
+      .select('credits_used, site_hash')
+      .eq('license_key', license.license_key)
+      .gte('created_at', periodStart.toISOString())
+      .lt('created_at', periodEnd.toISOString());
+
+    if (usageLogs && usageLogs.length > 0) {
+      creditsUsed = usageLogs.reduce((sum, log) => sum + (log.credits_used || 1), 0);
+      // Build site usage map
+      usageLogs.forEach((log) => {
+        if (log.site_hash) {
+          siteUsageFromLogs[log.site_hash] = (siteUsageFromLogs[log.site_hash] || 0) + (log.credits_used || 1);
+        }
+      });
+      logger.info('[Quota] Aggregated usage from logs (no summary)', {
+        license_key: license.license_key.substring(0, 8) + '...',
+        credits_used: creditsUsed,
+        log_count: usageLogs.length
+      });
+    }
+  }
+
   const creditsRemaining = Math.max(totalLimit - creditsUsed, 0);
 
   let siteQuota = null;
   if (siteHash) {
-    const siteUsage = summary?.site_usage || {};
+    const siteUsage = summary?.site_usage || siteUsageFromLogs;
     const usedBySite = Number(siteUsage[siteHash] || 0);
     siteQuota = {
       site_hash: siteHash,
