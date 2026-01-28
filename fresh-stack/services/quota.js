@@ -1,14 +1,42 @@
 const { getLimits } = require('./license');
+const logger = require('../lib/logger');
 
 /**
  * Calculate reset date and quota status for a license.
+ * IMPORTANT: If siteHash is provided, looks up the site's actual license to ensure
+ * all WordPress users on the same site share the same quota.
  */
 async function getQuotaStatus(supabase, { licenseKey, siteHash }) {
   const now = new Date();
+
+  // If siteHash provided, look up the site's actual license for credit sharing
+  // This ensures all users on a WordPress site share the same quota
+  let effectiveLicenseKey = licenseKey;
+  if (siteHash) {
+    const { data: site } = await supabase
+      .from('sites')
+      .select('license_key')
+      .eq('site_hash', siteHash)
+      .eq('status', 'active')
+      .maybeSingle();
+
+    if (site?.license_key) {
+      // Use the site's license key for quota tracking
+      if (site.license_key !== licenseKey) {
+        logger.info('[Quota] Using site license for credit sharing', {
+          site_hash: siteHash,
+          requested_license: licenseKey?.substring(0, 8) + '...',
+          site_license: site.license_key.substring(0, 8) + '...'
+        });
+      }
+      effectiveLicenseKey = site.license_key;
+    }
+  }
+
   const { data: license, error: licenseError } = await supabase
     .from('licenses')
     .select('*')
-    .eq('license_key', licenseKey)
+    .eq('license_key', effectiveLicenseKey)
     .single();
 
   if (licenseError || !license) {
