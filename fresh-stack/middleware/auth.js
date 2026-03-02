@@ -20,6 +20,17 @@ function authMiddleware({ supabase }) {
       return next();
     }
 
+    // Trial mode: allow anonymous generation with per-site quota (10 max).
+    const trialMode = req.header('X-Trial-Mode');
+    const trialSiteHash = req.header('X-Trial-Site-Hash');
+    if (trialMode === 'true' && trialSiteHash) {
+      req.trialMode = true;
+      req.trialSiteHash = trialSiteHash;
+      req.authMethod = 'trial';
+      logger.info('[Auth] Trial mode request', { site_hash: trialSiteHash });
+      return next();
+    }
+
     const licenseKey = req.header('X-License-Key');
     const authHeader = req.header('Authorization');
     const apiKey = req.header('X-API-Key');

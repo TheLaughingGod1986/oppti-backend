@@ -81,18 +81,47 @@ function createAltTextRouter({
     const regenerate = req.body.regenerate === true || req.query.regenerate === 'true' || req.query.regenerate === '1';
     const bypassCache = regenerate || req.header('X-Bypass-Cache') === 'true' || req.query.no_cache === '1';
 
-    // Quota enforcement
-    try {
-      await enforceQuota(supabase, { licenseKey, siteHash: siteKey, creditsNeeded: 1 });
-    } catch (err) {
-      return res.status(err.status || 402).json({
-        error: err.code || 'QUOTA_EXCEEDED',
-        message: err.message,
-        code: err.code || 'QUOTA_EXCEEDED',
-        credits_used: err.payload?.credits_used,
-        total_limit: err.payload?.total_limit,
-        reset_date: err.payload?.reset_date
-      });
+    // Trial mode: enforce separate 10-generation-per-site quota using trial_usage table.
+    const TRIAL_LIMIT = 10;
+    if (req.trialMode) {
+      const trialHash = req.trialSiteHash;
+      try {
+        const { count, error: countErr } = await supabase
+          .from('trial_usage')
+          .select('id', { count: 'exact', head: true })
+          .eq('site_hash', trialHash);
+
+        const trialUsed = countErr ? 0 : (count || 0);
+        if (trialUsed >= TRIAL_LIMIT) {
+          logger.info('[altText] Trial quota exhausted', { site_hash: trialHash, used: trialUsed });
+          return res.status(402).json({
+            error: 'TRIAL_EXHAUSTED',
+            code: 'bbai_trial_exhausted',
+            message: `You've used your ${TRIAL_LIMIT} free generations. Create a free account to unlock 50 more credits per month.`,
+            credits_used: trialUsed,
+            total_limit: TRIAL_LIMIT,
+            remaining: 0
+          });
+        }
+        logger.info('[altText] Trial quota check passed', { site_hash: trialHash, used: trialUsed, remaining: TRIAL_LIMIT - trialUsed });
+      } catch (err) {
+        logger.error('[altText] Trial quota check failed', { error: err.message });
+        // Allow generation on quota check failure to avoid blocking users.
+      }
+    } else {
+      // Normal quota enforcement for authenticated users.
+      try {
+        await enforceQuota(supabase, { licenseKey, siteHash: siteKey, creditsNeeded: 1 });
+      } catch (err) {
+        return res.status(err.status || 402).json({
+          error: err.code || 'QUOTA_EXCEEDED',
+          message: err.message,
+          code: err.code || 'QUOTA_EXCEEDED',
+          credits_used: err.payload?.credits_used,
+          total_limit: err.payload?.total_limit,
+          reset_date: err.payload?.reset_date
+        });
+      }
     }
 
     // Rate limit per site/license
@@ -216,48 +245,71 @@ function createAltTextRouter({
     });
 
     // Record usage/credits
-    // Look up license_id if we have license_key
-    let licenseId = null;
-    if (licenseKey) {
-      try {
-        const { data: licenseData } = await supabase
-          .from('licenses')
-          .select('id')
-          .eq('license_key', licenseKey)
-          .maybeSingle();
-        licenseId = licenseData?.id || null;
-      } catch (err) {
-        logger.warn('[altText] Failed to look up license_id', { error: err.message });
+    let usageResult = { error: null };
+
+    if (req.trialMode) {
+      // Trial mode: insert into trial_usage table (no foreign key constraints).
+      const trialPayload = {
+        site_hash: req.trialSiteHash,
+        site_fingerprint: req.header('X-Site-Fingerprint') || null,
+        site_url: req.header('X-Site-URL') || null,
+        prompt_tokens: usage?.prompt_tokens || null,
+        completion_tokens: usage?.completion_tokens || null,
+        total_tokens: usage?.total_tokens || null,
+        model_used: meta?.modelUsed || null,
+        generation_time_ms: meta?.generation_time_ms || null,
+        image_filename: normalized.filename || null
+      };
+      logger.info('[altText] Recording trial usage', { site_hash: req.trialSiteHash });
+      const { error } = await supabase.from('trial_usage').insert(trialPayload);
+      if (error) {
+        logger.error('[altText] Failed to record trial usage', { error: error.message, code: error.code });
       }
+      usageResult = { error };
+    } else {
+      // Normal flow: record in usage_logs with license tracking.
+      let licenseId = null;
+      if (licenseKey) {
+        try {
+          const { data: licenseData } = await supabase
+            .from('licenses')
+            .select('id')
+            .eq('license_key', licenseKey)
+            .maybeSingle();
+          licenseId = licenseData?.id || null;
+        } catch (err) {
+          logger.warn('[altText] Failed to look up license_id', { error: err.message });
+        }
+      }
+
+      logger.info('[altText] Recording usage', {
+        licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
+        licenseId: licenseId ? `${licenseId.substring(0, 8)}...` : 'missing',
+        siteKey,
+        userId: userInfo.user_id,
+        creditsUsed: 1
+      });
+
+      usageResult = await recordUsage(supabase, {
+        licenseKey,
+        licenseId,
+        siteHash: siteKey,
+        userId: userInfo.user_id,
+        userEmail: userInfo.user_email,
+        pluginVersion: userInfo.plugin_version,
+        creditsUsed: 1,
+        promptTokens: usage?.prompt_tokens,
+        completionTokens: usage?.completion_tokens,
+        totalTokens: usage?.total_tokens,
+        cached: false,
+        modelUsed: meta?.modelUsed,
+        generationTimeMs: meta?.generation_time_ms,
+        imageUrl: normalized.url,
+        imageFilename: normalized.filename,
+        endpoint: 'api/alt-text',
+        status: 'success'
+      });
     }
-    
-    logger.info('[altText] Recording usage', {
-      licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
-      licenseId: licenseId ? `${licenseId.substring(0, 8)}...` : 'missing',
-      siteKey,
-      userId: userInfo.user_id,
-      creditsUsed: 1
-    });
-    
-    const usageResult = await recordUsage(supabase, {
-      licenseKey,
-      licenseId,
-      siteHash: siteKey,
-      userId: userInfo.user_id,
-      userEmail: userInfo.user_email,
-      pluginVersion: userInfo.plugin_version,
-      creditsUsed: 1,
-      promptTokens: usage?.prompt_tokens,
-      completionTokens: usage?.completion_tokens,
-      totalTokens: usage?.total_tokens,
-      cached: false,
-      modelUsed: meta?.modelUsed,
-      generationTimeMs: meta?.generation_time_ms,
-      imageUrl: normalized.url,
-      imageFilename: normalized.filename,
-      endpoint: 'api/alt-text',
-      status: 'success'
-    });
     
     if (usageResult.error) {
       logger.error('[altText] Failed to record usage', { error: usageResult.error });
@@ -266,89 +318,90 @@ function createAltTextRouter({
     }
 
     // Get updated quota status to return accurate credits_remaining
-    // Add a small delay to ensure database write has propagated (for eventual consistency)
-    // This is especially important for Supabase/Postgres replication scenarios
-    await new Promise(resolve => setTimeout(resolve, 100));
-    
-    const { getQuotaStatus } = require('../services/quota');
     let creditsRemaining = null;
     let totalLimit = null;
-    let creditsUsed = 1; // Default to 1 since we just used 1 credit
-    let retryCount = 0;
-    const maxRetries = 3;
-    
-    // Retry logic to ensure we get the updated quota status
-    while (retryCount < maxRetries) {
+    let creditsUsed = 1;
+
+    if (req.trialMode) {
+      // Trial mode: count trial_usage rows for this site hash.
       try {
-        const quotaStatus = await getQuotaStatus(supabase, { licenseKey, siteHash: siteKey });
-        if (!quotaStatus.error) {
-          creditsRemaining = quotaStatus.credits_remaining;
-          totalLimit = quotaStatus.total_limit;
-          creditsUsed = quotaStatus.credits_used;
-          logger.info('[altText] Quota status fetched after usage', {
-            attempt: retryCount + 1,
-            credits_remaining: creditsRemaining,
-            total_limit: totalLimit,
-            credits_used: creditsUsed,
-            licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
-            siteKey
-          });
-          
-          // Verify the credits_used reflects the generation we just did
-          // If it doesn't, wait a bit more and retry
-          if (retryCount > 0 || creditsUsed >= 1) {
-            // Credits have been updated, we're good
-            break;
-          }
-        } else {
-          logger.warn('[altText] Failed to fetch quota status', { 
-            attempt: retryCount + 1,
-            error: quotaStatus.error,
-            message: quotaStatus.message,
-            licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing'
-          });
-        }
-      } catch (err) {
-        logger.error('[altText] Error fetching quota status', { 
-          attempt: retryCount + 1,
-          error: err.message,
-          stack: err.stack,
-          licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing'
+        const { count } = await supabase
+          .from('trial_usage')
+          .select('id', { count: 'exact', head: true })
+          .eq('site_hash', req.trialSiteHash);
+        creditsUsed = count || 1;
+        totalLimit = TRIAL_LIMIT;
+        creditsRemaining = Math.max(0, TRIAL_LIMIT - creditsUsed);
+        logger.info('[altText] Trial quota after generation', {
+          site_hash: req.trialSiteHash,
+          credits_used: creditsUsed,
+          credits_remaining: creditsRemaining
         });
+      } catch (err) {
+        creditsRemaining = null;
+        logger.error('[altText] Failed to count trial usage', { error: err.message });
       }
-      
-      // If we didn't get valid data and there are retries left, wait and try again
-      if ((creditsRemaining === null || creditsUsed < 1) && retryCount < maxRetries - 1) {
-        retryCount++;
-        await new Promise(resolve => setTimeout(resolve, 200 * retryCount)); // Exponential backoff
-      } else {
-        break;
-      }
-    }
-    
-    // Fallback: if we still don't have quota data, try to calculate from license
-    if (creditsRemaining === null && licenseKey) {
-      try {
-        const { data: license } = await supabase
-          .from('licenses')
-          .select('plan')
-          .eq('license_key', licenseKey)
-          .single();
-        if (license) {
-          const { getLimits } = require('../services/license');
-          const limits = getLimits(license.plan);
-          totalLimit = limits.credits;
-          // If we don't have creditsUsed from quota status, estimate based on previous value
-          creditsRemaining = Math.max(totalLimit - creditsUsed, 0);
-          logger.info('[altText] Calculated credits from license plan (fallback)', {
-            plan: license.plan,
-            total_limit: totalLimit,
-            credits_remaining: creditsRemaining,
-            credits_used: creditsUsed
+    } else {
+      // Normal flow: fetch quota status from license system.
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const { getQuotaStatus } = require('../services/quota');
+      let retryCount = 0;
+      const maxRetries = 3;
+
+      while (retryCount < maxRetries) {
+        try {
+          const quotaStatus = await getQuotaStatus(supabase, { licenseKey, siteHash: siteKey });
+          if (!quotaStatus.error) {
+            creditsRemaining = quotaStatus.credits_remaining;
+            totalLimit = quotaStatus.total_limit;
+            creditsUsed = quotaStatus.credits_used;
+            logger.info('[altText] Quota status fetched after usage', {
+              attempt: retryCount + 1,
+              credits_remaining: creditsRemaining,
+              total_limit: totalLimit,
+              credits_used: creditsUsed,
+              licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
+              siteKey
+            });
+            if (retryCount > 0 || creditsUsed >= 1) break;
+          } else {
+            logger.warn('[altText] Failed to fetch quota status', {
+              attempt: retryCount + 1,
+              error: quotaStatus.error,
+              message: quotaStatus.message
+            });
+          }
+        } catch (err) {
+          logger.error('[altText] Error fetching quota status', {
+            attempt: retryCount + 1,
+            error: err.message
           });
         }
-      } catch (err) {
-        logger.error('[altText] Failed to calculate credits from license', { error: err.message });
+        if ((creditsRemaining === null || creditsUsed < 1) && retryCount < maxRetries - 1) {
+          retryCount++;
+          await new Promise(resolve => setTimeout(resolve, 200 * retryCount));
+        } else {
+          break;
+        }
+      }
+
+      // Fallback: calculate from license plan
+      if (creditsRemaining === null && licenseKey) {
+        try {
+          const { data: license } = await supabase
+            .from('licenses')
+            .select('plan')
+            .eq('license_key', licenseKey)
+            .single();
+          if (license) {
+            const { getLimits } = require('../services/license');
+            const limits = getLimits(license.plan);
+            totalLimit = limits.credits;
+            creditsRemaining = Math.max(totalLimit - creditsUsed, 0);
+          }
+        } catch (err) {
+          logger.error('[altText] Failed to calculate credits from license', { error: err.message });
+        }
       }
     }
 
