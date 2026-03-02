@@ -81,14 +81,19 @@ async function getQuotaStatus(supabase, { licenseKey, siteHash }) {
 
     const { data: usageLogs, error: usageError } = await usageQuery;
 
-    logger.info('[Quota] Fallback usage query', {
+    const quotaLogData = {
       siteHash: siteHash || 'none',
       license_key: license.license_key.substring(0, 8) + '...',
       period_start: periodStart.toISOString(),
       period_end: periodEnd.toISOString(),
-      logs_found: usageLogs?.length || 0,
-      error: usageError?.message || null
-    });
+      logs_found: usageLogs?.length || 0
+    };
+    if (usageError) {
+      quotaLogData.error = usageError.message;
+      logger.error('[Quota] Fallback usage query failed', quotaLogData);
+    } else {
+      logger.info('[Quota] Fallback usage query', quotaLogData);
+    }
 
     if (usageLogs && usageLogs.length > 0) {
       creditsUsed = usageLogs.reduce((sum, log) => sum + (log.credits_used || 1), 0);
