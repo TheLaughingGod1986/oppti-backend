@@ -117,20 +117,23 @@ function createAuthRouter({ supabase }) {
         });
       }
 
-      // If site_id provided, create site record to link site to this license
-      // This enables future users on this site to share the same credits
+      // If site_id provided, link site to this license.
+      // Uses upsert so that if a trial site row already exists for this
+      // site_hash, we attach it to the new license instead of duplicating.
       if (site_id) {
         const { error: siteError } = await supabase
           .from('sites')
-          .insert({
+          .upsert({
             license_key: user.license_key,
             site_hash: site_id,
             site_url: site_url || 'unknown',
             status: 'active',
-          });
+            activated_at: new Date().toISOString(),
+            last_activity_at: new Date().toISOString()
+          }, { onConflict: 'site_hash' });
 
         if (siteError) {
-          logger.warn('[Auth] Failed to create site record:', siteError);
+          logger.warn('[Auth] Failed to link site record:', siteError);
           // Don't fail registration, just log warning
         } else {
           logger.info('[Auth] Site linked to license', { site_id, license_key: user.license_key });

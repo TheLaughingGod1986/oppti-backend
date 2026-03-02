@@ -5,6 +5,7 @@ const { validateImagePayload } = require('../lib/validation');
 const { generateAltText } = require('../lib/openai');
 const { enforceQuota } = require('../services/quota');
 const { recordUsage } = require('../services/usage');
+const { findOrCreateTrialSite } = require('../services/site');
 const { extractUserInfo } = require('../middleware/auth');
 
 function hashPayload(base64) {
@@ -104,6 +105,15 @@ function createAltTextRouter({
           });
         }
         logger.info('[altText] Trial quota check passed', { site_hash: trialHash, used: trialUsed, remaining: TRIAL_LIMIT - trialUsed });
+
+        // Upsert trial site row (fire-and-forget, don't block generation).
+        findOrCreateTrialSite(supabase, {
+          siteHash: trialHash,
+          siteUrl: req.header('X-Site-URL') || req.body?.trial_site_url || null,
+          fingerprint: req.header('X-Site-Fingerprint') || null
+        }).catch(err => {
+          logger.warn('[altText] Trial site upsert failed (non-blocking)', { error: err.message });
+        });
       } catch (err) {
         logger.error('[altText] Trial quota check failed', { error: err.message });
         // Allow generation on quota check failure to avoid blocking users.
