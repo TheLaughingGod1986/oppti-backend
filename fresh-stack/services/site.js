@@ -135,10 +135,35 @@ async function updateSiteActivity(supabase, { siteHash }) {
   return { error };
 }
 
+/**
+ * Deactivate a site (disconnect from license).
+ * Sets status to 'deactivated' and deactivated_at timestamp.
+ */
+async function deactivateSite(supabase, { licenseKey, siteHash }) {
+  if (!licenseKey || !siteHash) {
+    return { error: 'INVALID_REQUEST', status: 400, message: 'License key and site hash required' };
+  }
+  const { data, error } = await supabase
+    .from('sites')
+    .update({ status: 'deactivated', deactivated_at: new Date().toISOString() })
+    .eq('site_hash', siteHash)
+    .eq('license_key', licenseKey)
+    .select()
+    .maybeSingle();
+  if (error) {
+    return { error: 'SERVER_ERROR', status: 500, message: error.message };
+  }
+  if (!data) {
+    return { error: 'SITE_NOT_FOUND', status: 404, message: 'Site not found or not under this license' };
+  }
+  return { data, error: null };
+}
+
 module.exports = {
   findOrCreateTrialSite,
   createSite,
   getSites,
   setSiteQuota,
-  updateSiteActivity
+  updateSiteActivity,
+  deactivateSite
 };

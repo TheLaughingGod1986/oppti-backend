@@ -83,6 +83,60 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
     res.json({ success: true, plans });
   });
 
+  router.get('/info', async (req, res) => {
+    const license = req.license;
+    if (!license) {
+      return res.status(401).json({ success: false, error: 'Authentication required', data: { error: 'Authentication required' } });
+    }
+    try {
+      let plan = 'free';
+      let status = 'free';
+      let billingCycle = null;
+      let nextBillingDate = null;
+      let subscriptionId = null;
+      let cancelAtPeriodEnd = false;
+      let customerId = null;
+
+      if (license) {
+        plan = license.plan || license.plan_type || 'free';
+        status = license.status || 'active';
+        customerId = license.stripe_customer_id || null;
+        subscriptionId = license.stripe_subscription_id || null;
+        billingCycle = license.billing_cycle || 'monthly';
+        if (license.billing_anchor_date) {
+          const anchor = new Date(license.billing_anchor_date);
+          const next = new Date(anchor);
+          next.setUTCMonth(next.getUTCMonth() + 1);
+          nextBillingDate = next.toISOString();
+        }
+      }
+
+      if (supabase && subscriptionId) {
+        const { data: sub } = await supabase.from('subscriptions').select('plan, status, current_period_end, cancel_at_period_end').eq('stripe_subscription_id', subscriptionId).maybeSingle();
+        if (sub) {
+          plan = sub.plan || plan;
+          status = sub.status || status;
+          nextBillingDate = sub.current_period_end || nextBillingDate;
+          cancelAtPeriodEnd = sub.cancel_at_period_end || false;
+        }
+      }
+
+      const billing = {
+        plan,
+        status,
+        billingCycle,
+        nextBillingDate,
+        subscriptionId,
+        cancelAtPeriodEnd,
+        customerId
+      };
+      return res.json({ success: true, data: { billing } });
+    } catch (err) {
+      logger.error('[billing] info error', err.message);
+      return res.status(500).json({ success: false, error: 'Failed to fetch billing info', data: { error: err.message } });
+    }
+  });
+
   router.post('/checkout', async (req, res) => {
     if (!requireBillingAuth(req, res)) return;
     const { priceId, successUrl, cancelUrl } = req.body || {};

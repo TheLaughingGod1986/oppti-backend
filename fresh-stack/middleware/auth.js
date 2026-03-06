@@ -12,6 +12,14 @@ function authMiddleware({ supabase }) {
       '/license/activate',
       '/license/deactivate',
       '/license/transfer',
+      '/api/license/validate',
+      '/api/license/activate',
+      '/api/license/deactivate',
+      '/api/license/transfer',
+      '/api/licenses/validate',
+      '/api/licenses/activate',
+      '/api/licenses/deactivate',
+      '/api/licenses/transfer',
       '/billing/plans'
     ];
 

@@ -135,8 +135,11 @@ async function getSiteFromHeaders(supabase, req) {
   }
 }
 
-// Routers
-app.use('/license', createLicenseRouter({ supabase }));
+// Routers – license at /license (legacy) and /api/license, /api/licenses (frontend paths)
+const licenseRouter = createLicenseRouter({ supabase });
+app.use('/license', licenseRouter);
+app.use('/api/license', licenseRouter);
+app.use('/api/licenses', licenseRouter);
 app.use('/api/usage', createUsageRouter({ supabase }));
 app.use('/api/alt-text', createAltTextRouter({
   supabase,
