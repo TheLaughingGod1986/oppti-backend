@@ -63,6 +63,21 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
     }
   ];
 
+  const PLANS_CACHE_TTL_MS = 5 * 60 * 1000;
+  let plansCache = null;
+  let plansCacheExpiry = 0;
+
+  router.get('/plans', (_req, res) => {
+    const now = Date.now();
+    if (plansCache && plansCacheExpiry > now) {
+      return res.json(plansCache);
+    }
+    const payload = { success: true, plans };
+    plansCache = payload;
+    plansCacheExpiry = now + PLANS_CACHE_TTL_MS;
+    res.json(payload);
+  });
+
   function requireBillingAuth(req, res) {
     if (requiredToken) {
       const token = req.header('Authorization')?.replace(/^Bearer\s+/i, '') || req.header('X-API-Key');
@@ -78,10 +93,6 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
     }
     return true;
   }
-
-  router.get('/plans', (_req, res) => {
-    res.json({ success: true, plans });
-  });
 
   router.get('/info', async (req, res) => {
     const license = req.license;
