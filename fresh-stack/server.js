@@ -43,7 +43,7 @@ const HOST = config.host;
 const allowedOrigins = config.allowedOrigins;
 app.use(cors({
   origin: allowedOrigins.length ? allowedOrigins : (config.isProd ? false : true),
-  credentials: false
+  credentials: true
 }));
 
 app.use(compression());
