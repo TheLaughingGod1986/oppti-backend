@@ -157,20 +157,28 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       return res.status(400).json({ error: 'Invalid or missing priceId', valid: priceIds });
     }
     // Enforce site limit for PRO: only 1 site per subscription
+    // Look up via sites → licenses rather than relying on a site_hash column that doesn't exist on subscriptions
     if (priceId === priceIds.pro && supabase) {
       try {
-        const { data: subs } = await supabase
-          .from('subscriptions')
-          .select('id')
+        const { data: siteRecord } = await supabase
+          .from('sites')
+          .select('license_key')
           .eq('site_hash', siteKey)
-          .eq('plan', 'pro')
-          .in('status', ['active', 'trial', 'past_due']);
-        if (subs && subs.length > 0) {
-          return res.status(403).json({
-            error: 'SITE_LIMIT_EXCEEDED',
-            message: 'Pro plan is limited to 1 site per subscription.',
-            plan: 'pro'
-          });
+          .eq('status', 'active')
+          .maybeSingle();
+        if (siteRecord?.license_key) {
+          const { data: existingLicense } = await supabase
+            .from('licenses')
+            .select('plan')
+            .eq('license_key', siteRecord.license_key)
+            .single();
+          if (existingLicense?.plan === 'pro') {
+            return res.status(403).json({
+              error: 'SITE_LIMIT_EXCEEDED',
+              message: 'Pro plan is limited to 1 site per subscription.',
+              plan: 'pro'
+            });
+          }
         }
       } catch (e) {
         // fail-open
@@ -221,27 +229,44 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
   router.get('/subscription', async (req, res) => {
     if (!requireBillingAuth(req, res)) return;
     const siteKey = req.header('X-Site-Key');
+    const freePlan = { plan: 'free', status: 'free', billingCycle: null, nextBillingDate: null, subscriptionId: null, cancelAtPeriodEnd: false };
     try {
-      const { data: subscription } = supabase
-        ? await supabase.from('subscriptions').select('*').eq('site_hash', siteKey).single()
-        : { data: null };
-      if (!subscription) {
-        return res.json({
-          success: true,
-          data: {
-            plan: 'free',
-            status: 'free',
-            billingCycle: null,
-            nextBillingDate: null,
-            subscriptionId: null,
-            cancelAtPeriodEnd: false
-          }
-        });
+      if (!supabase) return res.json({ success: true, data: freePlan });
+
+      // Resolve license via site hash, then look up stripe_subscription_id on the license
+      const { data: siteRecord } = await supabase
+        .from('sites')
+        .select('license_key')
+        .eq('site_hash', siteKey)
+        .eq('status', 'active')
+        .maybeSingle();
+
+      if (!siteRecord?.license_key) return res.json({ success: true, data: freePlan });
+
+      const { data: license } = await supabase
+        .from('licenses')
+        .select('plan, stripe_subscription_id')
+        .eq('license_key', siteRecord.license_key)
+        .single();
+
+      if (!license?.stripe_subscription_id) {
+        return res.json({ success: true, data: { ...freePlan, plan: license?.plan || 'free' } });
       }
+
+      const { data: subscription } = await supabase
+        .from('subscriptions')
+        .select('*')
+        .eq('stripe_subscription_id', license.stripe_subscription_id)
+        .maybeSingle();
+
+      if (!subscription) {
+        return res.json({ success: true, data: { ...freePlan, plan: license.plan || 'free' } });
+      }
+
       res.json({
         success: true,
         data: {
-          plan: subscription.plan || 'free',
+          plan: subscription.plan || license.plan || 'free',
           status: subscription.status || 'active',
           billingCycle: 'month',
           nextBillingDate: subscription.current_period_end || null,

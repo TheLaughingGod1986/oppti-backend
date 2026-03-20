@@ -111,7 +111,19 @@ async function getQuotaStatus(supabase, { licenseKey, siteHash }) {
     }
   }
 
-  const creditsRemaining = Math.max(totalLimit - creditsUsed, 0);
+  const planCreditsRemaining = Math.max(totalLimit - creditsUsed, 0);
+
+  // Add any active purchased credit packs on top of the plan allowance
+  const { data: creditPacks } = await supabase
+    .from('credits')
+    .select('credits_remaining')
+    .eq('license_key', license.license_key)
+    .eq('status', 'active')
+    .or(`expires_at.is.null,expires_at.gt.${now.toISOString()}`);
+
+  const purchasedCredits = (creditPacks || []).reduce((sum, c) => sum + (c.credits_remaining || 0), 0);
+  const creditsRemaining = planCreditsRemaining + purchasedCredits;
+  const effectiveTotalLimit = totalLimit + purchasedCredits;
 
   let siteQuota = null;
   if (siteHash) {
@@ -136,14 +148,16 @@ async function getQuotaStatus(supabase, { licenseKey, siteHash }) {
   }
 
   const warningThreshold = 0.9;
-  const isNearLimit = creditsUsed / totalLimit >= warningThreshold;
+  const isNearLimit = creditsUsed / effectiveTotalLimit >= warningThreshold;
 
   return {
     plan_type: license.plan,
     license_status: license.status,
     credits_used: creditsUsed,
     credits_remaining: creditsRemaining,
-    total_limit: totalLimit,
+    total_limit: effectiveTotalLimit,
+    plan_limit: totalLimit,
+    purchased_credits: purchasedCredits,
     reset_date: periodEnd.toISOString(),
     warning_threshold: warningThreshold,
     is_near_limit: isNearLimit,

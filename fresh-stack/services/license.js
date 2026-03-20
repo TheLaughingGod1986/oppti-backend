@@ -62,7 +62,6 @@ async function createLicense(supabase, { email, plan = 'free', passwordHash = nu
         : new Date().getUTCDate(),
       max_sites: maxSites,
       reset_date: billingAnchorDate ? new Date(billingAnchorDate) : null,
-      tokens_remaining: credits
     })
     .select()
     .single();
