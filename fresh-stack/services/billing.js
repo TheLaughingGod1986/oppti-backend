@@ -77,28 +77,9 @@ async function handlePaymentSucceeded(supabase, { licenseKey, billingAnchorDate 
   return { error };
 }
 
-async function purchaseCredits(supabase, { licenseKey, credits, pricePaid, stripePaymentIntentId, stripeChargeId, expiresAt = null }) {
-  const { data, error } = await supabase
-    .from('credits')
-    .insert({
-      license_key: licenseKey,
-      credits_purchased: credits,
-      credits_remaining: credits,
-      price_paid: pricePaid,
-      stripe_payment_intent_id: stripePaymentIntentId,
-      stripe_charge_id: stripeChargeId,
-      expires_at: expiresAt,
-      status: 'active'
-    })
-    .select()
-    .single();
-  return { data, error };
-}
-
 module.exports = {
   handleSubscriptionCreated,
   handleSubscriptionUpdated,
   handleSubscriptionDeleted,
   handlePaymentSucceeded,
-  purchaseCredits
 };
