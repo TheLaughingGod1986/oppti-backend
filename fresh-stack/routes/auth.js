@@ -6,6 +6,8 @@ const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { sendPasswordResetEmail, isAvailable: isEmailAvailable } = require('../lib/email');
 
+const { trackAccountCreated } = require('../../src/services/loops');
+
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 const JWT_EXPIRES_IN = '30d';
 
@@ -116,6 +118,8 @@ function createAuthRouter({ supabase }) {
           details: error.message || 'Unknown error'
         });
       }
+
+      trackAccountCreated({ email, firstName: '', isWooCommerce: false, imagesUnprocessed: 0 }).catch(() => {});
 
       // If site_id provided, link site to this license.
       // Uses upsert so that if a trial site row already exists for this

@@ -1,4 +1,6 @@
 const { computePeriodStart } = require('./quota');
+const { getLimits } = require('./license');
+const { trackGenerationMilestone, trackCreditsExhausted } = require('../../src/services/loops');
 const logger = require('../lib/logger');
 
 /**
@@ -83,6 +85,38 @@ async function recordUsage(supabase, {
     });
   } else {
     logger.info('[usage] Usage log inserted successfully', { inserted_id: data?.[0]?.id });
+
+    if (userEmail && licenseKey) {
+      (async () => {
+        try {
+          const { data: license } = await supabase
+            .from('licenses')
+            .select('plan, billing_day_of_month')
+            .eq('license_key', licenseKey)
+            .single();
+
+          if (license) {
+            const periodStart = computePeriodStart(license.billing_day_of_month || 1, new Date());
+            const { data: logs } = await supabase
+              .from('usage_logs')
+              .select('credits_used')
+              .eq('license_key', licenseKey)
+              .gte('created_at', periodStart.toISOString());
+
+            const generationsCount = logs?.length || 0;
+            const totalCreditsUsed = (logs || []).reduce((sum, l) => sum + (l.credits_used || 1), 0);
+            const creditsRemaining = Math.max(getLimits(license.plan).credits - totalCreditsUsed, 0);
+
+            await trackGenerationMilestone({ email: userEmail, generationsCount, imagesUnprocessed: 0 });
+            if (creditsRemaining === 0) {
+              await trackCreditsExhausted({ email: userEmail, imagesUnprocessed: 0 });
+            }
+          }
+        } catch (loopsErr) {
+          logger.debug('[Loops] generation tracking error', { error: loopsErr.message });
+        }
+      })();
+    }
   }
 
   // Note: We do NOT manually call updateQuotaSummary() here because:

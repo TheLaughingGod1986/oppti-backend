@@ -3,6 +3,8 @@
  * Stripe client should be injected to ease testing.
  */
 
+const { trackPlanUpgraded } = require('../../src/services/loops');
+
 async function handleSubscriptionCreated(supabase, { licenseKey, stripeCustomerId, stripeSubscriptionId, planType, currentPeriodEnd }) {
   const { error } = await supabase
     .from('licenses')
@@ -15,6 +17,18 @@ async function handleSubscriptionCreated(supabase, { licenseKey, stripeCustomerI
       billing_anchor_date: currentPeriodEnd ? new Date(currentPeriodEnd) : new Date()
     })
     .eq('license_key', licenseKey);
+
+  if (!error) {
+    const { data: license } = await supabase
+      .from('licenses')
+      .select('email')
+      .eq('license_key', licenseKey)
+      .single();
+    if (license?.email) {
+      trackPlanUpgraded({ email: license.email, planName: planType }).catch(() => {});
+    }
+  }
+
   return { error };
 }
 
@@ -28,6 +42,18 @@ async function handleSubscriptionUpdated(supabase, { licenseKey, planType, curre
       billing_anchor_date: currentPeriodEnd ? new Date(currentPeriodEnd) : new Date()
     })
     .eq('license_key', licenseKey);
+
+  if (!error) {
+    const { data: license } = await supabase
+      .from('licenses')
+      .select('email')
+      .eq('license_key', licenseKey)
+      .single();
+    if (license?.email) {
+      trackPlanUpgraded({ email: license.email, planName: planType }).catch(() => {});
+    }
+  }
+
   return { error };
 }
 

@@ -319,6 +319,15 @@ function createAltTextRouter({
         endpoint: 'api/alt-text',
         status: 'success'
       });
+
+      if (licenseId) {
+        supabase
+          .from('licenses')
+          .update({ last_generation_at: new Date().toISOString(), reengagement_sent: false })
+          .eq('id', licenseId)
+          .then(() => {})
+          .catch(() => {});
+      }
     }
     
     if (usageResult.error) {
