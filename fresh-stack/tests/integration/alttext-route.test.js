@@ -1,5 +1,6 @@
 const express = require('express');
 const request = require('supertest');
+const { authMiddleware } = require('../../middleware/auth');
 
 jest.mock('../../lib/openai', () => ({
   generateAltText: jest.fn().mockResolvedValue({
@@ -53,18 +54,27 @@ function createChainableMock(resolveData = null, resolveError = null) {
     upsert: () => chainable,
     single: () => Promise.resolve({ data: resolveData, error: resolveError }),
     maybeSingle: () => Promise.resolve({ data: resolveData, error: resolveError }),
-    then: (resolve) => resolve({ data: resolveData ? [resolveData] : [], error: resolveError })
+    then: (resolve, reject) => Promise.resolve({ data: resolveData ? [resolveData] : [], error: resolveError }).then(resolve, reject)
   };
   return chainable;
 }
 
-function createSupabaseMock() {
+function createSupabaseMock(licenseRow = null) {
   return {
-    from: () => createChainableMock(null)
+    from: (table) => {
+      if (table === 'licenses') {
+        return createChainableMock(licenseRow);
+      }
+      return createChainableMock(null);
+    }
   };
 }
 
 describe('POST /api/alt-text', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   test('requires image payload', async () => {
     const app = express();
     app.use(express.json());
@@ -94,5 +104,37 @@ describe('POST /api/alt-text', () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.altText).toBe('mock alt');
+  });
+
+  test('uses logged-in quota when trial headers are stale', async () => {
+    const supabase = createSupabaseMock({
+      id: 'lic-1',
+      license_key: 'key-123',
+      plan: 'pro',
+      status: 'active'
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(authMiddleware({ supabase }));
+    app.use('/api/alt-text', createAltTextRouter({
+      supabase,
+      redis: null,
+      resultCache: new Map(),
+      checkRateLimit: async () => true,
+      getSiteFromHeaders: async () => ({ quota: 50, used: 0, remaining: 50 })
+    }));
+
+    const res = await request(app)
+      .post('/api/alt-text')
+      .set('X-License-Key', 'key-123')
+      .set('X-Trial-Mode', 'true')
+      .set('X-Trial-Site-Hash', 'trial-site')
+      .send({
+        image: { url: 'https://example.com/img.jpg', width: 1, height: 1 }
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.altText).toBe('mock alt');
+    expect(require('../../services/usage').recordUsage).toHaveBeenCalledTimes(1);
   });
 });
