@@ -65,7 +65,7 @@ function createLicenseRouter({ supabase }) {
     // Frontend expects organization and site; organization = license/plan info
     const license = result.license || {};
     const organization = {
-      plan: license.plan || license.plan_type || 'free',
+      plan: license.plan || 'free',
       status: license.status || 'active',
       max_sites: license.max_sites ?? 1,
       license_key: license.license_key

@@ -37,7 +37,7 @@ CREATE TABLE licenses (
   license_key UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
   email VARCHAR(255) UNIQUE NOT NULL,
   password_hash VARCHAR(255),
-  plan_type VARCHAR(50) NOT NULL DEFAULT 'free',
+  plan VARCHAR(50) NOT NULL DEFAULT 'free',
   status VARCHAR(50) NOT NULL DEFAULT 'active',
   stripe_customer_id VARCHAR(255),
   stripe_subscription_id VARCHAR(255),
@@ -47,7 +47,7 @@ CREATE TABLE licenses (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at TIMESTAMPTZ,
-  CONSTRAINT chk_plan_type CHECK (plan_type IN ('free', 'pro', 'agency')),
+  CONSTRAINT chk_plan CHECK (plan IN ('free', 'pro', 'agency')),
   CONSTRAINT chk_status CHECK (status IN ('active', 'expired', 'suspended', 'cancelled'))
 );
 
@@ -77,7 +77,7 @@ CREATE INDEX idx_licenses_email ON licenses(email);
       console.log('✅ Test license already exists:');
       console.log(`   License Key: ${existingLicense.license_key}`);
       console.log(`   Email: ${existingLicense.email}`);
-      console.log(`   Plan: ${existingLicense.plan_type}`);
+      console.log(`   Plan: ${existingLicense.plan}`);
       console.log(`   Status: ${existingLicense.status}\n`);
     } else {
       // Create test license
@@ -88,7 +88,7 @@ CREATE INDEX idx_licenses_email ON licenses(email);
         .insert({
           license_key: TEST_LICENSE_KEY,
           email: TEST_EMAIL,
-          plan_type: 'pro',
+          plan: 'pro',
           status: 'active',
           max_sites: 1,
           billing_anchor_date: new Date().toISOString()
@@ -103,7 +103,7 @@ CREATE INDEX idx_licenses_email ON licenses(email);
       console.log('✅ Test license created successfully:');
       console.log(`   License Key: ${newLicense.license_key}`);
       console.log(`   Email: ${newLicense.email}`);
-      console.log(`   Plan: ${newLicense.plan_type}`);
+      console.log(`   Plan: ${newLicense.plan}`);
       console.log(`   Status: ${newLicense.status}\n`);
     }
 

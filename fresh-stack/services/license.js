@@ -61,7 +61,6 @@ async function createLicense(supabase, { email, plan = 'free', passwordHash = nu
         ? new Date(billingAnchorDate).getUTCDate()
         : new Date().getUTCDate(),
       max_sites: maxSites,
-      reset_date: billingAnchorDate ? new Date(billingAnchorDate) : null,
     })
     .select()
     .single();
@@ -121,7 +120,6 @@ async function activateLicense(supabase, { licenseKey, siteHash, siteUrl, siteNa
     site_name: siteName,
     fingerprint,
     license_key: license.license_key,
-    plan: license.plan,
     status: 'active',
     activated_at: new Date().toISOString()
   };

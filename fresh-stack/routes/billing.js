@@ -109,7 +109,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       let customerId = null;
 
       if (license) {
-        plan = license.plan || license.plan_type || 'free';
+        plan = license.plan || 'free';
         status = license.status || 'active';
         customerId = license.stripe_customer_id || null;
         subscriptionId = license.stripe_subscription_id || null;
@@ -255,7 +255,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
 
       const { data: subscription } = await supabase
         .from('subscriptions')
-        .select('*')
+        .select('plan, status, current_period_end, cancel_at_period_end, stripe_subscription_id')
         .eq('stripe_subscription_id', license.stripe_subscription_id)
         .maybeSingle();
 

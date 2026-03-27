@@ -36,7 +36,7 @@ CREATE TABLE licenses (
   password_hash VARCHAR(255), -- bcrypt hash (null if not set yet)
 
   -- Plan info
-  plan_type VARCHAR(50) NOT NULL DEFAULT 'free', -- 'free', 'pro', 'agency'
+  plan VARCHAR(50) NOT NULL DEFAULT 'free', -- authoritative plan used by runtime
   status VARCHAR(50) NOT NULL DEFAULT 'active', -- 'active', 'expired', 'suspended', 'cancelled'
 
   -- Billing
@@ -54,7 +54,7 @@ CREATE TABLE licenses (
   expires_at TIMESTAMPTZ, -- NULL for perpetual licenses
 
   -- Indexes
-  CONSTRAINT chk_plan_type CHECK (plan_type IN ('free', 'pro', 'agency')),
+  CONSTRAINT chk_plan CHECK (plan IN ('free', 'pro', 'agency')),
   CONSTRAINT chk_status CHECK (status IN ('active', 'expired', 'suspended', 'cancelled'))
 );
 
@@ -218,7 +218,7 @@ CREATE TABLE subscriptions (
   stripe_price_id VARCHAR(255) NOT NULL,
 
   -- Subscription details
-  plan_type VARCHAR(50) NOT NULL,
+  plan VARCHAR(50) NOT NULL,
   status VARCHAR(50) NOT NULL, -- 'active', 'past_due', 'canceled', 'incomplete'
 
   -- Billing dates
@@ -244,48 +244,21 @@ CREATE INDEX idx_subscriptions_status ON subscriptions(status);
 - Created/updated by Stripe webhook events
 - `current_period_end` determines next billing date
 - Used to sync license status with Stripe subscription status
+- Backend runtime currently reads only `plan`, `status`, `current_period_end`,
+  `cancel_at_period_end`, and `stripe_subscription_id`; the remaining columns
+  are sync metadata and should be treated as deprecate-first if they are no
+  longer needed externally.
 
 ---
 
-### 6. `credits`
+### 6. `credits` (dropped)
 
-One-time credit purchases (separate from monthly quotas).
-
-```sql
-CREATE TABLE credits (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  license_key UUID NOT NULL REFERENCES licenses(license_key) ON DELETE CASCADE,
-
-  -- Credit details
-  credits_purchased INTEGER NOT NULL,
-  credits_remaining INTEGER NOT NULL,
-  price_paid INTEGER, -- Cents (e.g., 1900 = $19.00)
-
-  -- Stripe payment
-  stripe_payment_intent_id VARCHAR(255),
-  stripe_charge_id VARCHAR(255),
-
-  -- Expiration
-  expires_at TIMESTAMPTZ, -- NULL for non-expiring credits
-
-  -- Metadata
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  used_at TIMESTAMPTZ, -- When fully consumed
-
-  -- Status
-  status VARCHAR(50) NOT NULL DEFAULT 'active', -- 'active', 'used', 'expired'
-
-  CONSTRAINT chk_credits_status CHECK (status IN ('active', 'used', 'expired', 'refunded'))
-);
-
-CREATE INDEX idx_credits_license ON credits(license_key);
-CREATE INDEX idx_credits_status ON credits(status);
-```
+Legacy one-time credit purchase table from the old quota system. Dropped by
+`migrations/005_drop_credits_table.sql`.
 
 **Notes:**
-- Credits are separate from monthly quota (don't reset)
-- Used after monthly quota exhausted
-- Can have expiration dates (e.g., promotional credits expire in 1 year)
+- No backend runtime reads/writes remain in this repository.
+- Monthly quota now comes from `usage_logs` + `quota_summaries`.
 
 ---
 
@@ -374,22 +347,23 @@ CREATE INDEX idx_dashboard_sessions_expires ON dashboard_sessions(expires_at);
 
 ### `v_license_quota_current`
 
-Simplified view for current quota status.
+Legacy compatibility view for historical reference only. The backend runtime
+does not query this view.
 
 ```sql
 CREATE VIEW v_license_quota_current AS
 SELECT
   l.license_key,
-  l.plan_type,
+  l.plan,
   l.status AS license_status,
   l.billing_anchor_date,
-  CASE l.plan_type
+  CASE l.plan
     WHEN 'free' THEN 50
     WHEN 'pro' THEN 1000
     WHEN 'agency' THEN 10000
   END AS total_limit,
   COALESCE(qs.total_credits_used, 0) AS credits_used,
-  GREATEST(0, CASE l.plan_type
+  GREATEST(0, CASE l.plan
     WHEN 'free' THEN 50
     WHEN 'pro' THEN 1000
     WHEN 'agency' THEN 10000
@@ -427,7 +401,7 @@ BEGIN
     date_trunc('month', l.billing_anchor_date) AS period_start,
     date_trunc('month', l.billing_anchor_date) + INTERVAL '1 month' AS period_end,
     NEW.credits_used,
-    CASE l.plan_type
+    CASE l.plan
       WHEN 'free' THEN 50
       WHEN 'pro' THEN 1000
       WHEN 'agency' THEN 10000
@@ -521,7 +495,7 @@ SELECT
   credits_used,
   credits_remaining,
   total_limit,
-  plan_type,
+  plan,
   period_end AS reset_date
 FROM v_license_quota_current
 WHERE license_key = 'xxx-xxx-xxx';
@@ -569,11 +543,12 @@ WHERE s.license_key = 'agency-license-key'
 |-------------|-----------|-------|
 | `organizations` | `licenses` | Organization → License |
 | `organization_members` | ❌ Removed | Users share license quota |
+| `password_reset_tokens` | ❌ Removed | Password reset now lives on `licenses` |
 | `users` | ❌ Removed | Dashboard uses email/password in licenses table |
 | `sites` | `sites` | Same structure |
 | `usage_logs` | `usage_logs` | Added user tracking fields |
 | `subscriptions` | `subscriptions` | Same structure |
-| `credits` | `credits` | Same structure |
+| `credits` | ❌ Dropped | Replaced by usage_logs + quota_summaries |
 
 ### Migration Script
 

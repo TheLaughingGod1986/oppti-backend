@@ -76,7 +76,7 @@ async function findOrCreateTrialSite(supabase, { siteHash, siteUrl, fingerprint 
   return { data: inserted, error: null };
 }
 
-async function createSite(supabase, { licenseKey, siteHash, siteUrl, siteName, fingerprint, plan }) {
+async function createSite(supabase, { licenseKey, siteHash, siteUrl, siteName, fingerprint }) {
   const { data, error } = await supabase
     .from('sites')
     .insert({
@@ -85,7 +85,6 @@ async function createSite(supabase, { licenseKey, siteHash, siteUrl, siteName, f
       site_url: siteUrl,
       site_name: siteName,
       fingerprint,
-      plan,
       status: 'active'
     })
     .select()

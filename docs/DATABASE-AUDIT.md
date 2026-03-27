@@ -13,7 +13,6 @@
 | `sites` | auth, quota, site, license, server, usage | Activated sites per license |
 | `usage_logs` | usage, quota, reset-quota | Per-generation usage tracking |
 | `quota_summaries` | usage, quota, reset-quota | Pre-aggregated quota lookups |
-| `credits` | billing | One-time credit purchases |
 | `subscriptions` | billing | Stripe subscription sync |
 | `trial_usage` | altText | Anonymous trial generations |
 | `dashboard_sessions` | dashboard | Dashboard web app sessions |
@@ -38,7 +37,7 @@ The WP plugin does **not** query Supabase directly. It calls the backend API. Us
 | `events` | 0 | Comment: "Unified event system - replaces analytics_events and credits_transactions". No code references in backend or frontend. |
 | `plugin_identities` | 0 | No code references. Unused. |
 
-**Action taken:** Dropped `events`, `plugin_identities`, `identities` (in that order due to FK: events → identities).
+**Action taken:** Dropped `events`, `plugin_identities`, `identities` (in that order due to FK: events → identities). Migration `007_drop_confirmed_unused_legacy_objects.sql` drops `organization_members`, `password_reset_tokens`, `users`, `credits`, and `licenses.tokens_remaining`.
 
 ---
 
@@ -48,7 +47,6 @@ The WP plugin does **not** query Supabase directly. It calls the backend API. Us
 - sites
 - usage_logs
 - quota_summaries
-- credits
 - subscriptions
 - trial_usage
 - dashboard_sessions

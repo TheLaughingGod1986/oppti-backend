@@ -13,7 +13,6 @@ async function handleSubscriptionCreated(supabase, { licenseKey, stripeCustomerI
       stripe_customer_id: stripeCustomerId,
       stripe_subscription_id: stripeSubscriptionId,
       status: 'active',
-      reset_date: currentPeriodEnd ? new Date(currentPeriodEnd) : null,
       billing_anchor_date: currentPeriodEnd ? new Date(currentPeriodEnd) : new Date()
     })
     .eq('license_key', licenseKey);
@@ -38,7 +37,6 @@ async function handleSubscriptionUpdated(supabase, { licenseKey, planType, curre
     .update({
       plan: planType,
       status: status || 'active',
-      reset_date: currentPeriodEnd ? new Date(currentPeriodEnd) : null,
       billing_anchor_date: currentPeriodEnd ? new Date(currentPeriodEnd) : new Date()
     })
     .eq('license_key', licenseKey);
