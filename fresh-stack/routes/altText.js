@@ -12,6 +12,10 @@ function hashPayload(base64) {
   return crypto.createHash('md5').update(base64).digest('hex');
 }
 
+function hasValidAdminKey(adminKey) {
+  return Boolean(process.env.ADMIN_KEY && adminKey && adminKey === process.env.ADMIN_KEY);
+}
+
 const requestSchema = z.object({
   image: z
     .object({
@@ -466,8 +470,7 @@ function createAltTextRouter({
     const logger = require('../lib/logger');
     const adminKey = req.header('X-Admin-Key');
 
-    // Simple admin key check (use env var in production)
-    if (adminKey !== process.env.ADMIN_KEY && adminKey !== 'flush-cache-2026') {
+    if (!hasValidAdminKey(adminKey)) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 

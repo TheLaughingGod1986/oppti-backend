@@ -1,33 +1,8 @@
-const { getEnv, isProduction, isDevelopment, validateRequired } = require('./loadEnv');
+const { getEnv, isProduction, isDevelopment, validateEnv } = require('./env');
 
-const REQUIRED = [
-  'SUPABASE_URL',
-  'SUPABASE_SERVICE_ROLE_KEY',
-  'STRIPE_SECRET_KEY',
-  'ALTTEXT_AI_STRIPE_PRICE_PRO',
-  'ALTTEXT_AI_STRIPE_PRICE_AGENCY',
-  'ALTTEXT_AI_STRIPE_PRICE_CREDITS',
-  'ALLOWED_ORIGINS'
-];
+validateEnv();
 
 function loadConfig() {
-  if (isProduction()) {
-    validateRequired(REQUIRED);
-    // Check for OpenAI API key (either name)
-    if (!getEnv('OPENAI_API_KEY') && !getEnv('ALTTEXT_OPENAI_API_KEY')) {
-      throw new Error('Missing required env var: OPENAI_API_KEY or ALTTEXT_OPENAI_API_KEY');
-    }
-  } else {
-    try {
-      validateRequired(REQUIRED);
-      if (!getEnv('OPENAI_API_KEY') && !getEnv('ALTTEXT_OPENAI_API_KEY')) {
-        throw new Error('Missing required env var: OPENAI_API_KEY or ALTTEXT_OPENAI_API_KEY');
-      }
-    } catch (err) {
-      console.warn('[config] missing env (dev)', err.message);
-    }
-  }
-
   const rateLimitPerSite = Number(getEnv('RATE_LIMIT_PER_SITE', 120));
   const rateLimitGlobal = Number(getEnv('RATE_LIMIT_GLOBAL', 0));
   const jobConcurrency = Number(getEnv('JOB_CONCURRENCY', 2));

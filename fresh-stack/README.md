@@ -13,12 +13,16 @@ npm start        # uses fresh-stack/server.js
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
+- `POSTHOG_API_KEY`
+- `POSTHOG_HOST`
 - `ALTTEXT_AI_STRIPE_PRICE_PRO`
 - `ALTTEXT_AI_STRIPE_PRICE_AGENCY`
 - `ALTTEXT_AI_STRIPE_PRICE_CREDITS`
+- `JWT_SECRET`
 - `OPENAI_API_KEY`
+- `PORT`
 - `ALLOWED_ORIGINS` (comma-separated)
-- Optional: `ALT_API_TOKEN`, `FRONTEND_URL`, `FRONTEND_DASHBOARD_URL`
+- Optional: `ADMIN_KEY`, `ALT_API_TOKEN`, `FRONTEND_URL`, `FRONTEND_DASHBOARD_URL`
 - Optional: `RATE_LIMIT_PER_SITE`, `RATE_LIMIT_GLOBAL`, `JOB_CONCURRENCY`, `JOB_TTL_SECONDS`, `SKIP_QUOTA_CHECK_SITE_IDS`
 
 ## API
@@ -39,6 +43,7 @@ npm start        # uses fresh-stack/server.js
 - `POST /api/usage` (site summary, optional per-user breakdown with `X-WP-User-ID`/`X-WP-User-Email`; headers: `X-Site-Key` and bearer if token mode enabled)
 - `GET /billing/plans` (public)
 - `POST /billing/checkout` (token + `X-Site-Key`; creates Stripe checkout session)
+- `POST /billing/webhook` (Stripe webhook; must receive the raw request body)
 - `POST /billing/portal` (token + `X-Site-Key`; requires `customerId`)
 - `GET /billing/subscription` (token + `X-Site-Key`; optional)
 - `GET /ready` - basic readiness (redis + supabase presence)

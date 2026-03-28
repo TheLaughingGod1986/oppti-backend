@@ -6,7 +6,7 @@ Production-ready Node.js backend API for Oppti services.
 
 ```bash
 npm install
-cp config/env.example .env
+cp .env.example .env
 # Edit .env and add your API keys
 npm start
 ```
@@ -22,23 +22,34 @@ npm start
 
 ## Environment Variables
 
-See `config/env.example` for all required variables. Key variables:
+See `.env.example` for the local development template and `config/env.example` for the expanded deployment reference. Key variables:
 
 ```env
 # Supabase (Required)
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
+# Server / CORS (Required)
+PORT=4000
+ALLOWED_ORIGINS=https://your-site.com
+
 # OpenAI (Required)
 ALTTEXT_OPENAI_API_KEY=sk-...
 SEO_META_OPENAI_API_KEY=sk-...
 
 # JWT (Required)
-JWT_SECRET=your-secret-key
+JWT_SECRET=generate-a-long-random-secret
 
 # Stripe (Required)
 STRIPE_SECRET_KEY=sk_live_...
 STRIPE_WEBHOOK_SECRET=whsec_...
+
+# PostHog (Required for server-side payment tracking)
+POSTHOG_API_KEY=phc_...
+POSTHOG_HOST=https://us.i.posthog.com
+
+# Admin (Recommended if using /admin endpoints)
+ADMIN_KEY=generate-a-separate-admin-key
 
 # Email (Required)
 RESEND_API_KEY=re_...

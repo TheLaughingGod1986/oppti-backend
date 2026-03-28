@@ -8,7 +8,7 @@ const { sendPasswordResetEmail, isAvailable: isEmailAvailable } = require('../li
 
 const { trackAccountCreated } = require('../../src/services/loops');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = '30d';
 
 // Generate UUID v4

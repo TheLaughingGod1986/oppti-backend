@@ -1,3 +1,7 @@
+require('../config/env');
+
+console.log('[env] Stripe key:', process.env.STRIPE_SECRET_KEY?.slice(0, 10));
+
 const express = require('express');
 const compression = require('compression');
 const helmet = require('helmet');
@@ -7,7 +11,7 @@ const { getRedis } = require('./lib/redis');
 const logger = require('./lib/logger');
 const { createQueue } = require('./lib/queue');
 const { createAuthRouter } = require('./routes/auth');
-const { createBillingRouter } = require('./routes/billing');
+const { createBillingRouter, createBillingWebhookHandler } = require('./routes/billing');
 const { createUsageRouter } = require('./routes/usage');
 const { createAltTextRouter } = require('./routes/altText');
 const { createJobsRouter } = require('./routes/jobs');
@@ -48,8 +52,19 @@ app.use(cors({
 
 app.use(compression());
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(express.json({ limit: '8mb' }));
 app.use(requestId());
+
+const priceIds = config.stripePrices;
+
+// Stripe webhook must run before the global JSON parser so signature verification
+// receives the raw request body from Stripe.
+app.post(
+  '/billing/webhook',
+  express.raw({ type: 'application/json', limit: '2mb' }),
+  createBillingWebhookHandler({ supabase, getStripe, priceIds })
+);
+
+app.use(express.json({ limit: '8mb' }));
 
 // Health & root
 app.get('/', (_req, res) => res.json({ 
@@ -192,7 +207,6 @@ app.use('/api/jobs', createJobsRouter({
 }));
 
 // Billing + dashboard
-const priceIds = config.stripePrices;
 app.use('/billing', createBillingRouter({ supabase, getStripe, priceIds }));
 app.use('/dashboard', createDashboardRouter({ supabase }));
 

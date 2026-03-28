@@ -1,5 +1,9 @@
 const express = require('express');
 
+function hasValidAdminKey(adminKey) {
+  return Boolean(process.env.ADMIN_KEY && adminKey && adminKey === process.env.ADMIN_KEY);
+}
+
 function createAdminRouter({ redis, supabase, resultCache }) {
   const router = express.Router();
   const logger = require('../lib/logger');
@@ -7,7 +11,7 @@ function createAdminRouter({ redis, supabase, resultCache }) {
   // Database cleanup - protected by admin key (cron job)
   router.post('/cleanup', async (req, res) => {
     const adminKey = req.header('X-Admin-Key');
-    if (adminKey !== process.env.ADMIN_KEY && adminKey !== 'flush-cache-2026') {
+    if (!hasValidAdminKey(adminKey)) {
       return res.status(401).json({ error: 'Unauthorized', message: 'Invalid admin key' });
     }
     if (!supabase) {
@@ -46,8 +50,7 @@ function createAdminRouter({ redis, supabase, resultCache }) {
   router.post('/flush-cache', async (req, res) => {
     const adminKey = req.header('X-Admin-Key');
 
-    // Simple admin key check
-    if (adminKey !== process.env.ADMIN_KEY && adminKey !== 'flush-cache-2026') {
+    if (!hasValidAdminKey(adminKey)) {
       return res.status(401).json({ error: 'Unauthorized', message: 'Invalid admin key' });
     }
 
