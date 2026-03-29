@@ -2,6 +2,13 @@ const express = require('express');
 const logger = require('../lib/logger');
 const { verifyWebhookSignature } = require('../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../lib/posthog');
+const { buildSiteIdentity } = require('../lib/siteIdentity');
+const {
+  reconcileBillingEntitlement,
+  resolveCanonicalSite,
+  selectActiveSiteSubscription,
+  syncLegacySitePointers
+} = require('../services/siteQuota');
 
 const ACCOUNT_SELECT = 'id, email, license_key, stripe_customer_id, stripe_subscription_id, plan, billing_cycle';
 const SITE_SELECT = 'id, site_hash, license_key, site_url, site_name, status';
@@ -9,6 +16,14 @@ const ZERO_DECIMAL_CURRENCIES = new Set([
   'bif', 'clp', 'djf', 'gnf', 'jpy', 'kmf', 'krw', 'mga', 'pyg',
   'rwf', 'ugx', 'vnd', 'vuv', 'xaf', 'xof', 'xpf'
 ]);
+const PURCHASE_TYPES = new Set([
+  'new_purchase',
+  'upgrade',
+  'renewal',
+  'credit_top_up',
+  'unknown'
+]);
+const STRIPE_METADATA_MAX_LENGTH = 500;
 
 function normalizeStripeId(value) {
   if (typeof value === 'string' && value) return value;
@@ -24,9 +39,28 @@ function resolvePlanFromPriceId(priceIds = {}, priceId) {
   return match ? match[0] : null;
 }
 
+function normalizePlanValue(plan) {
+  if (plan === undefined || plan === null) return null;
+  const normalized = String(plan).trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'growth') return 'pro';
+  return normalized;
+}
+
+function normalizeCurrency(currency) {
+  if (typeof currency !== 'string' || !currency.trim()) return null;
+  return currency.trim().toLowerCase();
+}
+
+function normalizePurchaseType(purchaseType) {
+  if (purchaseType === undefined || purchaseType === null) return null;
+  const normalized = String(purchaseType).trim().toLowerCase();
+  return PURCHASE_TYPES.has(normalized) ? normalized : null;
+}
+
 function resolveAmount(amountMinor, currency) {
   if (typeof amountMinor !== 'number') return null;
-  const normalizedCurrency = typeof currency === 'string' ? currency.toLowerCase() : '';
+  const normalizedCurrency = normalizeCurrency(currency) || '';
   if (ZERO_DECIMAL_CURRENCIES.has(normalizedCurrency)) {
     return amountMinor;
   }
@@ -59,6 +93,66 @@ function extractMetadataBoolean(metadata = {}, keys = []) {
   return null;
 }
 
+function sanitizeStripeMetadataValue(value, { maxLength = STRIPE_METADATA_MAX_LENGTH, lowercase = false } = {}) {
+  if (value === undefined || value === null) return undefined;
+
+  const normalized = String(value)
+    .replace(/[\u0000-\u001F\u007F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return undefined;
+
+  const sanitized = lowercase ? normalized.toLowerCase() : normalized;
+  return sanitized.slice(0, maxLength);
+}
+
+function mergeStripeMetadata(...metadataSources) {
+  return metadataSources.reduce((merged, metadata) => {
+    if (!metadata || typeof metadata !== 'object') {
+      return merged;
+    }
+
+    for (const [key, value] of Object.entries(metadata)) {
+      if (merged[key] !== undefined) continue;
+
+      const sanitizedValue = sanitizeStripeMetadataValue(value);
+      if (sanitizedValue !== undefined) {
+        merged[key] = sanitizedValue;
+      }
+    }
+
+    return merged;
+  }, {});
+}
+
+function normalizeCheckoutAttribution(body = {}) {
+  const targetPlan = sanitizeStripeMetadataValue(body.target_plan);
+
+  return {
+    accountId: sanitizeStripeMetadataValue(body.account_id),
+    userId: sanitizeStripeMetadataValue(body.user_id),
+    licenseKey: sanitizeStripeMetadataValue(body.license_key),
+    siteId: sanitizeStripeMetadataValue(body.site_id),
+    siteHash: sanitizeStripeMetadataValue(body.site_hash),
+    email: sanitizeStripeMetadataValue(body.email, { lowercase: true }),
+    triggerFeature: sanitizeStripeMetadataValue(body.trigger_feature),
+    triggerLocation: sanitizeStripeMetadataValue(body.trigger_location),
+    sourcePage: sanitizeStripeMetadataValue(body.source_page),
+    targetPlan: normalizePlanValue(targetPlan) || targetPlan,
+    source: sanitizeStripeMetadataValue(body.source)
+  };
+}
+
+function resolveAttributionProperties(metadata = {}) {
+  return {
+    trigger_feature: extractMetadataValue(metadata, ['trigger_feature', 'triggerFeature']),
+    trigger_location: extractMetadataValue(metadata, ['trigger_location', 'triggerLocation']),
+    source_page: extractMetadataValue(metadata, ['source_page', 'sourcePage']),
+    target_plan: extractMetadataValue(metadata, ['target_plan', 'targetPlan'])
+  };
+}
+
 function resolveStripeSecretMode(secretKey = process.env.STRIPE_SECRET_KEY || '') {
   if (secretKey.startsWith('sk_live_') || secretKey.startsWith('rk_live_')) return 'live';
   if (secretKey.startsWith('sk_test_') || secretKey.startsWith('rk_test_')) return 'test';
@@ -77,23 +171,73 @@ function resolveBillingPeriodFromInterval(interval) {
   return null;
 }
 
-function inferPurchaseType({ eventType, paymentMode, stripeSubscriptionId, billingReason }) {
-  if (eventType === 'checkout.session.completed' && paymentMode === 'payment') {
-    return 'one_time';
+function inferPurchaseType({
+  eventType,
+  paymentMode,
+  stripeSubscriptionId,
+  billingReason,
+  plan,
+  currentPlan,
+  metadataPurchaseType
+}) {
+  const explicitPurchaseType = normalizePurchaseType(metadataPurchaseType);
+  if (explicitPurchaseType && explicitPurchaseType !== 'unknown') {
+    return explicitPurchaseType;
+  }
+
+  const normalizedPlan = normalizePlanValue(plan);
+  const normalizedCurrentPlan = normalizePlanValue(currentPlan);
+  const hasExistingPaidPlan = Boolean(
+    normalizedCurrentPlan
+    && !['free', 'credits'].includes(normalizedCurrentPlan)
+  );
+  const planChanged = Boolean(
+    normalizedPlan
+    && normalizedCurrentPlan
+    && normalizedPlan !== normalizedCurrentPlan
+  );
+
+  if (normalizedPlan === 'credits') {
+    return 'credit_top_up';
+  }
+
+  if (eventType === 'checkout.session.completed') {
+    if (paymentMode === 'payment') {
+      if (hasExistingPaidPlan && planChanged) return 'upgrade';
+      return 'new_purchase';
+    }
+
+    if (paymentMode === 'subscription') {
+      if (hasExistingPaidPlan && planChanged) return 'upgrade';
+      return 'new_purchase';
+    }
   }
 
   if (eventType === 'invoice.payment_succeeded') {
     if (billingReason === 'subscription_cycle') return 'renewal';
-    if (billingReason === 'subscription_create') return 'subscription';
-    if (!stripeSubscriptionId && billingReason === 'manual') return 'one_time';
-    if (stripeSubscriptionId) return 'subscription';
+    if (billingReason === 'subscription_update' && hasExistingPaidPlan && planChanged) return 'upgrade';
+    if (billingReason === 'subscription_create') {
+      if (hasExistingPaidPlan && planChanged) return 'upgrade';
+      return 'new_purchase';
+    }
+    if (!stripeSubscriptionId && billingReason === 'manual') {
+      return 'new_purchase';
+    }
+    if (stripeSubscriptionId) {
+      if (hasExistingPaidPlan && planChanged) return 'upgrade';
+      return 'new_purchase';
+    }
   }
 
-  return 'unknown';
+  return explicitPurchaseType || 'unknown';
 }
 
-function inferBillingPeriod({ paymentMode, recurringInterval, billingCycle, purchaseType }) {
-  if (paymentMode === 'payment' || purchaseType === 'one_time') {
+function inferBillingPeriod({ paymentMode, recurringInterval, billingCycle, purchaseType, plan }) {
+  if (
+    paymentMode === 'payment'
+    || purchaseType === 'credit_top_up'
+    || normalizePlanValue(plan) === 'credits'
+  ) {
     return 'one_time';
   }
 
@@ -111,11 +255,28 @@ function inferTrialConversion({ metadata, purchaseType }) {
     return explicit;
   }
 
-  if (purchaseType === 'one_time' || purchaseType === 'renewal') {
+  if (purchaseType === 'credit_top_up' || purchaseType === 'renewal') {
     return false;
   }
 
   return null;
+}
+
+function resolveCommercialPlan({ metadata, context, accountPlan }) {
+  return normalizePlanValue(
+    extractMetadataValue(metadata, ['plan', 'plan_type', 'planType'])
+    || context.plan
+    || accountPlan
+    || null
+  );
+}
+
+function resolveCurrentPlan({ metadata, accountPlan }) {
+  return normalizePlanValue(
+    extractMetadataValue(metadata, ['current_plan', 'currentPlan', 'current_plan_type', 'currentPlanType'])
+    || accountPlan
+    || null
+  );
 }
 
 function getPriceContextFromLineItem(lineItem, priceIds) {
@@ -153,8 +314,11 @@ function mergeCommercialContext(...contexts) {
 
 function resolveDistinctIdFromStripeEvent({
   account,
+  accountId,
+  userId,
   licenseKey,
   site,
+  siteId,
   siteHash,
   stripeCustomerId,
   stripeSubscriptionId,
@@ -164,11 +328,17 @@ function resolveDistinctIdFromStripeEvent({
   if (account?.id) {
     return { distinctId: account.id, distinctIdSource: 'account_id' };
   }
+  if (accountId) {
+    return { distinctId: accountId, distinctIdSource: 'account_id' };
+  }
+  if (userId) {
+    return { distinctId: userId, distinctIdSource: 'user_id' };
+  }
   if (licenseKey) {
     return { distinctId: licenseKey, distinctIdSource: 'license_key' };
   }
-  if (site?.id) {
-    return { distinctId: site.id, distinctIdSource: 'site_id' };
+  if (site?.id || siteId) {
+    return { distinctId: site?.id || siteId, distinctIdSource: 'site_id' };
   }
   if (siteHash) {
     return { distinctId: siteHash, distinctIdSource: 'site_hash' };
@@ -189,13 +359,13 @@ function resolveDistinctIdFromStripeEvent({
 }
 
 function resolveIdentityPath({ resolutionSource, distinctIdSource }) {
-  if (resolutionSource === 'account_id') return 'account';
+  if (resolutionSource === 'account_id' || resolutionSource === 'user_id') return 'account';
   if (resolutionSource === 'license_key') return 'license';
   if (resolutionSource === 'site_id' || resolutionSource === 'site_hash') return 'site';
   if (resolutionSource === 'stripe_customer_id' || resolutionSource === 'stripe_subscription_id') return 'stripe';
   if (resolutionSource === 'email') return 'email';
 
-  if (distinctIdSource === 'account_id') return 'account';
+  if (distinctIdSource === 'account_id' || distinctIdSource === 'user_id') return 'account';
   if (distinctIdSource === 'license_key') return 'license';
   if (distinctIdSource === 'site_id' || distinctIdSource === 'site_hash') return 'site';
   if (distinctIdSource === 'stripe_customer_id' || distinctIdSource === 'stripe_subscription_id') return 'stripe';
@@ -346,6 +516,56 @@ async function findSiteById(supabase, siteId) {
   return data || null;
 }
 
+async function findSiteByStripeSubscriptionId(supabase, stripeSubscriptionId) {
+  if (!supabase || !stripeSubscriptionId) return null;
+
+  const { data, error } = await supabase
+    .from('site_subscriptions')
+    .select('site_id')
+    .eq('stripe_subscription_id', stripeSubscriptionId)
+    .maybeSingle();
+
+  if (error && error.code !== '42P01') {
+    logger.warn('[billing] site lookup by stripe subscription failed', {
+      stripeSubscriptionId,
+      error: error.message
+    });
+    return null;
+  }
+
+  if (data?.site_id) {
+    return findSiteById(supabase, data.site_id);
+  }
+
+  return null;
+}
+
+async function findSiteByStripeCustomerId(supabase, stripeCustomerId) {
+  if (!supabase || !stripeCustomerId) return null;
+
+  const { data, error } = await supabase
+    .from('site_subscriptions')
+    .select('site_id')
+    .eq('stripe_customer_id', stripeCustomerId)
+    .order('updated_at', { ascending: false })
+    .limit(1);
+
+  if (error && error.code !== '42P01') {
+    logger.warn('[billing] site lookup by stripe customer failed', {
+      stripeCustomerId,
+      error: error.message
+    });
+    return null;
+  }
+
+  const siteId = Array.isArray(data) && data.length ? data[0].site_id : null;
+  if (siteId) {
+    return findSiteById(supabase, siteId);
+  }
+
+  return null;
+}
+
 async function persistStripeMappings(supabase, account, { stripeCustomerId, stripeSubscriptionId }) {
   if (!supabase || !account?.id) {
     return account || null;
@@ -424,7 +644,8 @@ async function resolveIdentityContext({
   stripeCustomerId,
   stripeSubscriptionId
 }) {
-  const accountId = extractMetadataValue(metadata, ['account_id', 'accountId', 'user_id', 'userId']);
+  const accountId = extractMetadataValue(metadata, ['account_id', 'accountId']);
+  const userId = extractMetadataValue(metadata, ['user_id', 'userId']);
   const licenseKey = extractMetadataValue(metadata, ['license_key', 'licenseKey']);
   const siteId = extractMetadataValue(metadata, ['site_id', 'siteId']);
   const siteHash = extractMetadataValue(metadata, ['site_hash', 'siteHash']);
@@ -439,6 +660,15 @@ async function resolveIdentityContext({
       resolutionSource = 'account_id';
     } else {
       logger.warn('[billing] account not found for metadata account id', { accountId });
+    }
+  }
+
+  if (!account && userId) {
+    account = await findAccountById(supabase, userId);
+    if (account) {
+      resolutionSource = 'user_id';
+    } else {
+      logger.warn('[billing] account not found for metadata user id', { userId });
     }
   }
 
@@ -473,6 +703,27 @@ async function resolveIdentityContext({
     account = await findAccountByLicenseKey(supabase, site.license_key);
     if (account) {
       resolutionSource = 'site_hash';
+    }
+  }
+
+  if (!site && stripeSubscriptionId) {
+    site = await findSiteByStripeSubscriptionId(supabase, stripeSubscriptionId);
+    if (site) {
+      resolutionSource = resolutionSource === 'unresolved' ? 'stripe_subscription_id' : resolutionSource;
+    }
+  }
+
+  if (!site && stripeCustomerId) {
+    site = await findSiteByStripeCustomerId(supabase, stripeCustomerId);
+    if (site) {
+      resolutionSource = resolutionSource === 'unresolved' ? 'stripe_customer_id' : resolutionSource;
+    }
+  }
+
+  if (!account && site?.license_key) {
+    account = await findAccountByLicenseKey(supabase, site.license_key);
+    if (account) {
+      resolutionSource = resolutionSource === 'unresolved' ? 'site_hash' : resolutionSource;
     }
   }
 
@@ -515,6 +766,8 @@ async function resolveIdentityContext({
   return {
     account,
     site,
+    accountId: account?.id || accountId || null,
+    userId: userId || account?.id || accountId || null,
     email: account?.email || email || null,
     licenseKey: licenseKey || account?.license_key || site?.license_key || null,
     siteId: site?.id || siteId || null,
@@ -566,8 +819,8 @@ async function loadCheckoutLineItemContext(stripeClient, session, priceIds) {
   }
 }
 
-async function loadInvoiceLineContext(stripeClient, invoice, priceIds) {
-  const metadata = invoice?.metadata || {};
+async function loadInvoiceLineContext(stripeClient, invoice, priceIds, metadataOverride) {
+  const metadata = metadataOverride || invoice?.metadata || {};
   const metadataContext = {
     priceId: extractMetadataValue(metadata, ['price_id', 'priceId']),
     productId: extractMetadataValue(metadata, ['product_id', 'productId']),
@@ -611,6 +864,88 @@ async function loadInvoiceLineContext(stripeClient, invoice, priceIds) {
   }
 }
 
+async function loadSubscriptionMetadata(stripeClient, stripeSubscriptionId, livemode) {
+  if (!stripeClient?.subscriptions?.retrieve || !stripeSubscriptionId) {
+    return {};
+  }
+
+  if (!isStripeModeCompatible(Boolean(livemode))) {
+    logger.warn('[billing] subscription metadata lookup skipped: stripe mode mismatch', {
+      stripeSubscriptionId,
+      eventLivemode: Boolean(livemode),
+      stripeKeyMode: resolveStripeSecretMode()
+    });
+    return {};
+  }
+
+  try {
+    const subscription = await stripeClient.subscriptions.retrieve(stripeSubscriptionId);
+    return mergeStripeMetadata(subscription?.metadata);
+  } catch (error) {
+    logger.warn('[billing] subscription metadata lookup failed', {
+      stripeSubscriptionId,
+      error: error.message
+    });
+    return {};
+  }
+}
+
+async function loadCustomerMetadata(stripeClient, stripeCustomerId, livemode) {
+  if (!stripeClient?.customers?.retrieve || !stripeCustomerId) {
+    return {};
+  }
+
+  if (!isStripeModeCompatible(Boolean(livemode))) {
+    logger.warn('[billing] customer metadata lookup skipped: stripe mode mismatch', {
+      stripeCustomerId,
+      eventLivemode: Boolean(livemode),
+      stripeKeyMode: resolveStripeSecretMode()
+    });
+    return {};
+  }
+
+  try {
+    const customer = await stripeClient.customers.retrieve(stripeCustomerId);
+    if (!customer || customer.deleted) {
+      return {};
+    }
+
+    return mergeStripeMetadata(customer.metadata);
+  } catch (error) {
+    logger.warn('[billing] customer metadata lookup failed', {
+      stripeCustomerId,
+      error: error.message
+    });
+    return {};
+  }
+}
+
+async function resolveInvoiceMetadata(stripeClient, invoice) {
+  const stripeSubscriptionId = normalizeStripeId(invoice?.subscription);
+  const stripeCustomerId = normalizeStripeId(invoice?.customer);
+  const invoiceMetadata = mergeStripeMetadata(
+    invoice?.metadata,
+    invoice?.parent?.subscription_details?.metadata,
+    invoice?.subscription_details?.metadata
+  );
+  const subscriptionMetadata = await loadSubscriptionMetadata(
+    stripeClient,
+    stripeSubscriptionId,
+    invoice?.livemode
+  );
+  const customerMetadata = await loadCustomerMetadata(
+    stripeClient,
+    stripeCustomerId,
+    invoice?.livemode
+  );
+
+  return mergeStripeMetadata(
+    invoiceMetadata,
+    subscriptionMetadata,
+    customerMetadata
+  );
+}
+
 async function buildCheckoutSucceededPayload({ supabase, stripeClient, session, priceIds }) {
   const metadata = session.metadata || {};
   const context = await loadCheckoutLineItemContext(stripeClient, session, priceIds);
@@ -624,24 +959,40 @@ async function buildCheckoutSucceededPayload({ supabase, stripeClient, session, 
     stripeSubscriptionId
   });
   const licenseKey = identity.licenseKey;
+  const plan = resolveCommercialPlan({
+    metadata,
+    context,
+    accountPlan: identity.account?.plan || null
+  });
+  const currentPlan = resolveCurrentPlan({
+    metadata,
+    accountPlan: identity.account?.plan || null
+  });
   const purchaseType = inferPurchaseType({
     eventType: 'checkout.session.completed',
     paymentMode: session.mode,
     stripeSubscriptionId,
-    billingReason: null
+    billingReason: null,
+    plan,
+    currentPlan,
+    metadataPurchaseType: extractMetadataValue(metadata, ['purchase_type', 'purchaseType'])
   });
   const billingPeriod = inferBillingPeriod({
     paymentMode: session.mode,
     recurringInterval: context.recurringInterval,
     billingCycle: identity.account?.billing_cycle || null,
-    purchaseType
+    purchaseType,
+    plan
   });
-  const amount = resolveAmount(session.amount_total, session.currency);
-  const plan = context.plan || identity.account?.plan || null;
+  const currency = normalizeCurrency(session.currency);
+  const amount = resolveAmount(session.amount_total, currency);
   const { distinctId, distinctIdSource } = resolveDistinctIdFromStripeEvent({
     account: identity.account,
+    accountId: identity.accountId,
+    userId: identity.userId,
     licenseKey,
     site: identity.site,
+    siteId: identity.siteId,
     siteHash: identity.siteHash,
     stripeCustomerId,
     stripeSubscriptionId,
@@ -653,6 +1004,7 @@ async function buildCheckoutSucceededPayload({ supabase, stripeClient, session, 
     resolutionSource: identity.resolutionSource,
     distinctIdSource
   });
+  const attribution = resolveAttributionProperties(metadata);
 
   logger.info('[billing] webhook enrichment resolved', {
     stripeEventType: 'checkout.session.completed',
@@ -667,13 +1019,14 @@ async function buildCheckoutSucceededPayload({ supabase, stripeClient, session, 
     distinctId,
     distinctIdSource,
     account: identity.account,
+    site: identity.site,
     eventProperties: {
       source: 'stripe_webhook',
       stripe_event_type: 'checkout.session.completed',
       amount,
       amount_minor: session.amount_total ?? null,
       revenue: amount,
-      currency: session.currency || null,
+      currency,
       plan,
       price_id: context.priceId,
       product_id: context.productId,
@@ -685,10 +1038,14 @@ async function buildCheckoutSucceededPayload({ supabase, stripeClient, session, 
       site_id: identity.siteId,
       site_hash: identity.siteHash,
       email: identity.email,
-      account_id: identity.account?.id || null,
-      user_id: identity.account?.id || null,
+      account_id: identity.account?.id || identity.accountId || null,
+      user_id: identity.userId || identity.account?.id || null,
       license_key: licenseKey,
       license_key_present: Boolean(licenseKey),
+      trigger_feature: attribution.trigger_feature || null,
+      trigger_location: attribution.trigger_location || null,
+      source_page: attribution.source_page || null,
+      target_plan: attribution.target_plan || null,
       identity_path: identityPath,
       livemode: Boolean(session.livemode),
       payment_mode: session.mode || null,
@@ -701,7 +1058,7 @@ async function buildCheckoutSucceededPayload({ supabase, stripeClient, session, 
 }
 
 async function buildInvoiceSucceededPayload({ supabase, stripeClient, invoice, priceIds }) {
-  const metadata = invoice.metadata || {};
+  const metadata = await resolveInvoiceMetadata(stripeClient, invoice);
   const stripeCustomerId = normalizeStripeId(invoice.customer);
   const stripeSubscriptionId = normalizeStripeId(invoice.subscription);
   const identity = await resolveIdentityContext({
@@ -711,26 +1068,42 @@ async function buildInvoiceSucceededPayload({ supabase, stripeClient, invoice, p
     stripeCustomerId,
     stripeSubscriptionId
   });
-  const context = await loadInvoiceLineContext(stripeClient, invoice, priceIds);
+  const context = await loadInvoiceLineContext(stripeClient, invoice, priceIds, metadata);
   const licenseKey = identity.licenseKey;
-  const amount = resolveAmount(invoice.amount_paid, invoice.currency);
-  const plan = context.plan || identity.account?.plan || null;
+  const plan = resolveCommercialPlan({
+    metadata,
+    context,
+    accountPlan: identity.account?.plan || null
+  });
+  const currentPlan = resolveCurrentPlan({
+    metadata,
+    accountPlan: identity.account?.plan || null
+  });
+  const currency = normalizeCurrency(invoice.currency);
+  const amount = resolveAmount(invoice.amount_paid, currency);
   const purchaseType = inferPurchaseType({
     eventType: 'invoice.payment_succeeded',
     paymentMode: null,
     stripeSubscriptionId,
-    billingReason: invoice.billing_reason || null
+    billingReason: invoice.billing_reason || null,
+    plan,
+    currentPlan,
+    metadataPurchaseType: extractMetadataValue(metadata, ['purchase_type', 'purchaseType'])
   });
   const billingPeriod = inferBillingPeriod({
     paymentMode: null,
     recurringInterval: context.recurringInterval,
     billingCycle: identity.account?.billing_cycle || null,
-    purchaseType
+    purchaseType,
+    plan
   });
   const { distinctId, distinctIdSource } = resolveDistinctIdFromStripeEvent({
     account: identity.account,
+    accountId: identity.accountId,
+    userId: identity.userId,
     licenseKey,
     site: identity.site,
+    siteId: identity.siteId,
     siteHash: identity.siteHash,
     stripeCustomerId,
     stripeSubscriptionId,
@@ -742,6 +1115,7 @@ async function buildInvoiceSucceededPayload({ supabase, stripeClient, invoice, p
     resolutionSource: identity.resolutionSource,
     distinctIdSource
   });
+  const attribution = resolveAttributionProperties(metadata);
 
   logger.info('[billing] webhook enrichment resolved', {
     stripeEventType: 'invoice.payment_succeeded',
@@ -756,13 +1130,14 @@ async function buildInvoiceSucceededPayload({ supabase, stripeClient, invoice, p
     distinctId,
     distinctIdSource,
     account: identity.account,
+    site: identity.site,
     eventProperties: {
       source: 'stripe_webhook',
       stripe_event_type: 'invoice.payment_succeeded',
       amount,
       amount_minor: invoice.amount_paid ?? null,
       revenue: amount,
-      currency: invoice.currency || null,
+      currency,
       plan,
       price_id: context.priceId,
       product_id: context.productId,
@@ -774,10 +1149,14 @@ async function buildInvoiceSucceededPayload({ supabase, stripeClient, invoice, p
       site_id: identity.siteId,
       site_hash: identity.siteHash,
       email: identity.email,
-      account_id: identity.account?.id || null,
-      user_id: identity.account?.id || null,
+      account_id: identity.account?.id || identity.accountId || null,
+      user_id: identity.userId || identity.account?.id || null,
       license_key: licenseKey,
       license_key_present: Boolean(licenseKey),
+      trigger_feature: attribution.trigger_feature || null,
+      trigger_location: attribution.trigger_location || null,
+      source_page: attribution.source_page || null,
+      target_plan: attribution.target_plan || null,
       identity_path: identityPath,
       livemode: Boolean(invoice.livemode),
       payment_mode: null,
@@ -822,6 +1201,77 @@ async function emitIdentity({ account, stripeCustomerId }) {
       error: result.error?.message || null
     });
   }
+}
+
+function normalizeBillingInterval(billingPeriod) {
+  if (billingPeriod === 'monthly') return 'month';
+  if (billingPeriod === 'yearly') return 'year';
+  if (billingPeriod === 'one_time') return 'one_time';
+  return null;
+}
+
+async function reconcileSiteEntitlement({
+  supabase,
+  stripeEventId,
+  account,
+  site,
+  eventProperties,
+  subscriptionStatus = 'active',
+  currentPeriodStart = null,
+  currentPeriodEnd = null
+}) {
+  if (!site?.id || !eventProperties?.plan) {
+    return;
+  }
+
+  const reconciliation = await reconcileBillingEntitlement(supabase, {
+    siteId: site.id,
+    stripeEventId,
+    planId: eventProperties.plan,
+    purchaseType: eventProperties.purchase_type,
+    billingInterval: normalizeBillingInterval(eventProperties.billing_period),
+    stripeCustomerId: eventProperties.stripe_customer_id,
+    stripeSubscriptionId: eventProperties.stripe_subscription_id,
+    subscriptionStatus,
+    currentPeriodStart,
+    currentPeriodEnd,
+    metadata: {
+      stripe_event_type: eventProperties.stripe_event_type,
+      site_hash: eventProperties.site_hash || null,
+      license_key: eventProperties.license_key || null,
+      account_id: eventProperties.account_id || null
+    }
+  });
+
+  if (reconciliation?.error) {
+    logger.warn('[billing] site entitlement reconciliation failed', {
+      stripeEventId,
+      siteId: site.id,
+      plan: eventProperties.plan,
+      purchaseType: eventProperties.purchase_type,
+      error: reconciliation.error.message
+    });
+    return;
+  }
+
+  await syncLegacySitePointers(supabase, {
+    site,
+    account,
+    subscription: {
+      stripe_customer_id: eventProperties.stripe_customer_id,
+      stripe_subscription_id: eventProperties.stripe_subscription_id,
+      billing_interval: normalizeBillingInterval(eventProperties.billing_period),
+      status: subscriptionStatus
+    },
+    planId: eventProperties.plan
+  });
+
+  logger.info('[billing] site entitlement reconciled', {
+    stripeEventId,
+    siteId: site.id,
+    plan: eventProperties.plan,
+    purchaseType: eventProperties.purchase_type
+  });
 }
 
 async function emitPaymentSucceeded({
@@ -942,12 +1392,35 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               session,
               priceIds
             });
+            await reconcileSiteEntitlement({
+              supabase,
+              stripeEventId: event.id,
+              account: payload.account,
+              site: payload.site,
+              eventProperties: payload.eventProperties,
+              subscriptionStatus: 'active'
+            });
             await emitPaymentSucceeded({
               stripeEventId: event.id,
               distinctId: payload.distinctId,
               distinctIdSource: payload.distinctIdSource,
               account: payload.account,
               eventProperties: payload.eventProperties
+            });
+          } else if (session?.mode === 'subscription') {
+            const payload = await buildCheckoutSucceededPayload({
+              supabase,
+              stripeClient,
+              session,
+              priceIds
+            });
+            await reconcileSiteEntitlement({
+              supabase,
+              stripeEventId: event.id,
+              account: payload.account,
+              site: payload.site,
+              eventProperties: payload.eventProperties,
+              subscriptionStatus: 'active'
             });
           }
           break;
@@ -960,6 +1433,19 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               stripeClient,
               invoice,
               priceIds
+            });
+            const firstLinePeriod = Array.isArray(invoice.lines?.data) && invoice.lines.data[0]?.period
+              ? invoice.lines.data[0].period
+              : null;
+            await reconcileSiteEntitlement({
+              supabase,
+              stripeEventId: event.id,
+              account: payload.account,
+              site: payload.site,
+              eventProperties: payload.eventProperties,
+              subscriptionStatus: 'active',
+              currentPeriodStart: firstLinePeriod?.start ? new Date(firstLinePeriod.start * 1000).toISOString() : null,
+              currentPeriodEnd: firstLinePeriod?.end ? new Date(firstLinePeriod.end * 1000).toISOString() : null
             });
             await emitPaymentSucceeded({
               stripeEventId: event.id,
@@ -1143,6 +1629,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
     const siteKey = req.header('X-Site-Key');
     const account = req.license || req.user || null;
     const selectedPlan = plans.find((plan) => plan.priceId === priceId) || null;
+    const requestedAttribution = normalizeCheckoutAttribution(req.body);
 
     if (!priceId || !Object.values(priceIds).includes(priceId)) {
       return res.status(400).json({ error: 'Invalid or missing priceId', valid: priceIds });
@@ -1151,17 +1638,26 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
     let siteRecord = null;
     if (supabase && siteKey) {
       try {
-        const { data } = await supabase
-          .from('sites')
-          .select('id, site_hash, license_key')
-          .eq('site_hash', siteKey)
-          .maybeSingle();
-        siteRecord = data || null;
+        const resolved = await resolveCanonicalSite(supabase, buildSiteIdentity({
+          siteHash: siteKey,
+          installUuid: siteKey,
+          siteUrl: req.header('X-Site-URL') || null,
+          siteFingerprint: req.header('X-Site-Fingerprint') || null
+        }), {
+          createIfMissing: true,
+          legacyLicenseKey: account?.license_key || null,
+          account
+        });
+        siteRecord = resolved.site || null;
       } catch (error) {
         logger.warn('[billing] checkout site lookup failed', {
           siteKey,
           error: error.message
         });
+      }
+
+      if (!siteRecord) {
+        siteRecord = await findSiteByHash(supabase, siteKey);
       }
     }
 
@@ -1169,12 +1665,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
     // Look up via sites → licenses rather than relying on a site_hash column that doesn't exist on subscriptions
     if (priceId === priceIds.pro && supabase) {
       try {
-        const { data: siteLimitRecord } = await supabase
-          .from('sites')
-          .select('license_key')
-          .eq('site_hash', siteKey)
-          .eq('status', 'active')
-          .maybeSingle();
+        const siteLimitRecord = siteRecord ? { license_key: siteRecord.license_key } : null;
         if (siteLimitRecord?.license_key) {
           const { data: existingLicense } = await supabase
             .from('licenses')
@@ -1199,20 +1690,50 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       return res.status(501).json({ error: 'Stripe not configured' });
     }
     try {
+      const selectedPlanId = normalizePlanValue(selectedPlan?.id || resolvePlanFromPriceId(priceIds, priceId) || null);
+      const currentPlan = normalizePlanValue(account?.plan || null);
+      const mode = selectedPlan?.interval === 'one-time' ? 'payment' : 'subscription';
+      const purchaseType = inferPurchaseType({
+        eventType: 'checkout.session.completed',
+        paymentMode: mode,
+        stripeSubscriptionId: null,
+        billingReason: mode === 'subscription' ? 'subscription_create' : 'manual',
+        plan: selectedPlanId,
+        currentPlan,
+        metadataPurchaseType: null
+      });
       const checkoutMetadata = {
-        account_id: account?.id ? String(account.id) : undefined,
-        license_key: account?.license_key ? String(account.license_key) : siteRecord?.license_key ? String(siteRecord.license_key) : undefined,
-        site_id: siteRecord?.id ? String(siteRecord.id) : undefined,
-        site_hash: siteRecord?.site_hash ? String(siteRecord.site_hash) : siteKey ? String(siteKey) : undefined,
-        user_id: req.user?.id ? String(req.user.id) : account?.id ? String(account.id) : undefined,
-        email: account?.email ? String(account.email) : undefined,
-        plan: selectedPlan?.id || resolvePlanFromPriceId(priceIds, priceId) || undefined,
+        account_id: sanitizeStripeMetadataValue(account?.id) || requestedAttribution.accountId,
+        license_key: sanitizeStripeMetadataValue(account?.license_key)
+          || sanitizeStripeMetadataValue(siteRecord?.license_key)
+          || requestedAttribution.licenseKey,
+        site_id: sanitizeStripeMetadataValue(siteRecord?.id) || requestedAttribution.siteId,
+        site_hash: sanitizeStripeMetadataValue(siteRecord?.site_hash)
+          || sanitizeStripeMetadataValue(siteKey)
+          || requestedAttribution.siteHash,
+        user_id: sanitizeStripeMetadataValue(req.user?.id)
+          || requestedAttribution.userId
+          || sanitizeStripeMetadataValue(account?.id),
+        email: sanitizeStripeMetadataValue(account?.email, { lowercase: true }) || requestedAttribution.email,
+        plan: selectedPlanId || undefined,
+        current_plan: currentPlan || undefined,
+        billing_interval: selectedPlan?.interval === 'month'
+          ? 'month'
+          : selectedPlan?.interval === 'year'
+            ? 'year'
+            : selectedPlan?.interval === 'one-time'
+              ? 'one_time'
+              : undefined,
+        purchase_type: purchaseType !== 'unknown' ? purchaseType : undefined,
+        trigger_feature: requestedAttribution.triggerFeature,
+        trigger_location: requestedAttribution.triggerLocation,
+        source_page: requestedAttribution.sourcePage,
+        target_plan: selectedPlanId || requestedAttribution.targetPlan || undefined,
         source: 'app'
       };
       const metadata = Object.fromEntries(
         Object.entries(checkoutMetadata).filter(([, value]) => value !== undefined && value !== null && value !== '')
       );
-      const mode = selectedPlan?.interval === 'one-time' ? 'payment' : 'subscription';
       const checkoutPayload = {
         mode,
         line_items: [{ price: priceId, quantity: 1 }],
@@ -1271,45 +1792,54 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
     try {
       if (!supabase) return res.json({ success: true, data: freePlan });
 
-      // Resolve license via site hash, then look up stripe_subscription_id on the license
-      const { data: siteRecord } = await supabase
-        .from('sites')
-        .select('license_key')
-        .eq('site_hash', siteKey)
-        .eq('status', 'active')
-        .maybeSingle();
+      const resolved = await resolveCanonicalSite(supabase, buildSiteIdentity({
+        siteHash: siteKey,
+        installUuid: siteKey,
+        siteUrl: req.header('X-Site-URL') || null,
+        siteFingerprint: req.header('X-Site-Fingerprint') || null
+      }), {
+        createIfMissing: false,
+        legacyLicenseKey: req.license?.license_key || null,
+        account: req.user || req.license || null
+      });
 
-      if (!siteRecord?.license_key) return res.json({ success: true, data: freePlan });
+      const fallbackSite = !resolved.site && siteKey
+        ? await findSiteByHash(supabase, siteKey)
+        : null;
+      const effectiveSite = resolved.site || fallbackSite;
+
+      if (!effectiveSite) return res.json({ success: true, data: freePlan });
+
+      const siteSubscription = await selectActiveSiteSubscription(supabase, effectiveSite.id);
+      if (siteSubscription) {
+        return res.json({
+          success: true,
+          data: {
+            plan: siteSubscription.plan_id || 'free',
+            status: siteSubscription.status || 'active',
+            billingCycle: siteSubscription.billing_interval || 'month',
+            nextBillingDate: siteSubscription.current_period_end || null,
+            subscriptionId: siteSubscription.stripe_subscription_id || null,
+            cancelAtPeriodEnd: siteSubscription.cancel_at_period_end || false
+          }
+        });
+      }
 
       const { data: license } = await supabase
         .from('licenses')
-        .select('plan, stripe_subscription_id')
-        .eq('license_key', siteRecord.license_key)
-        .single();
-
-      if (!license?.stripe_subscription_id) {
-        return res.json({ success: true, data: { ...freePlan, plan: license?.plan || 'free' } });
-      }
-
-      const { data: subscription } = await supabase
-        .from('subscriptions')
-        .select('plan, status, current_period_end, cancel_at_period_end, stripe_subscription_id')
-        .eq('stripe_subscription_id', license.stripe_subscription_id)
+        .select('plan, status, billing_cycle, stripe_subscription_id')
+        .eq('license_key', effectiveSite.license_key)
         .maybeSingle();
-
-      if (!subscription) {
-        return res.json({ success: true, data: { ...freePlan, plan: license.plan || 'free' } });
-      }
 
       res.json({
         success: true,
         data: {
-          plan: subscription.plan || license.plan || 'free',
-          status: subscription.status || 'active',
-          billingCycle: 'month',
-          nextBillingDate: subscription.current_period_end || null,
-          subscriptionId: subscription.stripe_subscription_id || null,
-          cancelAtPeriodEnd: subscription.cancel_at_period_end || false
+          plan: license?.plan || 'free',
+          status: license?.status || 'active',
+          billingCycle: license?.billing_cycle || 'month',
+          nextBillingDate: null,
+          subscriptionId: license?.stripe_subscription_id || null,
+          cancelAtPeriodEnd: false
         }
       });
     } catch (error) {

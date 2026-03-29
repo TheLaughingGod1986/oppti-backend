@@ -4,8 +4,57 @@ const request = require('supertest');
 const { createBillingRouter } = require('../../routes/billing');
 
 function createSupabaseMock({ siteRecord = null } = {}) {
+  const normalizedSiteRecord = siteRecord
+    ? {
+        wp_install_uuid: siteRecord.wp_install_uuid || siteRecord.site_hash || null,
+        normalized_site_url: siteRecord.normalized_site_url || null,
+        canonical_domain: siteRecord.canonical_domain || null,
+        site_fingerprint: siteRecord.site_fingerprint || null,
+        fingerprint: siteRecord.fingerprint || null,
+        ...siteRecord
+      }
+    : null;
+
   return {
     from(table) {
+      if (table === 'site_memberships') {
+        return {
+          select() {
+            return {
+              eq() {
+                return {
+                  eq() {
+                    return {
+                      maybeSingle: jest.fn().mockResolvedValue({
+                        data: null,
+                        error: null
+                      })
+                    };
+                  }
+                };
+              }
+            };
+          },
+          insert(payload) {
+            return {
+              select() {
+                return {
+                  single: jest.fn().mockResolvedValue({
+                    data: {
+                      id: 'membership_123',
+                      site_id: payload.site_id,
+                      user_id: payload.user_id,
+                      role: payload.role
+                    },
+                    error: null
+                  })
+                };
+              }
+            };
+          }
+        };
+      }
+
       if (table !== 'sites') {
         throw new Error(`Unexpected table: ${table}`);
       }
@@ -14,14 +63,44 @@ function createSupabaseMock({ siteRecord = null } = {}) {
         select() {
           return {
             eq(column, value) {
-              expect(column).toBe('site_hash');
-              expect(value).toBe(siteRecord?.site_hash || null);
+              const matches = normalizedSiteRecord
+                && (
+                  normalizedSiteRecord[column] === value
+                  || (column === 'wp_install_uuid' && normalizedSiteRecord.site_hash === value)
+                );
+
+              const result = matches ? normalizedSiteRecord : null;
 
               return {
                 maybeSingle: jest.fn().mockResolvedValue({
-                  data: siteRecord,
+                  data: result,
                   error: null
-                })
+                }),
+                then: (resolve, reject) => Promise.resolve({
+                  data: result ? [result] : [],
+                  error: null
+                }).then(resolve, reject)
+              };
+            }
+          };
+        },
+        update(payload) {
+          return {
+            eq(column, value) {
+              if (normalizedSiteRecord && normalizedSiteRecord[column] === value) {
+                Object.assign(normalizedSiteRecord, payload);
+              }
+
+              return {
+                select() {
+                  return {
+                    single: jest.fn().mockResolvedValue({
+                      data: normalizedSiteRecord,
+                      error: null
+                    })
+                  };
+                },
+                then: (resolve, reject) => Promise.resolve({ data: null, error: null }).then(resolve, reject)
               };
             }
           };
@@ -79,6 +158,7 @@ describe('POST /billing/checkout', () => {
         id: 'account_123',
         email: 'buyer@example.com',
         license_key: 'lic_123',
+        plan: 'free',
         stripe_customer_id: 'cus_existing'
       }
     });
@@ -89,7 +169,18 @@ describe('POST /billing/checkout', () => {
       .send({
         priceId: 'price_agency',
         successUrl: 'https://app.example.com/success',
-        cancelUrl: 'https://app.example.com/cancel'
+        cancelUrl: 'https://app.example.com/cancel',
+        account_id: 'frontend_account_override',
+        user_id: 'user_987',
+        license_key: 'frontend_license_override',
+        site_id: 'frontend_site_override',
+        site_hash: 'frontend_hash_override',
+        email: 'frontend@example.com',
+        trigger_feature: 'bulk-generate',
+        trigger_location: 'upgrade-modal',
+        source_page: '/dashboard/media',
+        target_plan: 'agency',
+        source: 'wordpress_plugin'
       });
 
     expect(res.status).toBe(200);
@@ -104,9 +195,16 @@ describe('POST /billing/checkout', () => {
         license_key: 'lic_123',
         site_id: 'site_123',
         site_hash: 'site_hash_123',
-        user_id: 'account_123',
+        user_id: 'user_987',
         email: 'buyer@example.com',
         plan: 'agency',
+        current_plan: 'free',
+        billing_interval: 'month',
+        purchase_type: 'new_purchase',
+        trigger_feature: 'bulk-generate',
+        trigger_location: 'upgrade-modal',
+        source_page: '/dashboard/media',
+        target_plan: 'agency',
         source: 'app'
       }),
       subscription_data: {
@@ -115,9 +213,16 @@ describe('POST /billing/checkout', () => {
           license_key: 'lic_123',
           site_id: 'site_123',
           site_hash: 'site_hash_123',
-          user_id: 'account_123',
+          user_id: 'user_987',
           email: 'buyer@example.com',
           plan: 'agency',
+          current_plan: 'free',
+          billing_interval: 'month',
+          purchase_type: 'new_purchase',
+          trigger_feature: 'bulk-generate',
+          trigger_location: 'upgrade-modal',
+          source_page: '/dashboard/media',
+          target_plan: 'agency',
           source: 'app'
         })
       }
@@ -150,7 +255,8 @@ describe('POST /billing/checkout', () => {
       license: {
         id: 'account_credits',
         email: 'credits@example.com',
-        license_key: 'lic_credits'
+        license_key: 'lic_credits',
+        plan: 'pro'
       }
     });
 
@@ -174,6 +280,9 @@ describe('POST /billing/checkout', () => {
         user_id: 'account_credits',
         email: 'credits@example.com',
         plan: 'credits',
+        current_plan: 'pro',
+        billing_interval: 'one_time',
+        purchase_type: 'credit_top_up',
         source: 'app'
       }),
       payment_intent_data: {
@@ -185,6 +294,9 @@ describe('POST /billing/checkout', () => {
           user_id: 'account_credits',
           email: 'credits@example.com',
           plan: 'credits',
+          current_plan: 'pro',
+          billing_interval: 'one_time',
+          purchase_type: 'credit_top_up',
           source: 'app'
         })
       }
