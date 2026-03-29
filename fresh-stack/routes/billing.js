@@ -158,7 +158,6 @@ function resolveDistinctIdFromStripeEvent({
   siteHash,
   stripeCustomerId,
   stripeSubscriptionId,
-  email,
   checkoutSessionId,
   invoiceId
 }) {
@@ -179,9 +178,6 @@ function resolveDistinctIdFromStripeEvent({
   }
   if (stripeSubscriptionId) {
     return { distinctId: stripeSubscriptionId, distinctIdSource: 'stripe_subscription_id' };
-  }
-  if (email) {
-    return { distinctId: email, distinctIdSource: 'email' };
   }
   if (checkoutSessionId) {
     return { distinctId: checkoutSessionId, distinctIdSource: 'checkout_session_id' };
@@ -1209,6 +1205,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         site_id: siteRecord?.id ? String(siteRecord.id) : undefined,
         site_hash: siteRecord?.site_hash ? String(siteRecord.site_hash) : siteKey ? String(siteKey) : undefined,
         user_id: req.user?.id ? String(req.user.id) : account?.id ? String(account.id) : undefined,
+        email: account?.email ? String(account.email) : undefined,
         plan: selectedPlan?.id || resolvePlanFromPriceId(priceIds, priceId) || undefined,
         source: 'app'
       };

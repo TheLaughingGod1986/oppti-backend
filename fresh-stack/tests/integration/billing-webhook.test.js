@@ -674,7 +674,7 @@ describe('POST /billing/webhook', () => {
     expect(insertIds).toEqual(['evt_duplicate', 'evt_duplicate']);
   });
 
-  test('falls back to email distinct id only after internal and Stripe ids are unavailable', async () => {
+  test('falls back to checkout session distinct id after internal and Stripe ids are unavailable', async () => {
     verifyWebhookSignature.mockReturnValue({
       id: 'evt_checkout_email_fallback',
       type: 'checkout.session.completed',
@@ -704,13 +704,13 @@ describe('POST /billing/webhook', () => {
     expect(res.status).toBe(200);
     expect(captureServerEvent).toHaveBeenCalledWith({
       event: 'payment_succeeded',
-      distinctId: 'fallback@example.com',
+      distinctId: 'cs_email_fallback',
       properties: expect.objectContaining({
         stripe_event_id: 'evt_checkout_email_fallback',
         stripe_customer_id: null,
         stripe_subscription_id: null,
         email: 'fallback@example.com',
-        identity_path: 'email',
+        identity_path: 'session',
         plan: 'credits'
       })
     });

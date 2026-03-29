@@ -105,6 +105,7 @@ describe('POST /billing/checkout', () => {
         site_id: 'site_123',
         site_hash: 'site_hash_123',
         user_id: 'account_123',
+        email: 'buyer@example.com',
         plan: 'agency',
         source: 'app'
       }),
@@ -115,6 +116,7 @@ describe('POST /billing/checkout', () => {
           site_id: 'site_123',
           site_hash: 'site_hash_123',
           user_id: 'account_123',
+          email: 'buyer@example.com',
           plan: 'agency',
           source: 'app'
         })
@@ -170,6 +172,7 @@ describe('POST /billing/checkout', () => {
         site_id: 'site_credits',
         site_hash: 'site_hash_credits',
         user_id: 'account_credits',
+        email: 'credits@example.com',
         plan: 'credits',
         source: 'app'
       }),
@@ -180,6 +183,7 @@ describe('POST /billing/checkout', () => {
           site_id: 'site_credits',
           site_hash: 'site_hash_credits',
           user_id: 'account_credits',
+          email: 'credits@example.com',
           plan: 'credits',
           source: 'app'
         })
