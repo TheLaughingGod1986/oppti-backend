@@ -117,8 +117,8 @@ describe('findOrCreateTrialSite', () => {
     expect(mock.rows).toHaveLength(1);
     expect(mock.rows[0].site_hash).toBe('abc123');
     expect(mock.rows[0].site_url).toBe('https://example.com');
-    // Trial sites have no license_key.
-    expect(mock.rows[0].license_key).toBeUndefined();
+    // Trial sites have no linked account/license yet.
+    expect(mock.rows[0].license_key).toBeNull();
   });
 
   test('does NOT duplicate sites for the same site_hash', async () => {
@@ -206,7 +206,7 @@ describe('Registration links existing trial site', () => {
     // Simulate trial: site row exists with no license.
     await findOrCreateTrialSite(mock, { siteHash: 'reg-hash', siteUrl: 'https://trial.com' });
     expect(mock.rows).toHaveLength(1);
-    expect(mock.rows[0].license_key).toBeUndefined();
+    expect(mock.rows[0].license_key).toBeNull();
 
     // Simulate registration upsert (mirrors auth.js upsert call).
     const supabase = mock;
@@ -235,7 +235,7 @@ describe('License activation links existing trial site', () => {
     // Simulate trial site.
     await findOrCreateTrialSite(mock, { siteHash: 'activate-hash' });
     expect(mock.rows).toHaveLength(1);
-    expect(mock.rows[0].license_key).toBeUndefined();
+    expect(mock.rows[0].license_key).toBeNull();
 
     // Simulate activateLicense upsert (mirrors license.js line 130-134).
     await mock

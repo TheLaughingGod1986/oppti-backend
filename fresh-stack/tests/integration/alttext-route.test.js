@@ -17,6 +17,13 @@ jest.mock('../../services/quota', () => ({
     credits_remaining: 1000,
     total_limit: 1000
   }),
+  reserveGenerationQuota: jest.fn().mockResolvedValue({
+    error: null,
+    reservation: {
+      generation_request_id: 'generation_request_123'
+    }
+  }),
+  finalizeGenerationQuotaReservation: jest.fn().mockResolvedValue({ error: null }),
   getQuotaStatus: jest.fn().mockResolvedValue({
     plan_type: 'pro',
     credits_used: 0,

@@ -9,8 +9,18 @@ function createUsageRouter({ supabase }) {
   router.get('/', async (req, res) => {
     const licenseKey = req.header('X-License-Key') || req.license?.license_key;
     const siteKey = req.header('X-Site-Key') || req.header('X-Site-Hash');
+    const siteUrl = req.header('X-Site-URL') || null;
+    const siteFingerprint = req.header('X-Site-Fingerprint') || null;
 
-    const status = await getQuotaStatus(supabase, { licenseKey, siteHash: siteKey });
+    const status = await getQuotaStatus(supabase, {
+      account: req.user || req.license || null,
+      licenseKey,
+      siteHash: siteKey,
+      siteUrl,
+      siteFingerprint,
+      installUuid: siteKey,
+      requestId: req.id || null
+    });
     if (status.error) {
       return res.status(status.status || 401).json(status);
     }

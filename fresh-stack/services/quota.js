@@ -1,12 +1,18 @@
 const { getLimits } = require('./license');
 const logger = require('../lib/logger');
+const {
+  buildSiteIdentity,
+  finalizeSiteGeneration,
+  getSiteQuotaStatus,
+  reserveSiteCredits
+} = require('./siteQuota');
 
 /**
  * Calculate reset date and quota status for a license.
  * IMPORTANT: If siteHash is provided, looks up the site's actual license to ensure
  * all WordPress users on the same site share the same quota.
  */
-async function getQuotaStatus(supabase, { licenseKey, siteHash }) {
+async function getLegacyQuotaStatus(supabase, { licenseKey, siteHash }) {
   const now = new Date();
 
   // If siteHash provided, look up the site's actual license for credit sharing
@@ -152,6 +158,44 @@ async function getQuotaStatus(supabase, { licenseKey, siteHash }) {
   };
 }
 
+async function getQuotaStatus(supabase, {
+  licenseKey,
+  siteHash,
+  siteUrl,
+  siteFingerprint,
+  installUuid,
+  account,
+  requestId
+} = {}) {
+  const hasSiteSignals = Boolean(siteHash || siteUrl || siteFingerprint || installUuid);
+  if (!hasSiteSignals) {
+    return getLegacyQuotaStatus(supabase, { licenseKey, siteHash });
+  }
+
+  const siteStatus = await getSiteQuotaStatus(supabase, {
+    account,
+    licenseKey,
+    siteIdentity: buildSiteIdentity({
+      siteHash,
+      siteUrl,
+      siteFingerprint,
+      installUuid
+    }),
+    createIfMissing: false,
+    requestId
+  });
+
+  if (!siteStatus.error) {
+    return siteStatus;
+  }
+
+  if (siteStatus.error !== 'SITE_QUOTA_V2_UNAVAILABLE' && siteStatus.error !== 'SITE_NOT_FOUND') {
+    return siteStatus;
+  }
+
+  return getLegacyQuotaStatus(supabase, { licenseKey, siteHash });
+}
+
 /**
  * Check if enough credits remain; does not mutate.
  */
@@ -204,6 +248,129 @@ async function enforceQuota(supabase, { licenseKey, siteHash, creditsNeeded = 1 
   return result;
 }
 
+async function reserveGenerationQuota(supabase, {
+  account = null,
+  licenseKey = null,
+  siteHash = null,
+  siteUrl = null,
+  siteFingerprint = null,
+  installUuid = null,
+  creditsNeeded = 1,
+  quotaMode = 'site',
+  idempotencyKey = null,
+  requestFingerprint = null,
+  requestMetadata = {},
+  requestId = null
+} = {}) {
+  const skipList = (process.env.SKIP_QUOTA_CHECK_SITE_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (siteHash && skipList.includes(siteHash)) {
+    return {
+      error: null,
+      reservation: {
+        ok: true,
+        status: 'reserved',
+        generation_request_id: null,
+        remaining_credits: Number.MAX_SAFE_INTEGER,
+        total_limit: Number.MAX_SAFE_INTEGER,
+        credits_used: 0,
+        quota_source: quotaMode === 'trial' ? 'trial' : 'site_quota',
+        plan: 'skip'
+      },
+      site: null,
+      account
+    };
+  }
+
+  const result = await reserveSiteCredits(supabase, {
+    account,
+    licenseKey,
+    siteIdentity: buildSiteIdentity({
+      siteHash,
+      siteUrl,
+      siteFingerprint,
+      installUuid
+    }),
+    creditsNeeded,
+    quotaMode,
+    idempotencyKey,
+    requestFingerprint,
+    requestMetadata,
+    requestId
+  });
+
+  if (!result.error) {
+    return result;
+  }
+
+  if (result.error !== 'SITE_QUOTA_V2_UNAVAILABLE') {
+    return result;
+  }
+
+  if (quotaMode === 'trial') {
+    return {
+      error: null,
+      site: null,
+      account,
+      reservation: {
+        ok: true,
+        status: 'legacy_trial',
+        generation_request_id: null,
+        remaining_credits: null,
+        total_limit: null,
+        credits_used: null,
+        quota_source: 'legacy_trial',
+        plan: 'trial'
+      }
+    };
+  }
+
+  const legacy = await checkQuotaAvailable(supabase, { licenseKey, siteHash, creditsNeeded });
+  if (legacy.error) {
+    return {
+      error: legacy.error,
+      status: legacy.status,
+      message: legacy.message,
+      payload: legacy
+    };
+  }
+
+  return {
+    error: null,
+    site: null,
+    account,
+    reservation: {
+      ok: true,
+      status: 'legacy_reserved',
+      generation_request_id: null,
+      remaining_credits: legacy.credits_remaining,
+      total_limit: legacy.total_limit,
+      credits_used: legacy.credits_used,
+      quota_source: 'legacy',
+      plan: legacy.plan_type
+    }
+  };
+}
+
+async function finalizeGenerationQuotaReservation(supabase, {
+  generationRequestId,
+  success,
+  finalMetadata = {}
+} = {}) {
+  if (!generationRequestId) {
+    return { error: null, skipped: true };
+  }
+
+  return finalizeSiteGeneration(supabase, {
+    generationRequestId,
+    success,
+    finalMetadata
+  });
+}
+
 function computePeriodStart(billingDay = 1, now = new Date()) {
   const day = Math.max(1, Math.min(31, Number(billingDay) || 1));
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), day, 0, 0, 0));
@@ -215,7 +382,10 @@ function computePeriodStart(billingDay = 1, now = new Date()) {
 
 module.exports = {
   getQuotaStatus,
+  getLegacyQuotaStatus,
   checkQuotaAvailable,
   enforceQuota,
+  reserveGenerationQuota,
+  finalizeGenerationQuotaReservation,
   computePeriodStart
 };

@@ -5,6 +5,14 @@ const { z } = require('zod');
 const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { sendPasswordResetEmail, isAvailable: isEmailAvailable } = require('../lib/email');
+const { buildSiteIdentity } = require('../lib/siteIdentity');
+const {
+  ensureSiteMembership,
+  fetchAccountByLicenseKey,
+  recordSiteAudit,
+  resolveCanonicalSite,
+  syncLegacySitePointers
+} = require('../services/siteQuota');
 
 const { trackAccountCreated } = require('../../src/services/loops');
 
@@ -14,6 +22,81 @@ const JWT_EXPIRES_IN = '30d';
 // Generate UUID v4
 function generateUUID() {
   return crypto.randomUUID();
+}
+
+function maskEmail(email) {
+  if (!email || typeof email !== 'string') return null;
+  return email.replace(/(.{2}).*(@.*)/, '$1***$2');
+}
+
+function buildAuthSiteContext(body = {}) {
+  return buildSiteIdentity({
+    siteHash: body.site_id || body.siteId || body.siteHash || body.installId || null,
+    installUuid: body.install_uuid || body.installUuid || body.site_id || body.siteId || body.installId || null,
+    siteUrl: body.site_url || body.siteUrl || null,
+    siteFingerprint: body.site_fingerprint || body.siteFingerprint || body.fingerprint || null
+  });
+}
+
+async function attachSiteContextForAccount({
+  supabase,
+  account,
+  siteIdentity,
+  requestId,
+  connectionSource
+}) {
+  if (!supabase || !account || !siteIdentity?.isValid) {
+    return { site: null, sharedSite: false, existingAccount: null, error: null };
+  }
+
+  const resolved = await resolveCanonicalSite(supabase, siteIdentity, {
+    createIfMissing: true,
+    legacyLicenseKey: account.license_key,
+    account,
+    requestId
+  });
+
+  if (resolved.error) {
+    return { site: null, sharedSite: false, existingAccount: null, error: resolved.error };
+  }
+
+  const site = resolved.site;
+  const sharedSite = Boolean(site?.license_key && site.license_key !== account.license_key);
+  const existingAccount = sharedSite
+    ? await fetchAccountByLicenseKey(supabase, site.license_key)
+    : null;
+
+  await ensureSiteMembership(supabase, {
+    siteId: site.id,
+    userId: account.id,
+    role: sharedSite ? 'member' : 'owner',
+    invitedByUserId: sharedSite ? existingAccount?.id || null : account.id
+  });
+
+  await syncLegacySitePointers(supabase, {
+    site,
+    account
+  });
+
+  await recordSiteAudit(supabase, {
+    siteId: site.id,
+    actorUserId: account.id,
+    eventType: sharedSite ? `${connectionSource}_joined_existing_site` : `${connectionSource}_site_linked`,
+    severity: sharedSite ? 'warn' : 'info',
+    requestId,
+    metadata: {
+      site_hash: site.site_hash,
+      canonical_domain: site.canonical_domain,
+      existing_license_key: sharedSite ? site.license_key : null
+    }
+  });
+
+  return {
+    site,
+    sharedSite,
+    existingAccount,
+    error: null
+  };
 }
 
 function createAuthRouter({ supabase }) {
@@ -28,6 +111,13 @@ function createAuthRouter({ supabase }) {
       name: z.string().optional(),
       site_id: z.string().optional(),
       site_url: z.string().optional(),
+      site_fingerprint: z.string().optional(),
+      install_uuid: z.string().optional(),
+      blog_id: z.number().optional(),
+      network_id: z.number().optional(),
+      is_multisite: z.boolean().optional(),
+      plugin_version: z.string().optional(),
+      wordpress_version: z.string().optional()
     });
 
     const parsed = schema.safeParse(req.body);
@@ -42,33 +132,29 @@ function createAuthRouter({ supabase }) {
     const { email, password, name, site_id, site_url } = parsed.data;
 
     try {
-      // If site_id provided, check if this site already has a license
-      // This enables credit sharing across all WordPress users on the same site
-      if (site_id) {
-        const { data: existingSite } = await supabase
-          .from('sites')
-          .select('license_key, site_url')
-          .eq('site_hash', site_id)
-          .eq('status', 'active')
-          .maybeSingle();
+      const siteIdentity = buildAuthSiteContext(parsed.data);
+      if (siteIdentity.isValid) {
+        const preflight = await resolveCanonicalSite(supabase, siteIdentity, {
+          createIfMissing: false,
+          legacyLicenseKey: null,
+          account: null,
+          requestId: req.id || null
+        });
 
-        if (existingSite) {
-          // Site already has a license - get that license for credit sharing
-          const { data: siteLicense } = await supabase
-            .from('licenses')
-            .select('*')
-            .eq('license_key', existingSite.license_key)
-            .single();
+        if (preflight.error === 'AMBIGUOUS_SITE_MATCH') {
+          return res.status(409).json({
+            error: 'AMBIGUOUS_SITE_MATCH',
+            code: 'AMBIGUOUS_SITE_MATCH',
+            message: 'This site matched multiple existing records and needs manual review before it can be linked.'
+          });
+        }
 
-          if (siteLicense && siteLicense.plan === 'free') {
-            // Site already using free plan - return error
-            return res.status(409).json({
-              error: 'SITE_HAS_LICENSE',
-              message: 'This site is already connected to a free account. All users on this site share the same credits. Log in with the existing account or upgrade to a paid plan.',
-              code: 'free_plan_exists',
-              existing_email: siteLicense.email ? siteLicense.email.replace(/(.{2}).*(@.*)/, '$1***$2') : null,
-            });
-          }
+        if (preflight.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
+          return res.status(403).json({
+            error: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+            code: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+            message: 'Development and localhost sites cannot claim production free quota.'
+          });
         }
       }
 
@@ -121,27 +207,31 @@ function createAuthRouter({ supabase }) {
 
       trackAccountCreated({ email, firstName: '', isWooCommerce: false, imagesUnprocessed: 0 }).catch(() => {});
 
-      // If site_id provided, link site to this license.
-      // Uses upsert so that if a trial site row already exists for this
-      // site_hash, we attach it to the new license instead of duplicating.
-      if (site_id) {
-        const { error: siteError } = await supabase
-          .from('sites')
-          .upsert({
-            license_key: user.license_key,
-            site_hash: site_id,
-            site_url: site_url || 'unknown',
-            status: 'active',
-            activated_at: new Date().toISOString(),
-            last_activity_at: new Date().toISOString()
-          }, { onConflict: 'site_hash' });
+      let siteLink = { site: null, sharedSite: false, existingAccount: null, error: null };
+      if (siteIdentity.isValid) {
+        siteLink = await attachSiteContextForAccount({
+          supabase,
+          account: user,
+          siteIdentity,
+          requestId: req.id || null,
+          connectionSource: 'register'
+        });
+      }
 
-        if (siteError) {
-          logger.warn('[Auth] Failed to link site record:', siteError);
-          // Don't fail registration, just log warning
-        } else {
-          logger.info('[Auth] Site linked to license', { site_id, license_key: user.license_key });
-        }
+      if (siteLink.error === 'AMBIGUOUS_SITE_MATCH') {
+        return res.status(409).json({
+          error: 'AMBIGUOUS_SITE_MATCH',
+          code: 'AMBIGUOUS_SITE_MATCH',
+          message: 'This site matched multiple existing records and needs manual review before it can be linked.'
+        });
+      }
+
+      if (siteLink.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
+        return res.status(403).json({
+          error: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+          code: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+          message: 'Development and localhost sites cannot claim production free quota.'
+        });
       }
 
       // Generate JWT token
@@ -167,6 +257,9 @@ function createAuthRouter({ supabase }) {
             plan: user.plan,
             status: user.status,
           },
+          site: siteLink.site || null,
+          shared_site: siteLink.sharedSite,
+          existing_email: maskEmail(siteLink.existingAccount?.email || null)
         },
         // Keep top-level for backward compatibility
         token,
@@ -177,6 +270,9 @@ function createAuthRouter({ supabase }) {
           plan: user.plan,
           status: user.status,
         },
+        site: siteLink.site || null,
+        shared_site: siteLink.sharedSite,
+        existing_email: maskEmail(siteLink.existingAccount?.email || null)
       });
     } catch (err) {
       logger.error('[Auth] Registration error:', err);
@@ -192,6 +288,15 @@ function createAuthRouter({ supabase }) {
     const schema = z.object({
       email: z.string().email(),
       password: z.string(),
+      site_id: z.string().optional(),
+      site_url: z.string().optional(),
+      site_fingerprint: z.string().optional(),
+      install_uuid: z.string().optional(),
+      blog_id: z.number().optional(),
+      network_id: z.number().optional(),
+      is_multisite: z.boolean().optional(),
+      plugin_version: z.string().optional(),
+      wordpress_version: z.string().optional()
     });
 
     const parsed = schema.safeParse(req.body);
@@ -253,6 +358,34 @@ function createAuthRouter({ supabase }) {
         });
       }
 
+      const siteIdentity = buildAuthSiteContext(parsed.data);
+      let siteLink = { site: null, sharedSite: false, existingAccount: null, error: null };
+      if (siteIdentity.isValid) {
+        siteLink = await attachSiteContextForAccount({
+          supabase,
+          account: user,
+          siteIdentity,
+          requestId: req.id || null,
+          connectionSource: 'login'
+        });
+      }
+
+      if (siteLink.error === 'AMBIGUOUS_SITE_MATCH') {
+        return res.status(409).json({
+          error: 'AMBIGUOUS_SITE_MATCH',
+          code: 'AMBIGUOUS_SITE_MATCH',
+          message: 'This site matched multiple existing records and needs manual review before it can be linked.'
+        });
+      }
+
+      if (siteLink.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
+        return res.status(403).json({
+          error: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+          code: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+          message: 'Development and localhost sites cannot claim production free quota.'
+        });
+      }
+
       // Generate JWT token
       const token = jwt.sign(
         {
@@ -276,6 +409,9 @@ function createAuthRouter({ supabase }) {
             plan: user.plan,
             status: user.status,
           },
+          site: siteLink.site || null,
+          shared_site: siteLink.sharedSite,
+          existing_email: maskEmail(siteLink.existingAccount?.email || null)
         },
         // Keep top-level for backward compatibility
         token,
@@ -286,6 +422,9 @@ function createAuthRouter({ supabase }) {
           plan: user.plan,
           status: user.status,
         },
+        site: siteLink.site || null,
+        shared_site: siteLink.sharedSite,
+        existing_email: maskEmail(siteLink.existingAccount?.email || null)
       });
     } catch (err) {
       logger.error('[Auth] Login error:', err);

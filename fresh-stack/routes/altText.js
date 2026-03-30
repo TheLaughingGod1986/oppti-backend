@@ -3,9 +3,15 @@ const crypto = require('crypto');
 const { z } = require('zod');
 const { validateImagePayload } = require('../lib/validation');
 const { generateAltText } = require('../lib/openai');
-const { enforceQuota } = require('../services/quota');
+const {
+  finalizeGenerationQuotaReservation,
+  getQuotaStatus,
+  reserveGenerationQuota
+} = require('../services/quota');
 const { recordUsage } = require('../services/usage');
 const { findOrCreateTrialSite } = require('../services/site');
+const { buildSiteIdentity } = require('../lib/siteIdentity');
+const { hashRequestFingerprint } = require('../services/siteQuota');
 const { extractUserInfo } = require('../middleware/auth');
 
 function hashPayload(base64) {
@@ -14,6 +20,36 @@ function hashPayload(base64) {
 
 function hasValidAdminKey(adminKey) {
   return Boolean(process.env.ADMIN_KEY && adminKey && adminKey === process.env.ADMIN_KEY);
+}
+
+function extractIdempotencyKey(req) {
+  return req.header('Idempotency-Key')
+    || req.header('X-Idempotency-Key')
+    || req.body?.idempotency_key
+    || req.body?.idempotencyKey
+    || null;
+}
+
+function buildGenerationFingerprint({
+  siteIdentity,
+  normalizedImage,
+  context,
+  userInfo,
+  regenerate
+}) {
+  return hashRequestFingerprint({
+    site_hash: siteIdentity.siteHash || null,
+    wp_install_uuid: siteIdentity.wpInstallUuid || null,
+    user_id: userInfo.user_id || null,
+    user_email: userInfo.user_email || null,
+    filename: normalizedImage.filename || null,
+    url: normalizedImage.url || null,
+    image_hash: normalizedImage.base64
+      ? crypto.createHash('sha256').update(normalizedImage.base64).digest('hex')
+      : null,
+    context: context || {},
+    regenerate: Boolean(regenerate)
+  });
 }
 
 const requestSchema = z.object({
@@ -78,7 +114,20 @@ function createAltTextRouter({
     }
 
     const { image, context = {} } = parsed.data;
-    const siteKey = req.header('X-Site-Key') || 'default';
+    const siteIdentity = buildSiteIdentity({
+      siteHash: req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || 'default'),
+      installUuid: req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || req.body?.site_id || req.body?.siteId || null),
+      siteUrl: req.header('X-Site-URL') || req.body?.trial_site_url || req.body?.site_url || null,
+      siteFingerprint: req.header('X-Site-Fingerprint') || req.body?.site_fingerprint || null
+    });
+    if (siteIdentity.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
+      return res.status(403).json({
+        error: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+        code: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+        message: 'Development and localhost sites cannot claim production quota.'
+      });
+    }
+    const siteKey = siteIdentity.siteHash || 'default';
     // Get license key from header OR from JWT-authenticated user
     const licenseKey = req.header('X-License-Key') || req.license?.license_key;
     const userInfo = extractUserInfo(req);
@@ -86,60 +135,8 @@ function createAltTextRouter({
     const regenerate = req.body.regenerate === true || req.query.regenerate === 'true' || req.query.regenerate === '1';
     const bypassCache = regenerate || req.header('X-Bypass-Cache') === 'true' || req.query.no_cache === '1';
 
-    // Trial mode: enforce separate 10-generation-per-site quota using trial_usage table.
-    const TRIAL_LIMIT = 10;
-    if (req.trialMode) {
-      const trialHash = req.trialSiteHash;
-      try {
-        const { count, error: countErr } = await supabase
-          .from('trial_usage')
-          .select('id', { count: 'exact', head: true })
-          .eq('site_hash', trialHash);
-
-        const trialUsed = countErr ? 0 : (count || 0);
-        if (trialUsed >= TRIAL_LIMIT) {
-          logger.info('[altText] Trial quota exhausted', { site_hash: trialHash, used: trialUsed });
-          return res.status(402).json({
-            error: 'TRIAL_EXHAUSTED',
-            code: 'bbai_trial_exhausted',
-            message: `You've used your ${TRIAL_LIMIT} free generations. Create a free account to unlock 50 more credits per month.`,
-            credits_used: trialUsed,
-            total_limit: TRIAL_LIMIT,
-            remaining: 0
-          });
-        }
-        logger.info('[altText] Trial quota check passed', { site_hash: trialHash, used: trialUsed, remaining: TRIAL_LIMIT - trialUsed });
-
-        // Upsert trial site row (fire-and-forget, don't block generation).
-        findOrCreateTrialSite(supabase, {
-          siteHash: trialHash,
-          siteUrl: req.header('X-Site-URL') || req.body?.trial_site_url || null,
-          fingerprint: req.header('X-Site-Fingerprint') || null
-        }).catch(err => {
-          logger.warn('[altText] Trial site upsert failed (non-blocking)', { error: err.message });
-        });
-      } catch (err) {
-        logger.error('[altText] Trial quota check failed', { error: err.message });
-        // Allow generation on quota check failure to avoid blocking users.
-      }
-    } else {
-      // Normal quota enforcement for authenticated users.
-      try {
-        await enforceQuota(supabase, { licenseKey, siteHash: siteKey, creditsNeeded: 1 });
-      } catch (err) {
-        return res.status(err.status || 402).json({
-          error: err.code || 'QUOTA_EXCEEDED',
-          message: err.message,
-          code: err.code || 'QUOTA_EXCEEDED',
-          credits_used: err.payload?.credits_used,
-          total_limit: err.payload?.total_limit,
-          reset_date: err.payload?.reset_date
-        });
-      }
-    }
-
     // Rate limit per site/license
-    if (!(await checkRateLimit(siteKey))) {
+    if (!(await checkRateLimit(`${siteKey}:${req.ip || 'unknown-ip'}`))) {
       return res.status(429).json({
         error: 'RATE_LIMIT_EXCEEDED',
         message: 'Rate limit exceeded for this site. Please retry later.',
@@ -220,10 +217,17 @@ function createAltTextRouter({
 
         // Fetch current quota status to include accurate credits in cached response
         // This ensures the plugin gets up-to-date usage info even from cache
-        const { getQuotaStatus } = require('../services/quota');
         let creditsInfo = {};
         try {
-          const quotaStatus = await getQuotaStatus(supabase, { licenseKey, siteHash: siteKey });
+          const quotaStatus = await getQuotaStatus(supabase, {
+            account: req.user || req.license || null,
+            licenseKey,
+            siteHash: siteIdentity.siteHash,
+            siteUrl: siteIdentity.siteUrl,
+            siteFingerprint: siteIdentity.siteFingerprint,
+            installUuid: siteIdentity.wpInstallUuid,
+            requestId: req.id || null
+          });
           if (!quotaStatus.error) {
             creditsInfo = {
               credits_used: quotaStatus.credits_used,
@@ -242,13 +246,97 @@ function createAltTextRouter({
       logger.info('[altText] Cache bypassed', { reason: regenerate ? 'regenerate flag' : 'explicit bypass' });
     }
 
+    if (req.trialMode) {
+      findOrCreateTrialSite(supabase, {
+        siteHash: siteIdentity.siteHash,
+        siteUrl: siteIdentity.siteUrl,
+        fingerprint: siteIdentity.siteFingerprint
+      }).catch(err => {
+        logger.warn('[altText] Trial site upsert failed (non-blocking)', { error: err.message });
+      });
+    }
+
+    const idempotencyKey = extractIdempotencyKey(req);
+    const requestFingerprint = buildGenerationFingerprint({
+      siteIdentity,
+      normalizedImage: normalized,
+      context,
+      userInfo,
+      regenerate
+    });
+
+    const quotaMetadata = {
+      request_id: req.id || null,
+      endpoint: 'api/alt-text',
+      image_filename: normalized.filename || null,
+      image_url: normalized.url || null,
+      plugin_version: userInfo.plugin_version || null,
+      wp_user_id: userInfo.user_id || null,
+      wp_user_email: userInfo.user_email || null
+    };
+
+    const reservation = await reserveGenerationQuota(supabase, {
+      account: req.user || req.license || null,
+      licenseKey,
+      siteHash: siteIdentity.siteHash,
+      siteUrl: siteIdentity.siteUrl,
+      siteFingerprint: siteIdentity.siteFingerprint,
+      installUuid: siteIdentity.wpInstallUuid,
+      creditsNeeded: 1,
+      quotaMode: req.trialMode ? 'trial' : 'site',
+      idempotencyKey,
+      requestFingerprint,
+      requestMetadata: quotaMetadata,
+      requestId: req.id || null
+    });
+
+    if (reservation.error) {
+      return res.status(reservation.status || 402).json({
+        error: reservation.error,
+        message: reservation.message || 'Quota exceeded',
+        code: reservation.error,
+        credits_used: reservation.payload?.credits_used,
+        total_limit: reservation.payload?.total_limit,
+        reset_date: reservation.payload?.quota_period_end || reservation.payload?.reset_date,
+        remaining: reservation.payload?.remaining_credits
+      });
+    }
+
     logger.info('[altText] Calling OpenAI to generate alt text');
     const startTime = Date.now();
-    const { altText, usage, meta } = await generateAltText({
-      image: normalized,
-      context: { ...context, filename: normalized.filename }
-    });
-    const generationTime = Date.now() - startTime;
+    let altText;
+    let usage;
+    let meta;
+    let generationTime = 0;
+
+    try {
+      const generationResult = await generateAltText({
+        image: normalized,
+        context: { ...context, filename: normalized.filename }
+      });
+      altText = generationResult.altText;
+      usage = generationResult.usage;
+      meta = generationResult.meta;
+      generationTime = Date.now() - startTime;
+    } catch (error) {
+      await finalizeGenerationQuotaReservation(supabase, {
+        generationRequestId: reservation.reservation?.generation_request_id || null,
+        success: false,
+        finalMetadata: {
+          error_message: error.message,
+          request_id: req.id || null
+        }
+      });
+      logger.error('[altText] Alt text generation failed', {
+        error: error.message,
+        requestId: req.id || null,
+        siteHash: siteKey
+      });
+      return res.status(500).json({
+        error: 'GENERATION_FAILED',
+        message: 'Failed to generate alt text'
+      });
+    }
     
     logger.info('[altText] Alt text generated', {
       altText,
@@ -258,15 +346,28 @@ function createAltTextRouter({
       tokensUsed: usage?.total_tokens
     });
 
+    await finalizeGenerationQuotaReservation(supabase, {
+      generationRequestId: reservation.reservation?.generation_request_id || null,
+      success: true,
+      finalMetadata: {
+        request_id: req.id || null,
+        cached: false,
+        model_used: meta?.modelUsed || null,
+        total_tokens: usage?.total_tokens || null
+      }
+    });
+
     // Record usage/credits
     let usageResult = { error: null };
+    const effectiveSite = reservation.site || null;
+    const effectiveLicenseKey = effectiveSite?.license_key || licenseKey || null;
 
     if (req.trialMode) {
       // Trial mode: insert into trial_usage table (no foreign key constraints).
       const trialPayload = {
-        site_hash: req.trialSiteHash,
-        site_fingerprint: req.header('X-Site-Fingerprint') || null,
-        site_url: req.header('X-Site-URL') || null,
+        site_hash: siteIdentity.siteHash || req.trialSiteHash,
+        site_fingerprint: siteIdentity.siteFingerprint || req.header('X-Site-Fingerprint') || null,
+        site_url: siteIdentity.siteUrl || req.header('X-Site-URL') || null,
         prompt_tokens: usage?.prompt_tokens || null,
         completion_tokens: usage?.completion_tokens || null,
         total_tokens: usage?.total_tokens || null,
@@ -274,7 +375,7 @@ function createAltTextRouter({
         generation_time_ms: meta?.generation_time_ms || null,
         image_filename: normalized.filename || null
       };
-      logger.info('[altText] Recording trial usage', { site_hash: req.trialSiteHash });
+      logger.info('[altText] Recording trial usage', { site_hash: trialPayload.site_hash });
       const { error } = await supabase.from('trial_usage').insert(trialPayload);
       if (error) {
         logger.error('[altText] Failed to record trial usage', { error: error.message, code: error.code });
@@ -283,12 +384,12 @@ function createAltTextRouter({
     } else {
       // Normal flow: record in usage_logs with license tracking.
       let licenseId = null;
-      if (licenseKey) {
+      if (effectiveLicenseKey) {
         try {
           const { data: licenseData } = await supabase
             .from('licenses')
             .select('id')
-            .eq('license_key', licenseKey)
+            .eq('license_key', effectiveLicenseKey)
             .maybeSingle();
           licenseId = licenseData?.id || null;
         } catch (err) {
@@ -297,17 +398,17 @@ function createAltTextRouter({
       }
 
       logger.info('[altText] Recording usage', {
-        licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
+        licenseKey: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : 'missing',
         licenseId: licenseId ? `${licenseId.substring(0, 8)}...` : 'missing',
-        siteKey,
+        siteKey: effectiveSite?.site_hash || siteKey,
         userId: userInfo.user_id,
         creditsUsed: 1
       });
 
       usageResult = await recordUsage(supabase, {
-        licenseKey,
+        licenseKey: effectiveLicenseKey,
         licenseId,
-        siteHash: siteKey,
+        siteHash: effectiveSite?.site_hash || siteKey,
         userId: userInfo.user_id,
         userEmail: userInfo.user_email,
         pluginVersion: userInfo.plugin_version,
@@ -325,12 +426,17 @@ function createAltTextRouter({
       });
 
       if (licenseId) {
-        supabase
-          .from('licenses')
-          .update({ last_generation_at: new Date().toISOString(), reengagement_sent: false })
-          .eq('id', licenseId)
-          .then(() => {})
-          .catch(() => {});
+        try {
+          const licenseUpdate = supabase
+            .from('licenses')
+            .update({ last_generation_at: new Date().toISOString(), reengagement_sent: false })
+            .eq('id', licenseId);
+          if (licenseUpdate && typeof licenseUpdate.then === 'function') {
+            await licenseUpdate;
+          }
+        } catch (_error) {
+          // Best-effort lifecycle touch.
+        }
       }
     }
     
@@ -344,88 +450,39 @@ function createAltTextRouter({
     let creditsRemaining = null;
     let totalLimit = null;
     let creditsUsed = 1;
+    await new Promise(resolve => setTimeout(resolve, 50));
 
-    if (req.trialMode) {
-      // Trial mode: count trial_usage rows for this site hash.
-      try {
-        const { count } = await supabase
-          .from('trial_usage')
-          .select('id', { count: 'exact', head: true })
-          .eq('site_hash', req.trialSiteHash);
-        creditsUsed = count || 1;
-        totalLimit = TRIAL_LIMIT;
-        creditsRemaining = Math.max(0, TRIAL_LIMIT - creditsUsed);
-        logger.info('[altText] Trial quota after generation', {
-          site_hash: req.trialSiteHash,
-          credits_used: creditsUsed,
-          credits_remaining: creditsRemaining
-        });
-      } catch (err) {
-        creditsRemaining = null;
-        logger.error('[altText] Failed to count trial usage', { error: err.message });
-      }
-    } else {
-      // Normal flow: fetch quota status from license system.
-      await new Promise(resolve => setTimeout(resolve, 100));
-      const { getQuotaStatus } = require('../services/quota');
-      let retryCount = 0;
-      const maxRetries = 3;
+    const quotaStatus = await getQuotaStatus(supabase, {
+      account: req.user || req.license || null,
+      licenseKey: effectiveLicenseKey,
+      siteHash: effectiveSite?.site_hash || siteIdentity.siteHash,
+      siteUrl: effectiveSite?.site_url || siteIdentity.siteUrl,
+      siteFingerprint: effectiveSite?.site_fingerprint || effectiveSite?.fingerprint || siteIdentity.siteFingerprint,
+      installUuid: effectiveSite?.wp_install_uuid || siteIdentity.wpInstallUuid,
+      requestId: req.id || null
+    });
 
-      while (retryCount < maxRetries) {
-        try {
-          const quotaStatus = await getQuotaStatus(supabase, { licenseKey, siteHash: siteKey });
-          if (!quotaStatus.error) {
-            creditsRemaining = quotaStatus.credits_remaining;
-            totalLimit = quotaStatus.total_limit;
-            creditsUsed = quotaStatus.credits_used;
-            logger.info('[altText] Quota status fetched after usage', {
-              attempt: retryCount + 1,
-              credits_remaining: creditsRemaining,
-              total_limit: totalLimit,
-              credits_used: creditsUsed,
-              licenseKey: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
-              siteKey
-            });
-            if (retryCount > 0 || creditsUsed >= 1) break;
-          } else {
-            logger.warn('[altText] Failed to fetch quota status', {
-              attempt: retryCount + 1,
-              error: quotaStatus.error,
-              message: quotaStatus.message
-            });
-          }
-        } catch (err) {
-          logger.error('[altText] Error fetching quota status', {
-            attempt: retryCount + 1,
-            error: err.message
-          });
-        }
-        if ((creditsRemaining === null || creditsUsed < 1) && retryCount < maxRetries - 1) {
-          retryCount++;
-          await new Promise(resolve => setTimeout(resolve, 200 * retryCount));
-        } else {
-          break;
-        }
-      }
-
-      // Fallback: calculate from license plan
-      if (creditsRemaining === null && licenseKey) {
-        try {
-          const { data: license } = await supabase
-            .from('licenses')
-            .select('plan')
-            .eq('license_key', licenseKey)
-            .single();
-          if (license) {
-            const { getLimits } = require('../services/license');
-            const limits = getLimits(license.plan);
-            totalLimit = limits.credits;
-            creditsRemaining = Math.max(totalLimit - creditsUsed, 0);
-          }
-        } catch (err) {
-          logger.error('[altText] Failed to calculate credits from license', { error: err.message });
-        }
-      }
+    if (!quotaStatus.error) {
+      creditsRemaining = quotaStatus.credits_remaining;
+      totalLimit = quotaStatus.total_limit;
+      creditsUsed = quotaStatus.credits_used;
+      logger.info('[altText] Quota status fetched after usage', {
+        credits_remaining: creditsRemaining,
+        total_limit: totalLimit,
+        credits_used: creditsUsed,
+        licenseKey: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : 'missing',
+        siteKey: effectiveSite?.site_hash || siteKey
+      });
+    } else if (reservation.reservation) {
+      creditsRemaining = reservation.reservation.remaining_credits ?? creditsRemaining;
+      totalLimit = reservation.reservation.total_limit ?? totalLimit;
+      creditsUsed = reservation.reservation.credits_used ?? creditsUsed;
+      logger.warn('[altText] Falling back to reservation quota snapshot', {
+        error: quotaStatus.error,
+        credits_remaining: creditsRemaining,
+        total_limit: totalLimit,
+        credits_used: creditsUsed
+      });
     }
 
     if (cacheKey && !bypassCache) {

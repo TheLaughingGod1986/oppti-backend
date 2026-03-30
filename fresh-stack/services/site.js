@@ -1,5 +1,11 @@
 const { getLimits } = require('./license');
 const logger = require('../lib/logger');
+const { buildSiteIdentity } = require('../lib/siteIdentity');
+const {
+  fetchAccountByLicenseKey,
+  recordSiteAudit,
+  resolveCanonicalSite
+} = require('./siteQuota');
 
 /**
  * Race-safe upsert for trial sites (no license key required).
@@ -12,68 +18,51 @@ const logger = require('../lib/logger');
  * @returns {{ data: object|null, error: object|null }}
  */
 async function findOrCreateTrialSite(supabase, { siteHash, siteUrl, fingerprint }) {
-  if (!siteHash || typeof siteHash !== 'string' || siteHash.trim() === '') {
-    return { data: null, error: { message: 'site_hash is required' } };
+  const identity = buildSiteIdentity({
+    siteHash,
+    installUuid: siteHash,
+    siteUrl,
+    siteFingerprint: fingerprint
+  });
+
+  if (!identity.isValid) {
+    return { data: null, error: { message: identity.error || 'site_hash is required' } };
   }
 
-  const sanitizedHash = siteHash.trim().substring(0, 255);
-  const sanitizedUrl = siteUrl ? String(siteUrl).trim().substring(0, 500) : null;
-  const sanitizedFp = fingerprint ? String(fingerprint).trim().substring(0, 255) : null;
+  const resolved = await resolveCanonicalSite(supabase, identity, {
+    createIfMissing: true,
+    legacyLicenseKey: null,
+    account: null
+  });
 
-  // Check if site already exists.
-  const { data: existing, error: selectErr } = await supabase
-    .from('sites')
-    .select('id, site_hash, license_key, site_url, status')
-    .eq('site_hash', sanitizedHash)
-    .maybeSingle();
-
-  if (selectErr) {
-    logger.error('[Site] findOrCreateTrialSite select failed', { error: selectErr.message });
-    return { data: null, error: selectErr };
+  if (resolved.error) {
+    logger.error('[Site] findOrCreateTrialSite failed', { error: resolved.error, site_hash: siteHash });
+    return { data: null, error: { message: resolved.error } };
   }
 
-  if (existing) {
-    // Update activity timestamp and enrich optional fields.
-    const updates = { last_activity_at: new Date().toISOString() };
-    if (sanitizedUrl && sanitizedUrl !== 'unknown' && (!existing.site_url || existing.site_url === 'unknown')) {
-      updates.site_url = sanitizedUrl;
-    }
-    await supabase.from('sites').update(updates).eq('site_hash', sanitizedHash);
-    return { data: existing, error: null };
-  }
-
-  // Insert new trial site (no license_key).
-  const { data: inserted, error: insertErr } = await supabase
-    .from('sites')
-    .insert({
-      site_hash: sanitizedHash,
-      site_url: sanitizedUrl || null,
-      fingerprint: sanitizedFp,
-      status: 'active',
-      activated_at: new Date().toISOString(),
-      last_activity_at: new Date().toISOString()
-    })
-    .select()
-    .single();
-
-  // Handle race: another request inserted between our SELECT and INSERT.
-  if (insertErr && insertErr.code === '23505') {
-    logger.info('[Site] Race condition on trial site insert, fetching existing', { site_hash: sanitizedHash });
-    const { data: raceData } = await supabase
+  try {
+    const activityUpdate = supabase
       .from('sites')
-      .select('id, site_hash, license_key, site_url, status')
-      .eq('site_hash', sanitizedHash)
-      .single();
-    return { data: raceData, error: null };
+      .update({
+        last_activity_at: new Date().toISOString(),
+        last_seen_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', resolved.site.id);
+    if (activityUpdate && typeof activityUpdate.then === 'function') {
+      await activityUpdate;
+    }
+  } catch (_error) {
+    // Non-blocking activity update.
   }
 
-  if (insertErr) {
-    logger.error('[Site] findOrCreateTrialSite insert failed', { error: insertErr.message, code: insertErr.code });
-    return { data: null, error: insertErr };
-  }
+  logger.info('[Site] Trial site resolved', {
+    site_hash: resolved.site.site_hash,
+    site_id: resolved.site.id,
+    matched_by: resolved.matchedBy
+  });
 
-  logger.info('[Site] Trial site created', { site_hash: sanitizedHash, id: inserted?.id });
-  return { data: inserted, error: null };
+  return { data: resolved.site, error: null };
 }
 
 async function createSite(supabase, { licenseKey, siteHash, siteUrl, siteName, fingerprint }) {
@@ -93,6 +82,24 @@ async function createSite(supabase, { licenseKey, siteHash, siteUrl, siteName, f
 }
 
 async function getSites(supabase, { licenseKey }) {
+  const account = await fetchAccountByLicenseKey(supabase, licenseKey);
+  if (account?.id) {
+    const { data: memberships, error: membershipError } = await supabase
+      .from('site_memberships')
+      .select('site_id')
+      .eq('user_id', account.id);
+
+    if (!membershipError && Array.isArray(memberships) && memberships.length > 0) {
+      const siteIds = memberships.map((membership) => membership.site_id).filter(Boolean);
+      const { data, error } = await supabase
+        .from('sites')
+        .select('*')
+        .in('id', siteIds)
+        .order('activated_at', { ascending: false });
+      return { data, error };
+    }
+  }
+
   const { data, error } = await supabase
     .from('sites')
     .select('*')
@@ -129,7 +136,11 @@ async function setSiteQuota(supabase, { licenseKey, siteHash, quotaLimit }) {
 async function updateSiteActivity(supabase, { siteHash }) {
   const { error } = await supabase
     .from('sites')
-    .update({ last_activity_at: new Date().toISOString() })
+    .update({
+      last_activity_at: new Date().toISOString(),
+      last_seen_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    })
     .eq('site_hash', siteHash);
   return { error };
 }
@@ -142,19 +153,75 @@ async function deactivateSite(supabase, { licenseKey, siteHash }) {
   if (!licenseKey || !siteHash) {
     return { error: 'INVALID_REQUEST', status: 400, message: 'License key and site hash required' };
   }
+  const account = await fetchAccountByLicenseKey(supabase, licenseKey);
+  const resolved = await resolveCanonicalSite(supabase, buildSiteIdentity({
+    siteHash,
+    installUuid: siteHash
+  }), {
+    createIfMissing: false,
+    legacyLicenseKey: licenseKey,
+    account
+  });
+
+  if (resolved.error || !resolved.site) {
+    return { error: 'SITE_NOT_FOUND', status: 404, message: 'Site not found or not under this license' };
+  }
+
+  if (account?.id) {
+    try {
+      const membershipDelete = supabase
+        .from('site_memberships')
+        .delete()
+        .eq('site_id', resolved.site.id)
+        .eq('user_id', account.id);
+      if (membershipDelete && typeof membershipDelete.then === 'function') {
+        await membershipDelete;
+      }
+    } catch (_error) {
+      // Best-effort membership cleanup.
+    }
+  }
+
+  const { data: memberships = [] } = await supabase
+    .from('site_memberships')
+    .select('id')
+    .eq('site_id', resolved.site.id);
+
+  const updates = {
+    updated_at: new Date().toISOString()
+  };
+  if (resolved.site.license_key === licenseKey) {
+    updates.license_key = null;
+  }
+  if (resolved.site.owner_user_id === account?.id) {
+    updates.owner_user_id = null;
+  }
+  if (!memberships.length) {
+    updates.status = 'deactivated';
+    updates.deactivated_at = new Date().toISOString();
+  }
+
   const { data, error } = await supabase
     .from('sites')
-    .update({ status: 'deactivated', deactivated_at: new Date().toISOString() })
-    .eq('site_hash', siteHash)
-    .eq('license_key', licenseKey)
+    .update(updates)
+    .eq('id', resolved.site.id)
     .select()
     .maybeSingle();
   if (error) {
     return { error: 'SERVER_ERROR', status: 500, message: error.message };
   }
-  if (!data) {
-    return { error: 'SITE_NOT_FOUND', status: 404, message: 'Site not found or not under this license' };
-  }
+
+  await recordSiteAudit(supabase, {
+    siteId: resolved.site.id,
+    actorUserId: account?.id || null,
+    eventType: 'site_disconnected',
+    severity: 'warn',
+    metadata: {
+      site_hash: resolved.site.site_hash,
+      remaining_memberships: memberships.length
+    }
+  });
+
   return { data, error: null };
 }
 
