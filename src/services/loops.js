@@ -1,25 +1,42 @@
 const LOOPS_API_KEY = process.env.LOOPS_API_KEY;
 const LOOPS_BASE = 'https://app.loops.so/api/v1';
+const PLUGIN_USERS_LIST_ID = 'cmn7g83oddsuu0izg27ia6tgv';
 
-async function loopsPost(path, body) {
-  if (!LOOPS_API_KEY) return;
+async function loopsRequest(method, path, body) {
+  if (!LOOPS_API_KEY) return null;
   try {
-    await fetch(`${LOOPS_BASE}${path}`, {
-      method: 'POST',
+    const res = await fetch(`${LOOPS_BASE}${path}`, {
+      method,
       headers: {
         'Authorization': `Bearer ${LOOPS_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
     });
+    return res.json().catch(() => ({}));
   } catch (err) {
     console.error('[Loops]', err.message);
+    return null;
   }
 }
 
+async function loopsPost(path, body) {
+  await loopsRequest('POST', path, body);
+}
+
 async function trackAccountCreated({ email, firstName, isWooCommerce, imagesUnprocessed }) {
-  await loopsPost('/contacts/create', { email, firstName: firstName || '', userGroup: 'plugin_user', source: 'plugin_signup' });
-  await loopsPost('/events/send', { email, eventName: 'account_created', plan: 'free', generationsCount: 0, imagesUnprocessed: imagesUnprocessed || 0, woocommerce: isWooCommerce || false });
+  const mailingLists = { [PLUGIN_USERS_LIST_ID]: true };
+  const created = await loopsRequest('POST', '/contacts/create', {
+    email, firstName: firstName || '', userGroup: 'plugin_user', source: 'plugin_signup', mailingLists,
+  });
+  // If contact already existed (409), contacts/create won't apply mailingLists — update to ensure list membership
+  if (created && !created.id && created.message?.toLowerCase().includes('already')) {
+    await loopsRequest('PUT', '/contacts/update', { email, mailingLists });
+  }
+  await loopsPost('/events/send', {
+    email, eventName: 'account_created', plan: 'free', generationsCount: 0,
+    imagesUnprocessed: imagesUnprocessed || 0, woocommerce: isWooCommerce || false,
+  });
 }
 
 async function trackGenerationMilestone({ email, generationsCount, imagesUnprocessed }) {
@@ -32,7 +49,7 @@ async function trackCreditsExhausted({ email, imagesUnprocessed }) {
 }
 
 async function trackPlanUpgraded({ email, planName }) {
-  await loopsPost('/contacts/update', { email, plan: planName });
+  await loopsRequest('PUT', '/contacts/update', { email, plan: planName });
   await loopsPost('/events/send', { email, eventName: 'plan_upgraded', plan: planName });
 }
 
