@@ -34,7 +34,11 @@ function buildAuthSiteContext(body = {}) {
     siteHash: body.site_id || body.siteId || body.siteHash || body.installId || null,
     installUuid: body.install_uuid || body.installUuid || body.site_id || body.siteId || body.installId || null,
     siteUrl: body.site_url || body.siteUrl || null,
-    siteFingerprint: body.site_fingerprint || body.siteFingerprint || body.fingerprint || null
+    siteFingerprint: body.site_fingerprint || body.siteFingerprint || body.fingerprint || null,
+    // Allow localhost/dev installs to register/login and link context.
+    // This does not grant production quota (generation endpoints still block dev
+    // hosts outside explicit trial mode).
+    allowDevelopment: true
   });
 }
 
