@@ -23,7 +23,7 @@ function createJobsRouter({ supabase, checkRateLimit, getSiteFromHeaders, create
     }
     const { priority = 'normal', images, context = {} } = parsed.data;
     const siteKey = req.header('X-Site-Key') || 'default';
-    const licenseKey = req.header('X-License-Key');
+    const licenseKey = req.header('X-License-Key') || req.license?.license_key || null;
     const userInfo = extractUserInfo(req);
 
     // Quota check for total images
