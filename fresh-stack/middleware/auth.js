@@ -136,6 +136,35 @@ function authMiddleware({ supabase }) {
       return next();
     }
 
+    // Site-key based auth (for plugins that store the license server-side and
+    // only send a site identifier). This is only as strong as the secrecy of
+    // the site key; we require an active site row with a license_key.
+    const siteKey = req.header('X-Site-Key') || req.header('X-Site-Hash');
+    if (siteKey && supabase) {
+      try {
+        const { data: site } = await supabase
+          .from('sites')
+          .select('license_key, status')
+          .eq('site_hash', siteKey)
+          .maybeSingle();
+
+        if (site?.status === 'active' && site.license_key) {
+          const siteLicense = await validateLicense(supabase, site.license_key);
+          if (!siteLicense.error) {
+            req.license = siteLicense.license;
+            req.authMethod = 'site';
+            return next();
+          }
+          logger.warn('[Auth] Site-key resolved license invalid', {
+            site_hash: siteKey,
+            error: siteLicense.error
+          });
+        }
+      } catch (err) {
+        logger.warn('[Auth] Site-key auth lookup failed', { error: err.message });
+      }
+    }
+
     // Fallback API token
     const requiredToken = process.env.ALT_API_TOKEN || process.env.API_TOKEN;
     if (requiredToken) {
