@@ -22,7 +22,9 @@ async function findOrCreateTrialSite(supabase, { siteHash, siteUrl, fingerprint 
     siteHash,
     installUuid: siteHash,
     siteUrl,
-    siteFingerprint: fingerprint
+    siteFingerprint: fingerprint,
+    // Trial mode must work on localhost/dev installs.
+    allowDevelopment: true
   });
 
   if (!identity.isValid) {
