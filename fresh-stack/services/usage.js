@@ -1,5 +1,5 @@
 const { computePeriodStart } = require('./quota');
-const { getLimits } = require('./license');
+const { getLimits } = require('./planLimits');
 const { trackGenerationMilestone, trackCreditsExhausted } = require('../../src/services/loops');
 const logger = require('../lib/logger');
 
@@ -146,7 +146,7 @@ async function updateQuotaSummary(supabase, licenseKey, creditsUsed, siteHash) {
   periodEnd.setMonth(periodEnd.getMonth() + 1);
 
   // Get current limits
-  const { getLimits } = require('./license');
+  const { getLimits } = require('./planLimits');
   const limits = getLimits(license.plan);
   const totalLimit = limits.credits;
 

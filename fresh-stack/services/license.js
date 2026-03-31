@@ -5,22 +5,13 @@
  */
 
 const { buildSiteIdentity } = require('../lib/siteIdentity');
+const { getLimits } = require('./planLimits');
 const {
   ensureSiteMembership,
   recordSiteAudit,
   resolveCanonicalSite,
   syncLegacySitePointers
 } = require('./siteQuota');
-
-const PLAN_LIMITS = {
-  free: { credits: 50, maxSites: 1 },
-  pro: { credits: 1000, maxSites: 1 },
-  agency: { credits: 10000, maxSites: null } // null = unlimited
-};
-
-function getLimits(plan = 'free') {
-  return PLAN_LIMITS[plan] || PLAN_LIMITS.free;
-}
 
 /**
  * Fetch a license by key and ensure status is acceptable.

@@ -97,6 +97,8 @@ app.use(rateLimitMiddleware({
 
 // Auth routes (public - no auth required)
 app.use('/auth', createAuthRouter({ supabase }));
+// Backwards/alternate path used by some clients/plugins.
+app.use('/api/auth', createAuthRouter({ supabase }));
 
 // Admin routes (public - protected by admin key, not license)
 app.use('/admin', createAdminRouter({ redis, supabase, resultCache: new Map() }));

@@ -1,4 +1,4 @@
-const { getLimits } = require('./license');
+const { getLimits } = require('./planLimits');
 const logger = require('../lib/logger');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const {

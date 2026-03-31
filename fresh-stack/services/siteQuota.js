@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
-const { getLimits } = require('./license');
+const { getLimits } = require('./planLimits');
 
 const SITE_SELECT = [
   'id',
