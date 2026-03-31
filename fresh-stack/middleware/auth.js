@@ -139,14 +139,26 @@ function authMiddleware({ supabase }) {
     // Site-key based auth (for plugins that store the license server-side and
     // only send a site identifier). This is only as strong as the secrecy of
     // the site key; we require an active site row with a license_key.
-    const siteKey = req.header('X-Site-Key') || req.header('X-Site-Hash');
-    if (siteKey && supabase) {
+    const siteKey = req.header('X-Site-Key') || req.header('X-Site-Hash') || null;
+    const installUuid = req.header('X-Install-UUID') || req.header('X-WP-Install-UUID') || null;
+    const siteFingerprint = req.header('X-Site-Fingerprint') || null;
+    if ((siteKey || installUuid || siteFingerprint) && supabase) {
       try {
-        const { data: site } = await supabase
-          .from('sites')
-          .select('license_key, status')
-          .eq('site_hash', siteKey)
-          .maybeSingle();
+        const selectSite = async (column, value) => {
+          if (!value) return null;
+          const { data } = await supabase
+            .from('sites')
+            .select('license_key, status, site_hash, wp_install_uuid, site_fingerprint, fingerprint')
+            .eq(column, value)
+            .maybeSingle();
+          return data || null;
+        };
+
+        // Try in order of strongest/most specific identifiers.
+        const site = await selectSite('wp_install_uuid', installUuid)
+          || await selectSite('site_hash', siteKey)
+          || await selectSite('site_fingerprint', siteFingerprint)
+          || await selectSite('fingerprint', siteFingerprint);
 
         if (site?.status === 'active' && site.license_key) {
           const siteLicense = await validateLicense(supabase, site.license_key);
@@ -156,7 +168,7 @@ function authMiddleware({ supabase }) {
             return next();
           }
           logger.warn('[Auth] Site-key resolved license invalid', {
-            site_hash: siteKey,
+            site_hash: site.site_hash || siteKey,
             error: siteLicense.error
           });
         }
