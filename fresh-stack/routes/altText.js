@@ -254,10 +254,7 @@ function createAltTextRouter({
           const quotaStatus = await getQuotaStatus(supabase, {
             account: req.user || req.license || null,
             licenseKey,
-            siteHash: siteIdentity.siteHash,
-            siteUrl: siteIdentity.siteUrl,
-            siteFingerprint: siteIdentity.siteFingerprint,
-            installUuid: siteIdentity.wpInstallUuid,
+            siteIdentity,
             requestId: req.id || null
           });
           if (!quotaStatus.error) {
@@ -319,10 +316,7 @@ function createAltTextRouter({
     const reservation = await reserveGenerationQuota(supabase, {
       account: req.user || req.license || null,
       licenseKey,
-      siteHash: siteIdentity.siteHash,
-      siteUrl: siteIdentity.siteUrl,
-      siteFingerprint: siteIdentity.siteFingerprint,
-      installUuid: siteIdentity.wpInstallUuid,
+      siteIdentity,
       creditsNeeded: 1,
       quotaMode: req.trialMode ? 'trial' : 'site',
       idempotencyKey,
@@ -358,10 +352,7 @@ function createAltTextRouter({
           const quotaStatus = await getQuotaStatus(supabase, {
             account: req.user || req.license || null,
             licenseKey,
-            siteHash: req.trialSiteHash || siteIdentity.siteHash,
-            siteUrl: siteIdentity.siteUrl,
-            siteFingerprint: siteIdentity.siteFingerprint,
-            installUuid: siteIdentity.wpInstallUuid,
+            siteIdentity,
             requestId: req.id || null
           });
           if (!quotaStatus.error) {
@@ -578,10 +569,7 @@ function createAltTextRouter({
     const quotaStatus = await getQuotaStatus(supabase, {
       account: req.user || req.license || null,
       licenseKey: effectiveLicenseKey,
-      siteHash: effectiveSite?.site_hash || siteIdentity.siteHash,
-      siteUrl: effectiveSite?.site_url || siteIdentity.siteUrl,
-      siteFingerprint: effectiveSite?.site_fingerprint || effectiveSite?.fingerprint || siteIdentity.siteFingerprint,
-      installUuid: effectiveSite?.wp_install_uuid || siteIdentity.wpInstallUuid,
+      siteIdentity,
       requestId: req.id || null
     });
 

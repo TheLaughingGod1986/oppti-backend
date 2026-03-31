@@ -165,24 +165,24 @@ async function getQuotaStatus(supabase, {
   siteFingerprint,
   installUuid,
   account,
-  requestId
+  requestId,
+  siteIdentity: prebuiltIdentity
 } = {}) {
-  const hasSiteSignals = Boolean(siteHash || siteUrl || siteFingerprint || installUuid);
+  const hasSiteSignals = Boolean(siteHash || siteUrl || siteFingerprint || installUuid || prebuiltIdentity);
   if (!hasSiteSignals) {
     return getLegacyQuotaStatus(supabase, { licenseKey, siteHash });
   }
 
-  // If the caller provided site signals that resolve to a development/localhost
-  // identity in production, we should not hard-fail quota *status* requests.
-  // Fall back to legacy license quota so the plugin can still show usage.
-  const identity = buildSiteIdentity({
+  // Use the caller-provided siteIdentity if available (preserves allowDevelopment
+  // flag set at the route level), otherwise build a fresh one.
+  const identity = prebuiltIdentity || buildSiteIdentity({
     siteHash,
     siteUrl,
     siteFingerprint,
     installUuid
   });
   if (identity?.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
-    return getLegacyQuotaStatus(supabase, { licenseKey, siteHash });
+    return getLegacyQuotaStatus(supabase, { licenseKey, siteHash: siteHash || identity.siteHash });
   }
 
   const siteStatus = await getSiteQuotaStatus(supabase, {
@@ -201,7 +201,7 @@ async function getQuotaStatus(supabase, {
     return siteStatus;
   }
 
-  return getLegacyQuotaStatus(supabase, { licenseKey, siteHash });
+  return getLegacyQuotaStatus(supabase, { licenseKey, siteHash: siteHash || identity?.siteHash });
 }
 
 /**
@@ -268,14 +268,16 @@ async function reserveGenerationQuota(supabase, {
   idempotencyKey = null,
   requestFingerprint = null,
   requestMetadata = {},
-  requestId = null
+  requestId = null,
+  siteIdentity: prebuiltIdentity = null
 } = {}) {
+  const effectiveSiteHash = siteHash || prebuiltIdentity?.siteHash;
   const skipList = (process.env.SKIP_QUOTA_CHECK_SITE_IDS || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
 
-  if (siteHash && skipList.includes(siteHash)) {
+  if (effectiveSiteHash && skipList.includes(effectiveSiteHash)) {
     return {
       error: null,
       reservation: {
@@ -293,15 +295,19 @@ async function reserveGenerationQuota(supabase, {
     };
   }
 
+  // Use the caller-provided siteIdentity if available (preserves allowDevelopment
+  // flag set at the route level), otherwise build a fresh one.
+  const identity = prebuiltIdentity || buildSiteIdentity({
+    siteHash,
+    siteUrl,
+    siteFingerprint,
+    installUuid
+  });
+
   const result = await reserveSiteCredits(supabase, {
     account,
     licenseKey,
-    siteIdentity: buildSiteIdentity({
-      siteHash,
-      siteUrl,
-      siteFingerprint,
-      installUuid
-    }),
+    siteIdentity: identity,
     creditsNeeded,
     quotaMode,
     idempotencyKey,
@@ -321,7 +327,7 @@ async function reserveGenerationQuota(supabase, {
     if (result.error !== 'TRIAL_EXHAUSTED') {
       logger.info('[Quota] Trial V2 reservation failed, falling back to legacy trial', {
         v2Error: result.error,
-        siteHash
+        siteHash: effectiveSiteHash
       });
       return {
         error: null,
@@ -363,7 +369,7 @@ async function reserveGenerationQuota(supabase, {
     });
   }
 
-  const legacy = await checkQuotaAvailable(supabase, { licenseKey, siteHash, creditsNeeded });
+  const legacy = await checkQuotaAvailable(supabase, { licenseKey, siteHash: effectiveSiteHash, creditsNeeded });
   if (legacy.error) {
     return {
       error: legacy.error,
