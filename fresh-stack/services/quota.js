@@ -172,15 +172,23 @@ async function getQuotaStatus(supabase, {
     return getLegacyQuotaStatus(supabase, { licenseKey, siteHash });
   }
 
+  // If the caller provided site signals that resolve to a development/localhost
+  // identity in production, we should not hard-fail quota *status* requests.
+  // Fall back to legacy license quota so the plugin can still show usage.
+  const identity = buildSiteIdentity({
+    siteHash,
+    siteUrl,
+    siteFingerprint,
+    installUuid
+  });
+  if (identity?.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
+    return getLegacyQuotaStatus(supabase, { licenseKey, siteHash });
+  }
+
   const siteStatus = await getSiteQuotaStatus(supabase, {
     account,
     licenseKey,
-    siteIdentity: buildSiteIdentity({
-      siteHash,
-      siteUrl,
-      siteFingerprint,
-      installUuid
-    }),
+    siteIdentity: identity,
     createIfMissing: false,
     requestId
   });
