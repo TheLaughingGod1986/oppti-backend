@@ -140,8 +140,14 @@ function authMiddleware({ supabase }) {
     // only send a site identifier). This is only as strong as the secrecy of
     // the site key; we require an active site row with a license_key.
     const body = req.body || {};
+    const siteUrl = req.header('X-Site-URL')
+      || body.site_url
+      || body.siteUrl
+      || null;
     const siteKey = req.header('X-Site-Key')
       || req.header('X-Site-Hash')
+      || req.header('X-Site-Id')
+      || req.header('X-Site-ID')
       || body.site_id
       || body.siteId
       || body.siteHash
@@ -149,6 +155,8 @@ function authMiddleware({ supabase }) {
       || null;
     const installUuid = req.header('X-Install-UUID')
       || req.header('X-WP-Install-UUID')
+      || req.header('X-Install-Id')
+      || req.header('X-Install-ID')
       || body.install_uuid
       || body.installUuid
       || null;
@@ -157,7 +165,7 @@ function authMiddleware({ supabase }) {
       || body.siteFingerprint
       || body.fingerprint
       || null;
-    if ((siteKey || installUuid || siteFingerprint) && supabase) {
+    if ((siteKey || installUuid || siteFingerprint || siteUrl) && supabase) {
       try {
         const selectSite = async (column, value) => {
           if (!value) return null;
@@ -173,7 +181,8 @@ function authMiddleware({ supabase }) {
         const site = await selectSite('wp_install_uuid', installUuid)
           || await selectSite('site_hash', siteKey)
           || await selectSite('site_fingerprint', siteFingerprint)
-          || await selectSite('fingerprint', siteFingerprint);
+          || await selectSite('fingerprint', siteFingerprint)
+          || await selectSite('site_url', siteUrl);
 
         if (site?.status === 'active' && site.license_key) {
           const siteLicense = await validateLicense(supabase, site.license_key);
