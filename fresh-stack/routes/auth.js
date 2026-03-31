@@ -172,8 +172,12 @@ function createAuthRouter({ supabase }) {
         .maybeSingle();
 
       if (existing) {
-        return res.status(409).json({
+        logger.info('[Auth] Register rejected: user exists', { email, requestId: req.id || null });
+        // Return 200 for plugin compatibility; include structured code.
+        return res.status(200).json({
+          success: false,
           error: 'USER_EXISTS',
+          code: 'USER_EXISTS',
           message: 'An account with this email already exists',
         });
       }
@@ -204,8 +208,11 @@ function createAuthRouter({ supabase }) {
       if (error) {
         logger.error('[Auth] Registration error:', error);
         logger.error('[Auth] Registration error details:', JSON.stringify(error, null, 2));
-        return res.status(500).json({
+        // Return 200 for plugin compatibility; include structured code.
+        return res.status(200).json({
+          success: false,
           error: 'REGISTRATION_FAILED',
+          code: 'REGISTRATION_FAILED',
           message: 'Failed to create account',
           details: error.message || 'Unknown error'
         });
@@ -290,8 +297,11 @@ function createAuthRouter({ supabase }) {
       });
     } catch (err) {
       logger.error('[Auth] Registration error:', err);
-      return res.status(500).json({
+      // Return 200 for plugin compatibility; include structured code.
+      return res.status(200).json({
+        success: false,
         error: 'SERVER_ERROR',
+        code: 'SERVER_ERROR',
         message: 'An error occurred during registration',
       });
     }
