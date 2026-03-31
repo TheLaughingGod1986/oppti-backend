@@ -105,6 +105,16 @@ function createAuthRouter({ supabase }) {
   // Register new user
   // If site_id is provided, checks if site already has a license (for credit sharing)
   router.post('/register', async (req, res) => {
+    const sendRegisterResponse = (payload) => {
+      const code = payload?.code || payload?.error || null;
+      logger.info('[Auth] Register response', {
+        success: Boolean(payload?.success),
+        code,
+        requestId: req.id || null
+      });
+      return res.status(200).json(payload);
+    };
+
     logger.info('[Auth] Register request received', {
       email: req.body?.email ? maskEmail(req.body.email) : null,
       hasPassword: Boolean(req.body?.password),
@@ -128,8 +138,10 @@ function createAuthRouter({ supabase }) {
 
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({
+      return sendRegisterResponse({
+        success: false,
         error: 'INVALID_REQUEST',
+        code: 'INVALID_REQUEST',
         message: 'Invalid request data',
         details: parsed.error.flatten(),
       });
@@ -148,7 +160,8 @@ function createAuthRouter({ supabase }) {
         });
 
         if (preflight.error === 'AMBIGUOUS_SITE_MATCH') {
-          return res.status(409).json({
+          return sendRegisterResponse({
+            success: false,
             error: 'AMBIGUOUS_SITE_MATCH',
             code: 'AMBIGUOUS_SITE_MATCH',
             message: 'This site matched multiple existing records and needs manual review before it can be linked.'
@@ -156,7 +169,8 @@ function createAuthRouter({ supabase }) {
         }
 
         if (preflight.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
-          return res.status(403).json({
+          return sendRegisterResponse({
+            success: false,
             error: 'DEVELOPMENT_SITE_NOT_ALLOWED',
             code: 'DEVELOPMENT_SITE_NOT_ALLOWED',
             message: 'Development and localhost sites cannot claim production free quota.'
@@ -173,8 +187,7 @@ function createAuthRouter({ supabase }) {
 
       if (existing) {
         logger.info('[Auth] Register rejected: user exists', { email, requestId: req.id || null });
-        // Return 200 for plugin compatibility; include structured code.
-        return res.status(200).json({
+        return sendRegisterResponse({
           success: false,
           error: 'USER_EXISTS',
           code: 'USER_EXISTS',
@@ -208,8 +221,7 @@ function createAuthRouter({ supabase }) {
       if (error) {
         logger.error('[Auth] Registration error:', error);
         logger.error('[Auth] Registration error details:', JSON.stringify(error, null, 2));
-        // Return 200 for plugin compatibility; include structured code.
-        return res.status(200).json({
+        return sendRegisterResponse({
           success: false,
           error: 'REGISTRATION_FAILED',
           code: 'REGISTRATION_FAILED',
@@ -232,7 +244,8 @@ function createAuthRouter({ supabase }) {
       }
 
       if (siteLink.error === 'AMBIGUOUS_SITE_MATCH') {
-        return res.status(409).json({
+        return sendRegisterResponse({
+          success: false,
           error: 'AMBIGUOUS_SITE_MATCH',
           code: 'AMBIGUOUS_SITE_MATCH',
           message: 'This site matched multiple existing records and needs manual review before it can be linked.'
@@ -240,7 +253,8 @@ function createAuthRouter({ supabase }) {
       }
 
       if (siteLink.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
-        return res.status(403).json({
+        return sendRegisterResponse({
+          success: false,
           error: 'DEVELOPMENT_SITE_NOT_ALLOWED',
           code: 'DEVELOPMENT_SITE_NOT_ALLOWED',
           message: 'Development and localhost sites cannot claim production free quota.'
@@ -265,8 +279,7 @@ function createAuthRouter({ supabase }) {
         requestId: req.id || null
       });
 
-      // Return 200 for maximum plugin compatibility (some clients treat non-200 as failure).
-      return res.status(200).json({
+      return sendRegisterResponse({
         success: true,
         message: 'Account created successfully',
         data: {
@@ -297,8 +310,7 @@ function createAuthRouter({ supabase }) {
       });
     } catch (err) {
       logger.error('[Auth] Registration error:', err);
-      // Return 200 for plugin compatibility; include structured code.
-      return res.status(200).json({
+      return sendRegisterResponse({
         success: false,
         error: 'SERVER_ERROR',
         code: 'SERVER_ERROR',
