@@ -38,8 +38,14 @@ function authMiddleware({ supabase }) {
     const trialSiteHash = req.header('X-Trial-Site-Hash')
       || req.header('X-Site-Hash')
       || req.header('X-Site-Key');
-    const licenseKey = req.header('X-License-Key');
-    const authHeader = req.header('Authorization');
+    const body = req.body || {};
+    const licenseKey = req.header('X-License-Key')
+      || body.license_key
+      || body.licenseKey
+      || null;
+    const authHeader = req.header('Authorization')
+      || (body.token ? `Bearer ${body.token}` : null)
+      || (body.jwt ? `Bearer ${body.jwt}` : null);
     const apiKey = req.header('X-API-Key');
     const hasBearerAuth = Boolean(authHeader && authHeader.startsWith('Bearer '));
     if (trialMode === 'true' && trialSiteHash && !licenseKey && !apiKey && !hasBearerAuth) {
@@ -139,7 +145,6 @@ function authMiddleware({ supabase }) {
     // Site-key based auth (for plugins that store the license server-side and
     // only send a site identifier). This is only as strong as the secrecy of
     // the site key; we require an active site row with a license_key.
-    const body = req.body || {};
     const siteUrl = req.header('X-Site-URL')
       || body.site_url
       || body.siteUrl
@@ -215,7 +220,13 @@ function authMiddleware({ supabase }) {
     logger.warn('[Auth] No license key or API token provided', {
       path: req.path,
       method: req.method,
-      headers: req.headers ? Object.keys(req.headers).filter(h => h.toLowerCase().includes('license') || h.toLowerCase().includes('api') || h.toLowerCase().includes('auth')) : []
+      headers: req.headers ? Object.keys(req.headers).filter(h => h.toLowerCase().includes('license') || h.toLowerCase().includes('api') || h.toLowerCase().includes('auth') || h.toLowerCase().includes('site') || h.toLowerCase().includes('install')) : [],
+      hasBodyLicenseKey: Boolean(body.license_key || body.licenseKey),
+      hasBodyToken: Boolean(body.token || body.jwt),
+      hasSiteUrl: Boolean(siteUrl),
+      hasSiteKey: Boolean(siteKey),
+      hasInstallUuid: Boolean(installUuid),
+      hasSiteFingerprint: Boolean(siteFingerprint)
     });
     return res.status(401).json({ 
       error: 'INVALID_LICENSE', 
