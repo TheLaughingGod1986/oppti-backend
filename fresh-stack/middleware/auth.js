@@ -139,9 +139,24 @@ function authMiddleware({ supabase }) {
     // Site-key based auth (for plugins that store the license server-side and
     // only send a site identifier). This is only as strong as the secrecy of
     // the site key; we require an active site row with a license_key.
-    const siteKey = req.header('X-Site-Key') || req.header('X-Site-Hash') || null;
-    const installUuid = req.header('X-Install-UUID') || req.header('X-WP-Install-UUID') || null;
-    const siteFingerprint = req.header('X-Site-Fingerprint') || null;
+    const body = req.body || {};
+    const siteKey = req.header('X-Site-Key')
+      || req.header('X-Site-Hash')
+      || body.site_id
+      || body.siteId
+      || body.siteHash
+      || body.installId
+      || null;
+    const installUuid = req.header('X-Install-UUID')
+      || req.header('X-WP-Install-UUID')
+      || body.install_uuid
+      || body.installUuid
+      || null;
+    const siteFingerprint = req.header('X-Site-Fingerprint')
+      || body.site_fingerprint
+      || body.siteFingerprint
+      || body.fingerprint
+      || null;
     if ((siteKey || installUuid || siteFingerprint) && supabase) {
       try {
         const selectSite = async (column, value) => {
