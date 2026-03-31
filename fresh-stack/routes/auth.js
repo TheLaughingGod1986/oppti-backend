@@ -105,6 +105,12 @@ function createAuthRouter({ supabase }) {
   // Register new user
   // If site_id is provided, checks if site already has a license (for credit sharing)
   router.post('/register', async (req, res) => {
+    logger.info('[Auth] Register request received', {
+      email: req.body?.email ? maskEmail(req.body.email) : null,
+      hasPassword: Boolean(req.body?.password),
+      hasSiteId: Boolean(req.body?.site_id || req.body?.siteId || req.body?.siteHash || req.body?.installId),
+      requestId: req.id || null
+    });
     const schema = z.object({
       email: z.string().email(),
       password: z.string().min(8),
@@ -245,7 +251,15 @@ function createAuthRouter({ supabase }) {
         { expiresIn: JWT_EXPIRES_IN }
       );
 
-      return res.status(201).json({
+      logger.info('[Auth] Register successful', {
+        email: user.email,
+        userId: user.id,
+        shared_site: Boolean(siteLink.sharedSite),
+        requestId: req.id || null
+      });
+
+      // Return 200 for maximum plugin compatibility (some clients treat non-200 as failure).
+      return res.status(200).json({
         success: true,
         message: 'Account created successfully',
         data: {
