@@ -306,26 +306,53 @@ async function reserveGenerationQuota(supabase, {
     return result;
   }
 
-  if (result.error !== 'SITE_QUOTA_V2_UNAVAILABLE') {
+  // For trial mode, any V2 error is recoverable — fall back to legacy trial
+  // tracking (trial_usage table). The V2 RPC may fail for new trial sites
+  // that have no site_trials row yet, or due to constraint violations.
+  if (quotaMode === 'trial') {
+    if (result.error !== 'TRIAL_EXHAUSTED') {
+      logger.info('[Quota] Trial V2 reservation failed, falling back to legacy trial', {
+        v2Error: result.error,
+        siteHash
+      });
+      return {
+        error: null,
+        site: result.site || null,
+        account,
+        reservation: {
+          ok: true,
+          status: 'legacy_trial',
+          generation_request_id: null,
+          remaining_credits: null,
+          total_limit: null,
+          credits_used: null,
+          quota_source: 'legacy_trial',
+          plan: 'trial'
+        }
+      };
+    }
+    // TRIAL_EXHAUSTED is a real exhaustion — propagate it.
     return result;
   }
 
-  if (quotaMode === 'trial') {
-    return {
-      error: null,
-      site: null,
-      account,
-      reservation: {
-        ok: true,
-        status: 'legacy_trial',
-        generation_request_id: null,
-        remaining_credits: null,
-        total_limit: null,
-        credits_used: null,
-        quota_source: 'legacy_trial',
-        plan: 'trial'
-      }
-    };
+  // In production we want V2, but if canonical site resolution/creation fails
+  // (eg. transient RLS/schema mismatch or bad identity signals), fall back to
+  // legacy license quota rather than hard-failing generation.
+  const v2FallbackErrors = new Set([
+    'SITE_QUOTA_V2_UNAVAILABLE',
+    'SITE_CREATE_FAILED',
+    'SITE_NOT_FOUND'
+  ]);
+  if (!v2FallbackErrors.has(result.error)) {
+    return result;
+  }
+
+  if (result.error !== 'SITE_QUOTA_V2_UNAVAILABLE') {
+    logger.warn('[Quota] V2 site reservation failed, falling back to legacy quota', {
+      v2Error: result.error,
+      siteHash,
+      licenseKeyPrefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null
+    });
   }
 
   const legacy = await checkQuotaAvailable(supabase, { licenseKey, siteHash, creditsNeeded });

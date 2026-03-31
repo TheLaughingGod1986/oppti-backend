@@ -455,8 +455,18 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
     };
   } catch (error) {
     logger.error('[siteQuota] canonical site create failed', {
-      error: error.message
+      error: error.message,
+      code: error.code || null
     });
+    if (isMissingSchemaError(error)) {
+      return {
+        site: null,
+        identity,
+        matchedBy: null,
+        created: false,
+        error: 'SITE_QUOTA_V2_UNAVAILABLE'
+      };
+    }
     return {
       site: null,
       identity,

@@ -14,6 +14,31 @@ const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { hashRequestFingerprint } = require('../services/siteQuota');
 const { extractUserInfo } = require('../middleware/auth');
 
+async function countLegacyTrialUsage(supabase, siteHash) {
+  if (!supabase || !siteHash) return null;
+  const { count, error } = await supabase
+    .from('trial_usage')
+    .select('id', { count: 'exact', head: true })
+    .eq('site_hash', siteHash);
+  if (error) return null;
+  return Number(count || 0);
+}
+
+async function buildTrialStatus(supabase, quotaStatus, siteHash) {
+  const trialLimit = 3;
+  const usedFromV2 = quotaStatus?.trial?.used_trial_credits;
+  const used = Number.isFinite(Number(usedFromV2))
+    ? Number(usedFromV2)
+    : await countLegacyTrialUsage(supabase, siteHash);
+
+  if (!Number.isFinite(Number(used))) return null;
+
+  const trial_used = Math.max(Number(used) || 0, 0);
+  const trial_remaining = Math.max(trialLimit - trial_used, 0);
+  const trial_exhausted = trial_used >= trialLimit;
+  return { trial_used, trial_remaining, trial_exhausted, trial_limit: trialLimit };
+}
+
 function hashPayload(base64) {
   return crypto.createHash('md5').update(base64).digest('hex');
 }
@@ -90,14 +115,16 @@ function createAltTextRouter({
     const logger = require('../lib/logger');
     
     // Log request for debugging
-    logger.info('[altText] Request validation', {
-      hasBody: !!req.body,
-      bodyKeys: req.body ? Object.keys(req.body) : [],
+    logger.info('[altText] Request received', {
+      mode: req.trialMode ? 'trial' : (req.authMethod || 'unknown'),
+      site_hash: req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || null),
+      site_fingerprint: req.header('X-Site-Fingerprint') ? 'present' : 'absent',
+      site_url: req.header('X-Site-URL') || null,
       hasImage: !!(req.body?.image),
-      imageKeys: req.body?.image ? Object.keys(req.body.image) : [],
       hasBase64: !!(req.body?.image?.base64 || req.body?.image?.image_base64),
       hasUrl: !!req.body?.image?.url,
-      hasContext: !!req.body?.context
+      hasContext: !!req.body?.context,
+      plugin_version: req.header('X-Plugin-Version') || null
     });
     
     const parsed = requestSchema.safeParse(req.body);
@@ -175,13 +202,8 @@ function createAltTextRouter({
     const normalizedBase64 = normalized.base64 || '';
     const cacheKey = normalizedBase64 ? hashPayload(normalizedBase64) : null;
 
-    // Enhanced logging for debugging
-    logger.info('[altText] Request received', {
-      hasBase64: !!(image.base64 || image.image_base64),
-      hasUrl: !!image.url,
+    logger.info('[altText] Image details', {
       imageSource: normalizedBase64 ? 'base64' : (normalized.url ? 'url' : 'none'),
-      rawBase64Preview: (image.base64 || image.image_base64 || '').substring(0, 100) + '...',
-      normalizedBase64Preview: normalizedBase64 ? normalizedBase64.substring(0, 100) + '...' : null,
       normalizedBase64Length: normalizedBase64 ? normalizedBase64.length : 0,
       imageUrl: normalized.url || null,
       dimensions: normalized.width && normalized.height ? `${normalized.width}x${normalized.height}` : 'unknown',
@@ -218,6 +240,7 @@ function createAltTextRouter({
         // Fetch current quota status to include accurate credits in cached response
         // This ensures the plugin gets up-to-date usage info even from cache
         let creditsInfo = {};
+        let trialInfo = null;
         try {
           const quotaStatus = await getQuotaStatus(supabase, {
             account: req.user || req.license || null,
@@ -234,13 +257,22 @@ function createAltTextRouter({
               credits_remaining: quotaStatus.credits_remaining,
               limit: quotaStatus.total_limit
             };
+            if (req.trialMode) {
+              trialInfo = await buildTrialStatus(supabase, quotaStatus, req.trialSiteHash || siteIdentity.siteHash);
+            }
             logger.info('[altText] Quota status fetched for cached response', creditsInfo);
           }
         } catch (err) {
           logger.warn('[altText] Failed to fetch quota for cached response', { error: err.message });
         }
 
-        return res.json({ ...cachedData, ...creditsInfo, cached: true });
+        return res.json({
+          success: true,
+          ...cachedData,
+          ...creditsInfo,
+          ...(trialInfo || {}),
+          cached: true
+        });
       }
     } else if (bypassCache) {
       logger.info('[altText] Cache bypassed', { reason: regenerate ? 'regenerate flag' : 'explicit bypass' });
@@ -290,7 +322,53 @@ function createAltTextRouter({
       requestId: req.id || null
     });
 
+    // When V2 quota fell back to legacy_trial, enforce the trial limit
+    // from the trial_usage table since no RPC guard ran.
+    if (!reservation.error && req.trialMode && reservation.reservation?.quota_source === 'legacy_trial') {
+      const legacyUsed = await countLegacyTrialUsage(supabase, siteIdentity.siteHash || req.trialSiteHash);
+      const trialLimit = 3;
+      if (legacyUsed !== null && legacyUsed >= trialLimit) {
+        logger.info('[altText] Legacy trial exhausted', { site_hash: siteIdentity.siteHash, used: legacyUsed, limit: trialLimit });
+        return res.status(402).json({
+          error: 'TRIAL_EXHAUSTED',
+          code: 'TRIAL_EXHAUSTED',
+          message: 'Free trial exhausted. Upgrade to continue generating alt text.',
+          trial_used: legacyUsed,
+          trial_remaining: 0,
+          trial_exhausted: true,
+          trial_limit: trialLimit
+        });
+      }
+    }
+
     if (reservation.error) {
+      // Trial exhausted must return structured trial status for UI correctness.
+      let trialInfo = null;
+      if (req.trialMode) {
+        try {
+          const quotaStatus = await getQuotaStatus(supabase, {
+            account: req.user || req.license || null,
+            licenseKey,
+            siteHash: req.trialSiteHash || siteIdentity.siteHash,
+            siteUrl: siteIdentity.siteUrl,
+            siteFingerprint: siteIdentity.siteFingerprint,
+            installUuid: siteIdentity.wpInstallUuid,
+            requestId: req.id || null
+          });
+          if (!quotaStatus.error) {
+            trialInfo = await buildTrialStatus(supabase, quotaStatus, req.trialSiteHash || siteIdentity.siteHash);
+          } else {
+            // If v2 quota status fails, fall back to legacy trial_usage count.
+            const legacyUsed = await countLegacyTrialUsage(supabase, req.trialSiteHash || siteIdentity.siteHash);
+            if (Number.isFinite(Number(legacyUsed))) {
+              trialInfo = await buildTrialStatus(supabase, { trial: { used_trial_credits: legacyUsed } }, req.trialSiteHash || siteIdentity.siteHash);
+            }
+          }
+        } catch (_err) {
+          // Best-effort: do not block error response.
+        }
+      }
+
       return res.status(reservation.status || 402).json({
         error: reservation.error,
         message: reservation.message || 'Quota exceeded',
@@ -298,11 +376,18 @@ function createAltTextRouter({
         credits_used: reservation.payload?.credits_used,
         total_limit: reservation.payload?.total_limit,
         reset_date: reservation.payload?.quota_period_end || reservation.payload?.reset_date,
-        remaining: reservation.payload?.remaining_credits
+        remaining: reservation.payload?.remaining_credits,
+        ...(trialInfo || {}),
+        trial_exhausted: trialInfo?.trial_exhausted === true || reservation.error === 'TRIAL_EXHAUSTED' ? true : undefined
       });
     }
 
-    logger.info('[altText] Calling OpenAI to generate alt text');
+    logger.info('[altText] Quota reserved, calling OpenAI', {
+      mode: req.trialMode ? 'trial' : 'site',
+      quota_source: reservation.reservation?.quota_source || 'unknown',
+      site_hash: siteIdentity.siteHash,
+      generation_request_id: reservation.reservation?.generation_request_id || null
+    });
     const startTime = Date.now();
     let altText;
     let usage;
@@ -324,17 +409,45 @@ function createAltTextRouter({
         success: false,
         finalMetadata: {
           error_message: error.message,
+          error_code: error.code || 'GENERATION_FAILED',
           request_id: req.id || null
         }
       });
+
+      const errorCode = error.code || 'GENERATION_FAILED';
+      const isRetryable = error.isRetryable === true;
+      const httpStatus = errorCode === 'BACKEND_CONFIG_ERROR' ? 502
+        : errorCode === 'UPSTREAM_RATE_LIMITED' ? 503
+        : errorCode === 'UPSTREAM_GENERATION_ERROR' ? 502
+        : 500;
+
       logger.error('[altText] Alt text generation failed', {
         error: error.message,
+        code: errorCode,
+        isRetryable,
+        trialMode: !!req.trialMode,
         requestId: req.id || null,
         siteHash: siteKey
       });
-      return res.status(500).json({
-        error: 'GENERATION_FAILED',
-        message: 'Failed to generate alt text'
+
+      // Build trial info even on failure so the plugin knows remaining credits
+      let trialInfo = null;
+      if (req.trialMode) {
+        try {
+          trialInfo = await buildTrialStatus(supabase, {}, req.trialSiteHash || siteIdentity.siteHash);
+        } catch (_e) { /* best effort */ }
+      }
+
+      return res.status(httpStatus).json({
+        error: errorCode,
+        code: errorCode,
+        message: errorCode === 'BACKEND_CONFIG_ERROR'
+          ? 'The alt text service is temporarily misconfigured. Please try again later.'
+          : isRetryable
+            ? 'Alt text generation temporarily unavailable. Please retry.'
+            : 'Failed to generate alt text.',
+        retryable: isRetryable,
+        ...(trialInfo || {})
       });
     }
     
@@ -450,6 +563,7 @@ function createAltTextRouter({
     let creditsRemaining = null;
     let totalLimit = null;
     let creditsUsed = 1;
+    let trialInfo = null;
     await new Promise(resolve => setTimeout(resolve, 50));
 
     const quotaStatus = await getQuotaStatus(supabase, {
@@ -466,6 +580,9 @@ function createAltTextRouter({
       creditsRemaining = quotaStatus.credits_remaining;
       totalLimit = quotaStatus.total_limit;
       creditsUsed = quotaStatus.credits_used;
+      if (req.trialMode) {
+        trialInfo = await buildTrialStatus(supabase, quotaStatus, req.trialSiteHash || siteIdentity.siteHash);
+      }
       logger.info('[altText] Quota status fetched after usage', {
         credits_remaining: creditsRemaining,
         total_limit: totalLimit,
@@ -495,10 +612,12 @@ function createAltTextRouter({
     }
 
     const response = {
+      success: true,
       altText,
       credits_used: creditsUsed,
       credits_remaining: creditsRemaining !== null ? creditsRemaining : undefined,
       limit: totalLimit !== null ? totalLimit : undefined,
+      ...(trialInfo || {}),
       usage: {
         prompt_tokens: usage?.prompt_tokens,
         completion_tokens: usage?.completion_tokens,
@@ -512,11 +631,18 @@ function createAltTextRouter({
     };
     
     // Log the response being sent
-    logger.info('[altText] Sending response with credits', {
+    logger.info('[altText] Sending response', {
+      mode: req.trialMode ? 'trial' : 'site',
+      success: true,
+      has_altText: !!response.altText,
       credits_used: response.credits_used,
       credits_remaining: response.credits_remaining,
       limit: response.limit,
-      has_altText: !!response.altText
+      trial_used: response.trial_used ?? null,
+      trial_remaining: response.trial_remaining ?? null,
+      trial_exhausted: response.trial_exhausted ?? null,
+      site_hash: siteIdentity.siteHash,
+      quota_source: reservation.reservation?.quota_source || 'unknown'
     });
     
     res.json(response);

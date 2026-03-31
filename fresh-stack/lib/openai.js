@@ -83,11 +83,10 @@ async function generateAltText({ image, context }) {
 
   if (!apiKey) {
     logger.error('[OpenAI] Missing API key - check OPENAI_API_KEY or ALTTEXT_OPENAI_API_KEY in .env.local');
-    return {
-      altText: fallbackAltText(context),
-      usage: null,
-      meta: { usedFallback: true, reason: 'Missing OpenAI API key' }
-    };
+    const configError = new Error('OpenAI API key is not configured. Set ALTTEXT_OPENAI_API_KEY or OPENAI_API_KEY.');
+    configError.code = 'BACKEND_CONFIG_ERROR';
+    configError.isRetryable = false;
+    throw configError;
   }
   
   // Log API key status (first few chars only for security)
@@ -193,30 +192,38 @@ async function generateAltText({ image, context }) {
   } catch (error) {
     const message = error?.response?.data?.error?.message || error.message || 'OpenAI request failed';
     const errorCode = error?.response?.data?.error?.code || error?.response?.status || 'UNKNOWN';
-    
-    // Check for API key errors specifically
+    const httpStatus = error?.response?.status || null;
     const isApiKeyError = /incorrect.*api.*key|invalid.*api.*key|authentication.*failed/i.test(message);
-    
+    const isRateLimit = httpStatus === 429;
+    const isServerError = httpStatus >= 500;
+
     logger.error('[OpenAI] Alt text generation failed', {
       error: message,
       code: errorCode,
-      status: error?.response?.status,
+      status: httpStatus,
       model: modelUsed,
       hasApiKey: !!apiKey,
       apiKeyPrefix: apiKey ? apiKey.substring(0, 10) + '...' : 'missing',
-      isApiKeyError: isApiKeyError
+      isApiKeyError,
+      isRateLimit,
+      isServerError
     });
-    
-    // If it's an API key error, log it prominently
+
     if (isApiKeyError) {
       logger.error('[OpenAI] CRITICAL: Invalid or missing OpenAI API key. Please check your .env.local file and ensure OPENAI_API_KEY is set correctly.');
     }
-    
-    return {
-      altText: fallbackAltText(context),
-      usage: null,
-      meta: { usedFallback: true, reason: message, errorCode, isApiKeyError }
-    };
+
+    // Throw a structured error so callers can decide how to handle it.
+    // Previously this silently returned fallback text, which burned trial
+    // credits on placeholder text and masked upstream failures.
+    const genError = new Error(message);
+    genError.code = isApiKeyError ? 'BACKEND_CONFIG_ERROR'
+      : isRateLimit ? 'UPSTREAM_RATE_LIMITED'
+      : isServerError ? 'UPSTREAM_GENERATION_ERROR'
+      : 'GENERATION_FAILED';
+    genError.httpStatus = httpStatus;
+    genError.isRetryable = isRateLimit || isServerError;
+    throw genError;
   }
 }
 

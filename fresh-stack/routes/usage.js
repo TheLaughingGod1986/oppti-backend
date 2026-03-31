@@ -2,13 +2,44 @@ const express = require('express');
 const { getQuotaStatus } = require('../services/quota');
 const { getUserUsage, getSiteUsage, getPeriodBounds } = require('../services/usage');
 
+async function countLegacyTrialUsage(supabase, siteHash) {
+  if (!supabase || !siteHash) return null;
+  const { count, error } = await supabase
+    .from('trial_usage')
+    .select('id', { count: 'exact', head: true })
+    .eq('site_hash', siteHash);
+  if (error) return null;
+  return Number(count || 0);
+}
+
+async function buildTrialStatus(supabase, status, siteHash) {
+  const trialLimit = 3;
+  const usedFromV2 = status?.trial?.used_trial_credits;
+  const used = Number.isFinite(Number(usedFromV2))
+    ? Number(usedFromV2)
+    : await countLegacyTrialUsage(supabase, siteHash);
+
+  if (!Number.isFinite(Number(used))) {
+    return null;
+  }
+
+  const trial_used = Math.max(Number(used) || 0, 0);
+  const trial_remaining = Math.max(trialLimit - trial_used, 0);
+  const trial_exhausted = trial_used >= trialLimit;
+  return { trial_used, trial_remaining, trial_exhausted, trial_limit: trialLimit };
+}
+
 function createUsageRouter({ supabase }) {
   const router = express.Router();
 
   // GET /usage - current quota status
   router.get('/', async (req, res) => {
     const licenseKey = req.header('X-License-Key') || req.license?.license_key;
-    const siteKey = req.header('X-Site-Key') || req.header('X-Site-Hash');
+    // Trial mode requests only send X-Trial-Site-Hash (see auth middleware).
+    // Always treat backend quota/trial status as authoritative.
+    const siteKey = req.trialMode
+      ? req.trialSiteHash
+      : (req.header('X-Site-Key') || req.header('X-Site-Hash'));
     const siteUrl = req.header('X-Site-URL') || null;
     const siteFingerprint = req.header('X-Site-Fingerprint') || null;
 
@@ -21,9 +52,41 @@ function createUsageRouter({ supabase }) {
       installUuid: siteKey,
       requestId: req.id || null
     });
+
+    // For trial mode, quota status may fail (no license) — that's expected.
+    // Build trial status directly from trial_usage table as authoritative source.
+    if (req.trialMode) {
+      const trial = status.error
+        ? await buildTrialStatus(supabase, {}, siteKey)
+        : await buildTrialStatus(supabase, status, siteKey);
+
+      const trialInfo = trial || { trial_used: 0, trial_remaining: 3, trial_exhausted: false, trial_limit: 3 };
+      return res.json({
+        success: true,
+        data: {
+          usage: {
+            used: trialInfo.trial_used,
+            remaining: trialInfo.trial_remaining,
+            limit: trialInfo.trial_limit,
+            plan: 'trial',
+            plan_type: 'trial',
+            billing_cycle: 'trial',
+            trial: trialInfo
+          },
+          credits_used: trialInfo.trial_used,
+          credits_remaining: trialInfo.trial_remaining,
+          total_limit: trialInfo.trial_limit,
+          plan_type: 'trial',
+          ...trialInfo
+        }
+      });
+    }
+
     if (status.error) {
       return res.status(status.status || 401).json(status);
     }
+
+    const trial = await buildTrialStatus(supabase, status, siteKey);
 
     // Return in format expected by plugin
     return res.json({
@@ -39,13 +102,15 @@ function createUsageRouter({ supabase }) {
           reset_date: status.reset_date,
           billing_cycle: 'monthly',
           warning_threshold: status.warning_threshold,
-          is_near_limit: status.is_near_limit
+          is_near_limit: status.is_near_limit,
+          trial
         },
         credits_used: status.credits_used,
         credits_remaining: status.credits_remaining,
         total_limit: status.total_limit,
         plan_type: status.plan_type,
-        reset_date: status.reset_date
+        reset_date: status.reset_date,
+        ...(trial || {})
       }
     });
   });

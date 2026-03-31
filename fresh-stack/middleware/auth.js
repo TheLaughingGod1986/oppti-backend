@@ -32,7 +32,12 @@ function authMiddleware({ supabase }) {
     // If a request has real auth credentials, it must use account quota even
     // when stale trial headers are still present.
     const trialMode = req.header('X-Trial-Mode');
-    const trialSiteHash = req.header('X-Trial-Site-Hash');
+    // Accept trial site hash from dedicated header OR standard site identity headers.
+    // Plugins may send site identity via X-Site-Hash / X-Site-Key rather than
+    // the trial-specific X-Trial-Site-Hash header.
+    const trialSiteHash = req.header('X-Trial-Site-Hash')
+      || req.header('X-Site-Hash')
+      || req.header('X-Site-Key');
     const licenseKey = req.header('X-License-Key');
     const authHeader = req.header('Authorization');
     const apiKey = req.header('X-API-Key');
@@ -41,8 +46,31 @@ function authMiddleware({ supabase }) {
       req.trialMode = true;
       req.trialSiteHash = trialSiteHash;
       req.authMethod = 'trial';
-      logger.info('[Auth] Trial mode request', { site_hash: trialSiteHash });
+      logger.info('[Auth] Trial mode request', {
+        site_hash: trialSiteHash,
+        source: req.header('X-Trial-Site-Hash') ? 'X-Trial-Site-Hash'
+          : req.header('X-Site-Hash') ? 'X-Site-Hash' : 'X-Site-Key',
+        site_url: req.header('X-Site-URL') || null,
+        site_fingerprint: req.header('X-Site-Fingerprint') ? 'present' : 'absent'
+      });
       return next();
+    }
+
+    // If trial mode header is present but we couldn't activate trial mode,
+    // log a diagnostic so the failure is visible.
+    if (trialMode === 'true') {
+      logger.warn('[Auth] Trial mode header present but not activated', {
+        has_trial_site_hash: !!req.header('X-Trial-Site-Hash'),
+        has_site_hash: !!req.header('X-Site-Hash'),
+        has_site_key: !!req.header('X-Site-Key'),
+        has_license_key: !!licenseKey,
+        has_api_key: !!apiKey,
+        has_bearer: hasBearerAuth,
+        reason: !trialSiteHash ? 'no_site_identity'
+          : licenseKey ? 'has_license_key'
+          : apiKey ? 'has_api_key'
+          : hasBearerAuth ? 'has_bearer_auth' : 'unknown'
+      });
     }
 
     // Debug logging
