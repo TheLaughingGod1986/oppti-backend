@@ -179,7 +179,7 @@ function authMiddleware({ supabase }) {
             .select('license_key, status, site_hash, wp_install_uuid, site_fingerprint, fingerprint')
             .eq(column, value)
             .maybeSingle();
-          return data || null;
+          return data ? { site: data, matchedBy: column } : null;
         };
 
         const selectSiteByUrl = async (rawUrl) => {
@@ -209,21 +209,30 @@ function authMiddleware({ supabase }) {
             .ilike('site_url', `%${hostname}%`)
             .order('last_seen_at', { ascending: false, nullsFirst: false })
             .limit(1);
-          return Array.isArray(data) && data.length ? data[0] : null;
+          return Array.isArray(data) && data.length ? { site: data[0], matchedBy: 'site_url_hostname' } : null;
         };
 
         // Try in order of strongest/most specific identifiers.
-        const site = await selectSite('wp_install_uuid', installUuid)
+        const resolved = await selectSite('wp_install_uuid', installUuid)
           || await selectSite('site_hash', siteKey)
           || await selectSite('site_fingerprint', siteFingerprint)
           || await selectSite('fingerprint', siteFingerprint)
           || await selectSiteByUrl(siteUrl);
+
+        const site = resolved?.site || null;
+        const matchedBy = resolved?.matchedBy || null;
 
         if (site?.status === 'active' && site.license_key) {
           const siteLicense = await validateLicense(supabase, site.license_key);
           if (!siteLicense.error) {
             req.license = siteLicense.license;
             req.authMethod = 'site';
+            logger.info('[Auth] Site-based auth resolved', {
+              matchedBy,
+              site_hash: site.site_hash || null,
+              requestId: req.id || null,
+              path: req.path
+            });
             return next();
           }
           logger.warn('[Auth] Site-key resolved license invalid', {
