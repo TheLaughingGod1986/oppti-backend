@@ -583,9 +583,6 @@ function createAltTextRouter({
       creditsRemaining = quotaStatus.credits_remaining;
       totalLimit = quotaStatus.total_limit;
       creditsUsed = quotaStatus.credits_used;
-      if (req.trialMode) {
-        trialInfo = await buildTrialStatus(supabase, quotaStatus, req.trialSiteHash || siteIdentity.siteHash);
-      }
       logger.info('[altText] Quota status fetched after usage', {
         credits_remaining: creditsRemaining,
         total_limit: totalLimit,
@@ -603,6 +600,20 @@ function createAltTextRouter({
         total_limit: totalLimit,
         credits_used: creditsUsed
       });
+    }
+
+    // Trial mode should always return authoritative trial counters, even when
+    // quota status fails (eg. dev hosts or no V2 schema).
+    if (req.trialMode) {
+      try {
+        trialInfo = await buildTrialStatus(
+          supabase,
+          quotaStatus && !quotaStatus.error ? quotaStatus : {},
+          req.trialSiteHash || siteIdentity.siteHash
+        );
+      } catch (_err) {
+        // Best-effort: never block successful generation response.
+      }
     }
 
     if (cacheKey && !bypassCache) {
