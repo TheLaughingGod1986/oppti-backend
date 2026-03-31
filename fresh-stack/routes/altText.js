@@ -145,7 +145,10 @@ function createAltTextRouter({
       siteHash: req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || 'default'),
       installUuid: req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || req.body?.site_id || req.body?.siteId || null),
       siteUrl: req.header('X-Site-URL') || req.body?.trial_site_url || req.body?.site_url || null,
-      siteFingerprint: req.header('X-Site-Fingerprint') || req.body?.site_fingerprint || null
+      siteFingerprint: req.header('X-Site-Fingerprint') || req.body?.site_fingerprint || null,
+      // Trial mode is explicitly intended to work for local/dev installs.
+      // Production quota claims still remain blocked for development hosts.
+      allowDevelopment: Boolean(req.trialMode)
     });
     if (siteIdentity.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
       return res.status(403).json({
