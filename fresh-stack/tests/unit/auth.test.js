@@ -88,6 +88,7 @@ describe('auth middleware', () => {
     const supabase = createSupabaseMock(null);
     const mw = authMiddleware({ supabase });
     const req = {
+      path: '/api/alt-text',
       header: (name) => {
         if (name === 'X-Trial-Mode') return 'true';
         if (name === 'X-Trial-Site-Hash') return 'trial-site';
@@ -106,5 +107,32 @@ describe('auth middleware', () => {
     expect(req.trialMode).toBe(true);
     expect(req.trialSiteHash).toBe('trial-site');
     expect(req.authMethod).toBe('trial');
+  });
+
+  test('allows anonymous dashboard trial requests with persistent anon id', async () => {
+    const supabase = createSupabaseMock(null);
+    const mw = authMiddleware({ supabase });
+    const req = {
+      path: '/api/alt-text',
+      body: { anon_id: 'Anon-ABC-123' },
+      header: (name) => {
+        if (name === 'X-Site-Key') return 'trial-site';
+        return null;
+      }
+    };
+    const res = createRes();
+    let nextCalled = false;
+
+    await mw(req, res, () => {
+      nextCalled = true;
+    });
+
+    expect(nextCalled).toBe(true);
+    expect(req.trialMode).toBe(true);
+    expect(req.trialSiteHash).toBe('trial-site');
+    expect(req.anonId).toBe('anon-abc-123');
+    expect(req.anonymous).toEqual(expect.objectContaining({
+      anonId: 'anon-abc-123'
+    }));
   });
 });

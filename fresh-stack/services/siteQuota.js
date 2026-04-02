@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
+const { getAnonymousTrialLimit } = require('./anonymousTrial');
 const { getLimits } = require('./planLimits');
 
 const SITE_SELECT = [
@@ -30,7 +31,7 @@ const ROLE_RANK = {
   owner: 3
 };
 
-const DEFAULT_TRIAL_CREDITS = Number(process.env.SITE_TRIAL_CREDITS || process.env.TRIAL_LIMIT || 3);
+const DEFAULT_TRIAL_CREDITS = getAnonymousTrialLimit();
 
 function isMissingSchemaError(error) {
   if (!error) return false;
@@ -191,12 +192,30 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
     .single();
 
   if (error && isUniqueViolation(error)) {
+    logger.info('[siteQuota] Site already exists (race-safe duplicate)', {
+      site_hash: payload.site_hash,
+      canonical_domain: payload.canonical_domain || null
+    });
     return null;
   }
 
   if (error) {
+    logger.error('[siteQuota] Site creation failed', {
+      site_hash: payload.site_hash,
+      error: error.message,
+      code: error.code
+    });
     throw error;
   }
+
+  logger.info('[siteQuota] Site created', {
+    site_id: data?.id || null,
+    site_hash: payload.site_hash,
+    canonical_domain: payload.canonical_domain || null,
+    environment: payload.environment,
+    has_license: !!payload.license_key,
+    has_owner: !!payload.owner_user_id
+  });
 
   return data || payload;
 }
@@ -391,6 +410,12 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
   }
 
   if (site) {
+    logger.info('[siteQuota] Existing site matched', {
+      site_id: site.id,
+      site_hash: site.site_hash,
+      matched_by: matchedBy,
+      canonical_domain: site.canonical_domain || null
+    });
     const resolvedSite = await followMergedSite(supabase, site);
     const reconciledSite = await reconcileResolvedSite(supabase, resolvedSite, identity, {
       legacyLicenseKey,

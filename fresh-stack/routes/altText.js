@@ -1,8 +1,14 @@
 const express = require('express');
 const crypto = require('crypto');
 const { z } = require('zod');
+const logger = require('../lib/logger');
+const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const { validateImagePayload } = require('../lib/validation');
 const { generateAltText } = require('../lib/openai');
+const {
+  getAnonymousTrialStatus,
+  isMissingSchemaError
+} = require('../services/anonymousTrial');
 const {
   finalizeGenerationQuotaReservation,
   getQuotaStatus,
@@ -13,31 +19,6 @@ const { findOrCreateTrialSite } = require('../services/site');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { hashRequestFingerprint } = require('../services/siteQuota');
 const { extractUserInfo } = require('../middleware/auth');
-
-async function countLegacyTrialUsage(supabase, siteHash) {
-  if (!supabase || !siteHash) return null;
-  const { count, error } = await supabase
-    .from('trial_usage')
-    .select('id', { count: 'exact', head: true })
-    .eq('site_hash', siteHash);
-  if (error) return null;
-  return Number(count || 0);
-}
-
-async function buildTrialStatus(supabase, quotaStatus, siteHash) {
-  const trialLimit = 3;
-  const usedFromV2 = quotaStatus?.trial?.used_trial_credits;
-  const used = Number.isFinite(Number(usedFromV2))
-    ? Number(usedFromV2)
-    : await countLegacyTrialUsage(supabase, siteHash);
-
-  if (!Number.isFinite(Number(used))) return null;
-
-  const trial_used = Math.max(Number(used) || 0, 0);
-  const trial_remaining = Math.max(trialLimit - trial_used, 0);
-  const trial_exhausted = trial_used >= trialLimit;
-  return { trial_used, trial_remaining, trial_exhausted, trial_limit: trialLimit };
-}
 
 function hashPayload(base64) {
   return crypto.createHash('md5').update(base64).digest('hex');
@@ -60,13 +41,15 @@ function buildGenerationFingerprint({
   normalizedImage,
   context,
   userInfo,
-  regenerate
+  regenerate,
+  anonymousContext
 }) {
   return hashRequestFingerprint({
     site_hash: siteIdentity.siteHash || null,
     wp_install_uuid: siteIdentity.wpInstallUuid || null,
     user_id: userInfo.user_id || null,
     user_email: userInfo.user_email || null,
+    anon_id: anonymousContext?.anonId || null,
     filename: normalizedImage.filename || null,
     url: normalizedImage.url || null,
     image_hash: normalizedImage.base64
@@ -75,6 +58,42 @@ function buildGenerationFingerprint({
     context: context || {},
     regenerate: Boolean(regenerate)
   });
+}
+
+async function recordLegacyTrialUsage(supabase, payload) {
+  const legacyPayload = {
+    site_hash: payload.site_hash,
+    site_fingerprint: payload.site_fingerprint,
+    site_url: payload.site_url,
+    prompt_tokens: payload.prompt_tokens,
+    completion_tokens: payload.completion_tokens,
+    total_tokens: payload.total_tokens,
+    model_used: payload.model_used,
+    generation_time_ms: payload.generation_time_ms,
+    image_filename: payload.image_filename
+  };
+
+  const { error } = await supabase.from('trial_usage').insert(payload);
+  if (!error || !isMissingSchemaError(error)) {
+    return { error };
+  }
+
+  return supabase.from('trial_usage').insert(legacyPayload);
+}
+
+function buildAnonymousResponseFields(anonymousContext, trialInfo) {
+  if (!trialInfo) {
+    return {
+      anon_id: anonymousContext?.anonId || null,
+      signup_required: false
+    };
+  }
+
+  return {
+    anon_id: anonymousContext?.anonId || null,
+    signup_required: Boolean(trialInfo.signup_required),
+    anonymous: trialInfo.anonymous
+  };
 }
 
 const requestSchema = z.object({
@@ -112,21 +131,6 @@ function createAltTextRouter({
   const router = express.Router();
 
   router.post('/', async (req, res) => {
-    const logger = require('../lib/logger');
-    
-    // Log request for debugging
-    logger.info('[altText] Request received', {
-      mode: req.trialMode ? 'trial' : (req.authMethod || 'unknown'),
-      site_hash: req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || null),
-      site_fingerprint: req.header('X-Site-Fingerprint') ? 'present' : 'absent',
-      site_url: req.header('X-Site-URL') || null,
-      hasImage: !!(req.body?.image),
-      hasBase64: !!(req.body?.image?.base64 || req.body?.image?.image_base64),
-      hasUrl: !!req.body?.image?.url,
-      hasContext: !!req.body?.context,
-      plugin_version: req.header('X-Plugin-Version') || null
-    });
-    
     const parsed = requestSchema.safeParse(req.body);
     if (!parsed.success) {
       logger.error('[altText] Schema validation failed', {
@@ -156,6 +160,26 @@ function createAltTextRouter({
       // enforced by license key / JWT and does not grant anonymous access.
       allowDevelopment: Boolean(req.trialMode || hasAccountAuth)
     });
+    const anonymousContext = buildAnonymousContext({
+      req,
+      body: parsed.data,
+      siteIdentity
+    });
+
+    logger.info('[altText] Request received', {
+      mode: req.trialMode ? 'trial' : (req.authMethod || 'unknown'),
+      site_hash: req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || null),
+      site_fingerprint: req.header('X-Site-Fingerprint') ? 'present' : 'absent',
+      site_url: req.header('X-Site-URL') || null,
+      hasImage: !!(parsed.data?.image),
+      hasBase64: !!(parsed.data?.image?.base64 || parsed.data?.image?.image_base64),
+      hasUrl: !!parsed.data?.image?.url,
+      hasContext: !!parsed.data?.context,
+      plugin_version: req.header('X-Plugin-Version') || null,
+      anon_id: anonymousContext.anonId || null,
+      anonymous_risk_key: anonymousContext.riskKey || null
+    });
+
     if (siteIdentity.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
       return res.status(403).json({
         error: 'DEVELOPMENT_SITE_NOT_ALLOWED',
@@ -170,9 +194,12 @@ function createAltTextRouter({
     // Support regenerate flag in body or query, plus cache bypass headers
     const regenerate = req.body.regenerate === true || req.query.regenerate === 'true' || req.query.regenerate === '1';
     const bypassCache = regenerate || req.header('X-Bypass-Cache') === 'true' || req.query.no_cache === '1';
+    const rateLimitKey = req.trialMode
+      ? `${siteKey}:${anonymousContext.riskKey || anonymousContext.anonId || 'anonymous'}:${req.ip || 'unknown-ip'}`
+      : `${siteKey}:${req.ip || 'unknown-ip'}`;
 
     // Rate limit per site/license
-    if (!(await checkRateLimit(`${siteKey}:${req.ip || 'unknown-ip'}`))) {
+    if (!(await checkRateLimit(rateLimitKey))) {
       return res.status(429).json({
         error: 'RATE_LIMIT_EXCEEDED',
         message: 'Rate limit exceeded for this site. Please retry later.',
@@ -257,15 +284,19 @@ function createAltTextRouter({
             siteIdentity,
             requestId: req.id || null
           });
+          if (req.trialMode) {
+            trialInfo = await getAnonymousTrialStatus(supabase, {
+              quotaStatus: quotaStatus.error ? {} : quotaStatus,
+              siteHash: req.trialSiteHash || siteIdentity.siteHash,
+              anonId: anonymousContext.anonId
+            });
+          }
           if (!quotaStatus.error) {
             creditsInfo = {
               credits_used: quotaStatus.credits_used,
               credits_remaining: quotaStatus.credits_remaining,
               limit: quotaStatus.total_limit
             };
-            if (req.trialMode) {
-              trialInfo = await buildTrialStatus(supabase, quotaStatus, req.trialSiteHash || siteIdentity.siteHash);
-            }
             logger.info('[altText] Quota status fetched for cached response', creditsInfo);
           }
         } catch (err) {
@@ -277,6 +308,7 @@ function createAltTextRouter({
           ...cachedData,
           ...creditsInfo,
           ...(trialInfo || {}),
+          ...(req.trialMode ? buildAnonymousResponseFields(anonymousContext, trialInfo) : {}),
           cached: true
         });
       }
@@ -285,13 +317,33 @@ function createAltTextRouter({
     }
 
     if (req.trialMode) {
-      findOrCreateTrialSite(supabase, {
-        siteHash: siteIdentity.siteHash,
-        siteUrl: siteIdentity.siteUrl,
-        fingerprint: siteIdentity.siteFingerprint
-      }).catch(err => {
-        logger.warn('[altText] Trial site upsert failed (non-blocking)', { error: err.message });
-      });
+      try {
+        const trialSiteResult = await findOrCreateTrialSite(supabase, {
+          siteHash: siteIdentity.siteHash,
+          siteUrl: siteIdentity.siteUrl,
+          fingerprint: siteIdentity.siteFingerprint
+        });
+        if (trialSiteResult.error) {
+          logger.error('[altText] Trial site creation/lookup failed', {
+            error: trialSiteResult.error.message || trialSiteResult.error,
+            site_hash: siteIdentity.siteHash,
+            site_url: siteIdentity.siteUrl || null,
+            anon_id: anonymousContext.anonId || null
+          });
+        } else {
+          logger.info('[altText] Anonymous trial site resolved', {
+            site_id: trialSiteResult.data?.id || null,
+            site_hash: trialSiteResult.data?.site_hash || siteIdentity.siteHash,
+            anon_id: anonymousContext.anonId || null
+          });
+        }
+      } catch (err) {
+        logger.error('[altText] Trial site upsert threw unexpectedly', {
+          error: err.message,
+          site_hash: siteIdentity.siteHash,
+          anon_id: anonymousContext.anonId || null
+        });
+      }
     }
 
     const idempotencyKey = extractIdempotencyKey(req);
@@ -300,7 +352,8 @@ function createAltTextRouter({
       normalizedImage: normalized,
       context,
       userInfo,
-      regenerate
+      regenerate,
+      anonymousContext
     });
 
     const quotaMetadata = {
@@ -310,7 +363,11 @@ function createAltTextRouter({
       image_url: normalized.url || null,
       plugin_version: userInfo.plugin_version || null,
       wp_user_id: userInfo.user_id || null,
-      wp_user_email: userInfo.user_email || null
+      wp_user_email: userInfo.user_email || null,
+      anon_id: anonymousContext.anonId || null,
+      anonymous_risk_key: anonymousContext.riskKey || null,
+      anonymous_ip_hash: anonymousContext.ipHash || null,
+      anonymous_identity_source: anonymousContext.source || null
     };
 
     const reservation = await reserveGenerationQuota(supabase, {
@@ -318,6 +375,8 @@ function createAltTextRouter({
       licenseKey,
       siteIdentity,
       creditsNeeded: 1,
+      // Anonymous dashboard usage burns the site-level trial bucket only.
+      // Authenticated free users continue to use the monthly free-plan quota.
       quotaMode: req.trialMode ? 'trial' : 'site',
       idempotencyKey,
       requestFingerprint,
@@ -328,20 +387,35 @@ function createAltTextRouter({
     // When V2 quota fell back to legacy_trial, enforce the trial limit
     // from the trial_usage table since no RPC guard ran.
     if (!reservation.error && req.trialMode && reservation.reservation?.quota_source === 'legacy_trial') {
-      const legacyUsed = await countLegacyTrialUsage(supabase, siteIdentity.siteHash || req.trialSiteHash);
-      const trialLimit = 3;
-      if (legacyUsed !== null && legacyUsed >= trialLimit) {
-        logger.info('[altText] Legacy trial exhausted', { site_hash: siteIdentity.siteHash, used: legacyUsed, limit: trialLimit });
+      const trialInfo = await getAnonymousTrialStatus(supabase, {
+        quotaStatus: {},
+        siteHash: siteIdentity.siteHash || req.trialSiteHash,
+        anonId: anonymousContext.anonId
+      });
+      if (trialInfo?.trial_exhausted) {
+        logger.info('[altText] Anonymous quota denied', {
+          site_hash: siteIdentity.siteHash,
+          anon_id: anonymousContext.anonId || null,
+          used: trialInfo.trial_used,
+          limit: trialInfo.trial_limit
+        });
         return res.status(402).json({
           error: 'TRIAL_EXHAUSTED',
           code: 'TRIAL_EXHAUSTED',
           message: 'Free trial exhausted. Upgrade to continue generating alt text.',
-          trial_used: legacyUsed,
-          trial_remaining: 0,
-          trial_exhausted: true,
-          trial_limit: trialLimit
+          ...trialInfo,
+          ...buildAnonymousResponseFields(anonymousContext, trialInfo)
         });
       }
+    }
+
+    if (!reservation.error && req.trialMode) {
+      logger.info('[altText] Anonymous quota granted', {
+        site_hash: siteIdentity.siteHash,
+        anon_id: anonymousContext.anonId || null,
+        quota_source: reservation.reservation?.quota_source || null,
+        generation_request_id: reservation.reservation?.generation_request_id || null
+      });
     }
 
     if (reservation.error) {
@@ -355,18 +429,23 @@ function createAltTextRouter({
             siteIdentity,
             requestId: req.id || null
           });
-          if (!quotaStatus.error) {
-            trialInfo = await buildTrialStatus(supabase, quotaStatus, req.trialSiteHash || siteIdentity.siteHash);
-          } else {
-            // If v2 quota status fails, fall back to legacy trial_usage count.
-            const legacyUsed = await countLegacyTrialUsage(supabase, req.trialSiteHash || siteIdentity.siteHash);
-            if (Number.isFinite(Number(legacyUsed))) {
-              trialInfo = await buildTrialStatus(supabase, { trial: { used_trial_credits: legacyUsed } }, req.trialSiteHash || siteIdentity.siteHash);
-            }
-          }
+          trialInfo = await getAnonymousTrialStatus(supabase, {
+            quotaStatus: quotaStatus.error ? {} : quotaStatus,
+            siteHash: req.trialSiteHash || siteIdentity.siteHash,
+            anonId: anonymousContext.anonId
+          });
         } catch (_err) {
           // Best-effort: do not block error response.
         }
+      }
+
+      if (req.trialMode) {
+        logger.info('[altText] Anonymous quota denied', {
+          site_hash: siteIdentity.siteHash,
+          anon_id: anonymousContext.anonId || null,
+          code: reservation.error,
+          trial_exhausted: trialInfo?.trial_exhausted === true
+        });
       }
 
       return res.status(reservation.status || 402).json({
@@ -378,6 +457,7 @@ function createAltTextRouter({
         reset_date: reservation.payload?.quota_period_end || reservation.payload?.reset_date,
         remaining: reservation.payload?.remaining_credits,
         ...(trialInfo || {}),
+        ...(req.trialMode ? buildAnonymousResponseFields(anonymousContext, trialInfo) : {}),
         trial_exhausted: trialInfo?.trial_exhausted === true || reservation.error === 'TRIAL_EXHAUSTED' ? true : undefined
       });
     }
@@ -434,7 +514,11 @@ function createAltTextRouter({
       let trialInfo = null;
       if (req.trialMode) {
         try {
-          trialInfo = await buildTrialStatus(supabase, {}, req.trialSiteHash || siteIdentity.siteHash);
+          trialInfo = await getAnonymousTrialStatus(supabase, {
+            quotaStatus: {},
+            siteHash: req.trialSiteHash || siteIdentity.siteHash,
+            anonId: anonymousContext.anonId
+          });
         } catch (_e) { /* best effort */ }
       }
 
@@ -447,7 +531,8 @@ function createAltTextRouter({
             ? 'Alt text generation temporarily unavailable. Please retry.'
             : 'Failed to generate alt text.',
         retryable: isRetryable,
-        ...(trialInfo || {})
+        ...(trialInfo || {}),
+        ...(req.trialMode ? buildAnonymousResponseFields(anonymousContext, trialInfo) : {})
       });
     }
     
@@ -481,6 +566,9 @@ function createAltTextRouter({
         site_hash: siteIdentity.siteHash || req.trialSiteHash,
         site_fingerprint: siteIdentity.siteFingerprint || req.header('X-Site-Fingerprint') || null,
         site_url: siteIdentity.siteUrl || req.header('X-Site-URL') || null,
+        anon_id: anonymousContext.anonId || null,
+        anonymous_risk_key: anonymousContext.riskKey || null,
+        ip_hash: anonymousContext.ipHash || null,
         prompt_tokens: usage?.prompt_tokens || null,
         completion_tokens: usage?.completion_tokens || null,
         total_tokens: usage?.total_tokens || null,
@@ -488,10 +576,14 @@ function createAltTextRouter({
         generation_time_ms: meta?.generation_time_ms || null,
         image_filename: normalized.filename || null
       };
-      logger.info('[altText] Recording trial usage', { site_hash: trialPayload.site_hash });
-      const { error } = await supabase.from('trial_usage').insert(trialPayload);
+      logger.info('[altText] Recording anonymous trial usage', {
+        site_hash: trialPayload.site_hash,
+        anon_id: anonymousContext.anonId || null,
+        risk_key: anonymousContext.riskKey || null
+      });
+      const { error } = await recordLegacyTrialUsage(supabase, trialPayload);
       if (error) {
-        logger.error('[altText] Failed to record trial usage', { error: error.message, code: error.code });
+        logger.error('[altText] Failed to record anonymous trial usage', { error: error.message, code: error.code });
       }
       usageResult = { error };
     } else {
@@ -600,11 +692,11 @@ function createAltTextRouter({
     // quota status fails (eg. dev hosts or no V2 schema).
     if (req.trialMode) {
       try {
-        trialInfo = await buildTrialStatus(
-          supabase,
-          quotaStatus && !quotaStatus.error ? quotaStatus : {},
-          req.trialSiteHash || siteIdentity.siteHash
-        );
+        trialInfo = await getAnonymousTrialStatus(supabase, {
+          quotaStatus: quotaStatus && !quotaStatus.error ? quotaStatus : {},
+          siteHash: req.trialSiteHash || siteIdentity.siteHash,
+          anonId: anonymousContext.anonId
+        });
       } catch (_err) {
         // Best-effort: never block successful generation response.
       }
@@ -626,6 +718,7 @@ function createAltTextRouter({
       credits_remaining: creditsRemaining !== null ? creditsRemaining : undefined,
       limit: totalLimit !== null ? totalLimit : undefined,
       ...(trialInfo || {}),
+      ...(req.trialMode ? buildAnonymousResponseFields(anonymousContext, trialInfo) : {}),
       usage: {
         prompt_tokens: usage?.prompt_tokens,
         completion_tokens: usage?.completion_tokens,
@@ -649,6 +742,8 @@ function createAltTextRouter({
       trial_used: response.trial_used ?? null,
       trial_remaining: response.trial_remaining ?? null,
       trial_exhausted: response.trial_exhausted ?? null,
+      signup_required: response.signup_required ?? null,
+      anon_id: anonymousContext.anonId || null,
       site_hash: siteIdentity.siteHash,
       quota_source: reservation.reservation?.quota_source || 'unknown'
     });

@@ -17,10 +17,16 @@ function getClientIp(req) {
 }
 
 function getSiteKey(req) {
-  return req.header('X-Site-Key') || req.header('X-Site-Hash') || 'anon-site';
+  return req.trialSiteHash || req.header('X-Site-Key') || req.header('X-Site-Hash') || 'anon-site';
 }
 
 function getUserKey(req) {
+  if (req.anonymous?.riskKey) {
+    return `anonymous:${req.anonymous.riskKey}`;
+  }
+  if (req.anonymous?.anonId) {
+    return `anonymous:${req.anonymous.anonId}`;
+  }
   return req.user?.id
     || req.license?.id
     || req.license?.license_key

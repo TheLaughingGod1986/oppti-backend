@@ -1,8 +1,15 @@
 const { validateLicense } = require('../services/license');
 const logger = require('../lib/logger');
 const jwt = require('jsonwebtoken');
+const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 
 const JWT_SECRET = process.env.JWT_SECRET;
+
+function supportsAnonymousTrialPath(path = '') {
+  return path === '/api/alt-text'
+    || path === '/api/usage'
+    || path === '/usage';
+}
 
 function authMiddleware({ supabase }) {
   return async function validate(req, res, next) {
@@ -39,6 +46,7 @@ function authMiddleware({ supabase }) {
       || req.header('X-Site-Hash')
       || req.header('X-Site-Key');
     const body = req.body || {};
+    const anonymousContext = buildAnonymousContext({ req, body });
     const licenseKey = req.header('X-License-Key')
       || body.license_key
       || body.licenseKey
@@ -48,12 +56,24 @@ function authMiddleware({ supabase }) {
       || (body.jwt ? `Bearer ${body.jwt}` : null);
     const apiKey = req.header('X-API-Key');
     const hasBearerAuth = Boolean(authHeader && authHeader.startsWith('Bearer '));
-    if (trialMode === 'true' && trialSiteHash && !licenseKey && !apiKey && !hasBearerAuth) {
+    const allowAnonymousTrial = supportsAnonymousTrialPath(req.path)
+      && trialSiteHash
+      && !licenseKey
+      && !apiKey
+      && !hasBearerAuth
+      && (trialMode === 'true' || anonymousContext.anonId);
+
+    if (allowAnonymousTrial) {
       req.trialMode = true;
       req.trialSiteHash = trialSiteHash;
+      req.anonId = anonymousContext.anonId;
+      req.anonymous = anonymousContext;
       req.authMethod = 'trial';
-      logger.info('[Auth] Trial mode request', {
+      logger.info('[Auth] Anonymous trial request accepted', {
         site_hash: trialSiteHash,
+        anon_id: anonymousContext.anonId || null,
+        anon_id_source: anonymousContext.source || null,
+        risk_key: anonymousContext.riskKey || null,
         source: req.header('X-Trial-Site-Hash') ? 'X-Trial-Site-Hash'
           : req.header('X-Site-Hash') ? 'X-Site-Hash' : 'X-Site-Key',
         site_url: req.header('X-Site-URL') || null,
@@ -64,15 +84,18 @@ function authMiddleware({ supabase }) {
 
     // If trial mode header is present but we couldn't activate trial mode,
     // log a diagnostic so the failure is visible.
-    if (trialMode === 'true') {
-      logger.warn('[Auth] Trial mode header present but not activated', {
+    if (trialMode === 'true' || anonymousContext.anonId) {
+      logger.warn('[Auth] Anonymous trial headers present but not activated', {
         has_trial_site_hash: !!req.header('X-Trial-Site-Hash'),
         has_site_hash: !!req.header('X-Site-Hash'),
         has_site_key: !!req.header('X-Site-Key'),
+        has_anon_id: !!anonymousContext.anonId,
         has_license_key: !!licenseKey,
         has_api_key: !!apiKey,
         has_bearer: hasBearerAuth,
-        reason: !trialSiteHash ? 'no_site_identity'
+        path: req.path,
+        reason: !supportsAnonymousTrialPath(req.path) ? 'unsupported_path'
+          : !trialSiteHash ? 'no_site_identity'
           : licenseKey ? 'has_license_key'
           : apiKey ? 'has_api_key'
           : hasBearerAuth ? 'has_bearer_auth' : 'unknown'
@@ -84,6 +107,7 @@ function authMiddleware({ supabase }) {
       'X-License-Key': licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
       'X-API-Key': apiKey ? 'present' : 'missing',
       'Authorization': authHeader ? 'present' : 'missing',
+      'X-Anon-Id': anonymousContext.anonId ? 'present' : 'missing',
       path: req.path
     });
 

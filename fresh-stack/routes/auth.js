@@ -5,7 +5,9 @@ const { z } = require('zod');
 const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { sendPasswordResetEmail, isAvailable: isEmailAvailable } = require('../lib/email');
+const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
+const { getAnonymousTrialContinuity } = require('../services/anonymousTrial');
 const {
   ensureSiteMembership,
   fetchAccountByLicenseKey,
@@ -103,6 +105,55 @@ async function attachSiteContextForAccount({
   };
 }
 
+async function observeAnonymousSignupMerge({
+  supabase,
+  account,
+  site,
+  requestId,
+  connectionSource,
+  anonymousContext
+}) {
+  if (!supabase || !account?.id || !site?.id) {
+    return;
+  }
+
+  const continuity = await getAnonymousTrialContinuity(supabase, {
+    siteId: site.id,
+    siteHash: site.site_hash || null
+  });
+
+  logger.info('[Auth] Anonymous signup merge result', {
+    connection_source: connectionSource,
+    account_id: account.id,
+    site_id: site.id,
+    site_hash: site.site_hash || null,
+    anon_id: anonymousContext?.anonId || null,
+    anonymous_usage_found: continuity.hasAnonymousUsage,
+    anonymous_usage_used: continuity.used,
+    anonymous_usage_limit: continuity.limit,
+    anonymous_usage_source: continuity.source
+  });
+
+  if (!continuity.hasAnonymousUsage) {
+    return;
+  }
+
+  await recordSiteAudit(supabase, {
+    siteId: site.id,
+    actorUserId: account.id,
+    eventType: `${connectionSource}_anonymous_trial_merged`,
+    severity: 'info',
+    requestId,
+    metadata: {
+      site_hash: site.site_hash || null,
+      anon_id: anonymousContext?.anonId || null,
+      anonymous_usage_used: continuity.used,
+      anonymous_usage_limit: continuity.limit,
+      anonymous_usage_source: continuity.source
+    }
+  });
+}
+
 function createAuthRouter({ supabase }) {
   const router = express.Router();
 
@@ -132,6 +183,7 @@ function createAuthRouter({ supabase }) {
       site_id: z.string().optional(),
       site_url: z.string().optional(),
       site_fingerprint: z.string().optional(),
+      anon_id: z.string().optional(),
       install_uuid: z.string().optional(),
       blog_id: z.number().optional(),
       network_id: z.number().optional(),
@@ -155,6 +207,11 @@ function createAuthRouter({ supabase }) {
 
     try {
       const siteIdentity = buildAuthSiteContext(parsed.data);
+      const anonymousContext = buildAnonymousContext({
+        req,
+        body: parsed.data,
+        siteIdentity
+      });
       if (siteIdentity.isValid) {
         const preflight = await resolveCanonicalSite(supabase, siteIdentity, {
           createIfMissing: false,
@@ -247,6 +304,17 @@ function createAuthRouter({ supabase }) {
         });
       }
 
+      if (siteLink.site) {
+        await observeAnonymousSignupMerge({
+          supabase,
+          account: user,
+          site: siteLink.site,
+          requestId: req.id || null,
+          connectionSource: 'register',
+          anonymousContext
+        });
+      }
+
       if (siteLink.error === 'AMBIGUOUS_SITE_MATCH') {
         return sendRegisterResponse({
           success: false,
@@ -331,6 +399,7 @@ function createAuthRouter({ supabase }) {
       site_id: z.string().optional(),
       site_url: z.string().optional(),
       site_fingerprint: z.string().optional(),
+      anon_id: z.string().optional(),
       install_uuid: z.string().optional(),
       blog_id: z.number().optional(),
       network_id: z.number().optional(),
@@ -399,6 +468,11 @@ function createAuthRouter({ supabase }) {
       }
 
       const siteIdentity = buildAuthSiteContext(parsed.data);
+      const anonymousContext = buildAnonymousContext({
+        req,
+        body: parsed.data,
+        siteIdentity
+      });
       let siteLink = { site: null, sharedSite: false, existingAccount: null, error: null };
       if (siteIdentity.isValid) {
         siteLink = await attachSiteContextForAccount({
@@ -407,6 +481,17 @@ function createAuthRouter({ supabase }) {
           siteIdentity,
           requestId: req.id || null,
           connectionSource: 'login'
+        });
+      }
+
+      if (siteLink.site) {
+        await observeAnonymousSignupMerge({
+          supabase,
+          account: user,
+          site: siteLink.site,
+          requestId: req.id || null,
+          connectionSource: 'login',
+          anonymousContext
         });
       }
 

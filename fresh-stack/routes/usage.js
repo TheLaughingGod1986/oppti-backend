@@ -1,33 +1,12 @@
 const express = require('express');
+const { buildAnonymousContext } = require('../lib/anonymousIdentity');
+const {
+  buildAnonymousTrialStatus,
+  getAnonymousTrialLimit,
+  getAnonymousTrialStatus
+} = require('../services/anonymousTrial');
 const { getQuotaStatus } = require('../services/quota');
 const { getUserUsage, getSiteUsage, getPeriodBounds } = require('../services/usage');
-
-async function countLegacyTrialUsage(supabase, siteHash) {
-  if (!supabase || !siteHash) return null;
-  const { count, error } = await supabase
-    .from('trial_usage')
-    .select('id', { count: 'exact', head: true })
-    .eq('site_hash', siteHash);
-  if (error) return null;
-  return Number(count || 0);
-}
-
-async function buildTrialStatus(supabase, status, siteHash) {
-  const trialLimit = 3;
-  const usedFromV2 = status?.trial?.used_trial_credits;
-  const used = Number.isFinite(Number(usedFromV2))
-    ? Number(usedFromV2)
-    : await countLegacyTrialUsage(supabase, siteHash);
-
-  if (!Number.isFinite(Number(used))) {
-    return null;
-  }
-
-  const trial_used = Math.max(Number(used) || 0, 0);
-  const trial_remaining = Math.max(trialLimit - trial_used, 0);
-  const trial_exhausted = trial_used >= trialLimit;
-  return { trial_used, trial_remaining, trial_exhausted, trial_limit: trialLimit };
-}
 
 function createUsageRouter({ supabase }) {
   const router = express.Router();
@@ -42,6 +21,13 @@ function createUsageRouter({ supabase }) {
       : (req.header('X-Site-Key') || req.header('X-Site-Hash'));
     const siteUrl = req.header('X-Site-URL') || null;
     const siteFingerprint = req.header('X-Site-Fingerprint') || null;
+    const anonymousContext = buildAnonymousContext({
+      req,
+      siteIdentity: {
+        siteHash: siteKey,
+        siteFingerprint
+      }
+    });
 
     const status = await getQuotaStatus(supabase, {
       account: req.user || req.license || null,
@@ -56,11 +42,17 @@ function createUsageRouter({ supabase }) {
     // For trial mode, quota status may fail (no license) — that's expected.
     // Build trial status directly from trial_usage table as authoritative source.
     if (req.trialMode) {
-      const trial = status.error
-        ? await buildTrialStatus(supabase, {}, siteKey)
-        : await buildTrialStatus(supabase, status, siteKey);
+      const trial = await getAnonymousTrialStatus(supabase, {
+        quotaStatus: status.error ? {} : status,
+        siteHash: siteKey,
+        anonId: anonymousContext.anonId
+      });
 
-      const trialInfo = trial || { trial_used: 0, trial_remaining: 3, trial_exhausted: false, trial_limit: 3 };
+      const trialInfo = trial || buildAnonymousTrialStatus({
+        used: 0,
+        limit: getAnonymousTrialLimit(),
+        anonId: anonymousContext.anonId
+      });
       return res.json({
         success: true,
         data: {
@@ -77,6 +69,9 @@ function createUsageRouter({ supabase }) {
           credits_remaining: trialInfo.trial_remaining,
           total_limit: trialInfo.trial_limit,
           plan_type: 'trial',
+          anon_id: trialInfo.anon_id,
+          signup_required: trialInfo.signup_required,
+          anonymous: trialInfo.anonymous,
           ...trialInfo
         }
       });
@@ -86,7 +81,11 @@ function createUsageRouter({ supabase }) {
       return res.status(status.status || 401).json(status);
     }
 
-    const trial = await buildTrialStatus(supabase, status, siteKey);
+    const trial = await getAnonymousTrialStatus(supabase, {
+      quotaStatus: status,
+      siteHash: siteKey,
+      anonId: anonymousContext.anonId
+    });
 
     // Return in format expected by plugin
     return res.json({
