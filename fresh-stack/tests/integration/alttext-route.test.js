@@ -291,6 +291,11 @@ describe('POST /api/alt-text', () => {
       });
 
     expect(first.status).toBe(200);
+    expect(first.body.auth_state).toBe('anonymous');
+    expect(first.body.quota_type).toBe('trial');
+    expect(first.body.credits_total).toBe(5);
+    expect(first.body.credits_used).toBe(1);
+    expect(first.body.credits_remaining).toBe(4);
     expect(first.body.anon_id).toBe('anon-dashboard-1');
     expect(first.body.anonymous).toEqual(expect.objectContaining({
       anon_id: 'anon-dashboard-1',
@@ -325,6 +330,58 @@ describe('POST /api/alt-text', () => {
     }));
     expect(supabase._state.trialUsage).toHaveLength(2);
     expect(usageService.recordUsage).not.toHaveBeenCalled();
+  });
+
+  test('anonymous generation returns trial counters even when quota status includes free-plan monthly counters', async () => {
+    quotaService.reserveGenerationQuota.mockResolvedValue({
+      error: null,
+      reservation: {
+        generation_request_id: 'generation_request_trial_v2',
+        quota_source: 'trial'
+      }
+    });
+    quotaService.getQuotaStatus.mockResolvedValue({
+      error: null,
+      plan_type: 'free',
+      credits_used: 0,
+      credits_remaining: 50,
+      total_limit: 50,
+      trial: {
+        total_trial_credits: 5,
+        used_trial_credits: 1
+      }
+    });
+
+    const supabase = createAnonymousTrialSupabaseMock();
+    const app = express();
+    app.use(express.json());
+    app.use(authMiddleware({ supabase }));
+    app.use('/api/alt-text', createAltTextRouter({
+      supabase,
+      redis: null,
+      resultCache: new Map(),
+      checkRateLimit: async () => true,
+      getSiteFromHeaders: async () => null
+    }));
+
+    const res = await request(app)
+      .post('/api/alt-text')
+      .set('X-Site-Key', 'site-anon-v2')
+      .set('X-Site-URL', 'https://example.com')
+      .set('X-Anon-Id', 'anon-dashboard-v2')
+      .send({
+        image: { url: 'https://example.com/img.jpg', width: 1, height: 1 }
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.auth_state).toBe('anonymous');
+    expect(res.body.quota_type).toBe('trial');
+    expect(res.body.credits_total).toBe(5);
+    expect(res.body.credits_used).toBe(1);
+    expect(res.body.credits_remaining).toBe(4);
+    expect(res.body.total_limit).toBe(5);
+    expect(res.body.limit).toBe(5);
+    expect(res.body.free_plan_offer).toBe(50);
   });
 
   test('same site does not mint a fresh anonymous trial for a different anon id', async () => {
@@ -369,6 +426,12 @@ describe('POST /api/alt-text', () => {
 
     expect(res.status).toBe(402);
     expect(res.body.code).toBe('TRIAL_EXHAUSTED');
+    expect(res.body.auth_state).toBe('anonymous');
+    expect(res.body.quota_type).toBe('trial');
+    expect(res.body.quota_state).toBe('exhausted');
+    expect(res.body.credits_total).toBe(5);
+    expect(res.body.credits_used).toBe(5);
+    expect(res.body.credits_remaining).toBe(0);
     expect(res.body.signup_required).toBe(true);
     expect(res.body.anonymous).toEqual(expect.objectContaining({
       used: 5,

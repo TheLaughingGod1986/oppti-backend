@@ -3,11 +3,10 @@ const request = require('supertest');
 const { authMiddleware } = require('../../middleware/auth');
 
 jest.mock('../../services/quota', () => ({
-  getQuotaStatus: jest.fn().mockResolvedValue({
-    error: 'SITE_QUOTA_V2_UNAVAILABLE'
-  })
+  getQuotaStatus: jest.fn()
 }));
 
+const quotaService = require('../../services/quota');
 const { createUsageRouter } = require('../../routes/usage');
 
 function createAnonymousSupabaseMock(trialUsageCount = 0) {
@@ -51,10 +50,26 @@ function createAnonymousSupabaseMock(trialUsageCount = 0) {
 describe('GET /usage anonymous trial status', () => {
   beforeEach(() => {
     process.env.ANONYMOUS_TRIAL_CREDITS = '5';
+    quotaService.getQuotaStatus.mockReset();
   });
 
-  test('returns remaining anonymous credits for a logged-out dashboard user', async () => {
-    const supabase = createAnonymousSupabaseMock(2);
+  test('returns a trial contract for anonymous users even when site quota returns free-plan data', async () => {
+    quotaService.getQuotaStatus.mockResolvedValue({
+      error: null,
+      plan_type: 'free',
+      credits_used: 0,
+      credits_remaining: 50,
+      total_limit: 50,
+      reset_date: '2026-04-30T00:00:00.000Z',
+      warning_threshold: 0.9,
+      is_near_limit: false,
+      trial: {
+        total_trial_credits: 5,
+        used_trial_credits: 2
+      }
+    });
+
+    const supabase = createAnonymousSupabaseMock(0);
     const app = express();
     app.use(express.json());
     app.use(authMiddleware({ supabase }));
@@ -67,9 +82,14 @@ describe('GET /usage anonymous trial status', () => {
       .set('X-Anon-Id', 'anon-usage-1');
 
     expect(res.status).toBe(200);
+    expect(res.body.data.auth_state).toBe('anonymous');
+    expect(res.body.data.quota_type).toBe('trial');
+    expect(res.body.data.quota_state).toBe('active');
+    expect(res.body.data.credits_total).toBe(5);
     expect(res.body.data.credits_used).toBe(2);
     expect(res.body.data.credits_remaining).toBe(3);
     expect(res.body.data.total_limit).toBe(5);
+    expect(res.body.data.free_plan_offer).toBe(50);
     expect(res.body.data.signup_required).toBe(false);
     expect(res.body.data.anonymous).toEqual(expect.objectContaining({
       anon_id: 'anon-usage-1',
@@ -77,5 +97,64 @@ describe('GET /usage anonymous trial status', () => {
       remaining: 3,
       total: 5
     }));
+  });
+
+  test('returns an exhausted anonymous trial contract at the limit', async () => {
+    quotaService.getQuotaStatus.mockResolvedValue({
+      error: 'SITE_QUOTA_V2_UNAVAILABLE'
+    });
+
+    const supabase = createAnonymousSupabaseMock(5);
+    const app = express();
+    app.use(express.json());
+    app.use(authMiddleware({ supabase }));
+    app.use('/api/usage', createUsageRouter({ supabase }));
+
+    const res = await request(app)
+      .get('/api/usage')
+      .set('X-Site-Key', 'site-usage-anon')
+      .set('X-Site-URL', 'https://example.com')
+      .set('X-Anon-Id', 'anon-usage-2');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.auth_state).toBe('anonymous');
+    expect(res.body.data.quota_type).toBe('trial');
+    expect(res.body.data.quota_state).toBe('exhausted');
+    expect(res.body.data.credits_total).toBe(5);
+    expect(res.body.data.credits_used).toBe(5);
+    expect(res.body.data.credits_remaining).toBe(0);
+    expect(res.body.data.signup_required).toBe(true);
+    expect(res.body.data.upgrade_required).toBe(false);
+    expect(res.body.data.free_plan_offer).toBe(50);
+  });
+
+  test('keeps authenticated free-account quota separate from anonymous trial quota', async () => {
+    quotaService.getQuotaStatus.mockResolvedValue({
+      error: null,
+      plan_type: 'free',
+      credits_used: 7,
+      credits_remaining: 43,
+      total_limit: 50,
+      reset_date: '2026-04-30T00:00:00.000Z',
+      warning_threshold: 0.9,
+      is_near_limit: false
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/usage', createUsageRouter({ supabase: createAnonymousSupabaseMock(0) }));
+
+    const res = await request(app)
+      .get('/api/usage')
+      .set('X-License-Key', 'license-free-1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.auth_state).toBe('authenticated');
+    expect(res.body.data.quota_type).toBe('monthly');
+    expect(res.body.data.credits_total).toBe(50);
+    expect(res.body.data.credits_used).toBe(7);
+    expect(res.body.data.credits_remaining).toBe(43);
+    expect(res.body.data.plan_type).toBe('free');
+    expect(res.body.data.signup_required).toBe(false);
   });
 });
