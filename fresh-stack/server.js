@@ -14,11 +14,13 @@ const { createAuthRouter } = require('./routes/auth');
 const { createBillingRouter, createBillingWebhookHandler } = require('./routes/billing');
 const { createUsageRouter } = require('./routes/usage');
 const { createAltTextRouter } = require('./routes/altText');
+const { createReviewRouter } = require('./routes/review');
 const { createJobsRouter } = require('./routes/jobs');
 const { createLicenseRouter } = require('./routes/license');
 const { createDashboardRouter } = require('./routes/dashboard');
 const { createAdminRouter } = require('./routes/admin');
 const { createContactRouter } = require('./routes/contact');
+const { inspectV2Schema, logV2SchemaStartupStatus } = require('./services/v2Diagnostics');
 const rateLimitMiddleware = require('./middleware/rateLimit');
 const { authMiddleware } = require('./middleware/auth');
 const requestId = require('./middleware/requestId');
@@ -167,6 +169,7 @@ app.use('/api/alt-text', createAltTextRouter({
   checkRateLimit,
   getSiteFromHeaders: async (req) => getSiteFromHeaders(supabase, req)
 }));
+app.use('/api/review', createReviewRouter());
 
 // Jobs queue
 const JOB_CONCURRENCY = Number(process.env.JOB_CONCURRENCY || 2);
@@ -215,6 +218,15 @@ app.use('/dashboard', createDashboardRouter({ supabase }));
 // Error handler
 app.use(errorHandler());
 
-app.listen(PORT, HOST, () => {
+app.listen(PORT, HOST, async () => {
   logger.info(`Fresh alt-text service running on http://${HOST}:${PORT}`);
+
+  if (supabase) {
+    try {
+      const v2SchemaReport = await inspectV2Schema(supabase);
+      logV2SchemaStartupStatus(v2SchemaReport);
+    } catch (err) {
+      logger.warn('[init] V2 schema probe failed (non-fatal)', { error: err.message });
+    }
+  }
 });

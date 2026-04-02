@@ -1,16 +1,22 @@
 const express = require('express');
+const logger = require('../lib/logger');
+const { getPipelineDiagnostics } = require('../services/v2Diagnostics');
 
 function hasValidAdminKey(adminKey) {
-  return Boolean(process.env.ADMIN_KEY && adminKey && adminKey === process.env.ADMIN_KEY);
+  const expectedAdminKey = process.env.ADMIN_KEY || process.env.ADMIN_SECRET;
+  return Boolean(expectedAdminKey && adminKey && adminKey === expectedAdminKey);
+}
+
+function getAdminKey(req) {
+  return req.header('X-Admin-Key') || req.header('X-Admin-Secret');
 }
 
 function createAdminRouter({ redis, supabase, resultCache }) {
   const router = express.Router();
-  const logger = require('../lib/logger');
 
   // Database cleanup - protected by admin key (cron job)
   router.post('/cleanup', async (req, res) => {
-    const adminKey = req.header('X-Admin-Key');
+    const adminKey = getAdminKey(req);
     if (!hasValidAdminKey(adminKey)) {
       return res.status(401).json({ error: 'Unauthorized', message: 'Invalid admin key' });
     }
@@ -48,7 +54,7 @@ function createAdminRouter({ redis, supabase, resultCache }) {
 
   // Flush alt text cache - protected by admin key only (no license required)
   router.post('/flush-cache', async (req, res) => {
-    const adminKey = req.header('X-Admin-Key');
+    const adminKey = getAdminKey(req);
 
     if (!hasValidAdminKey(adminKey)) {
       return res.status(401).json({ error: 'Unauthorized', message: 'Invalid admin key' });
@@ -80,6 +86,30 @@ function createAdminRouter({ redis, supabase, resultCache }) {
     } catch (err) {
       logger.error('[admin] Failed to flush cache', { error: err.message });
       res.status(500).json({ error: 'Failed to flush cache', message: err.message });
+    }
+  });
+
+  router.get('/diagnostics/pipeline', async (req, res) => {
+    const adminKey = getAdminKey(req);
+    if (!hasValidAdminKey(adminKey)) {
+      return res.status(401).json({ error: 'Unauthorized', message: 'Invalid admin key' });
+    }
+
+    try {
+      const diagnostics = await getPipelineDiagnostics(supabase, { days: 7 });
+      return res.json({
+        success: true,
+        diagnostics
+      });
+    } catch (error) {
+      logger.error('[admin] Pipeline diagnostics failed', {
+        error: error.message
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'DIAGNOSTICS_FAILED',
+        message: error.message
+      });
     }
   });
 

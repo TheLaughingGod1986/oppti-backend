@@ -2,10 +2,13 @@ const express = require('express');
 const crypto = require('crypto');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const { validateImagePayload } = require('../lib/validation');
 const { generateAltText } = require('../lib/openai');
 const {
+  buildAnonymousTrialStatus,
+  getAnonymousTrialLimit,
   getAnonymousTrialStatus,
   isMissingSchemaError
 } = require('../services/anonymousTrial');
@@ -73,26 +76,88 @@ async function recordLegacyTrialUsage(supabase, payload) {
     image_filename: payload.image_filename
   };
 
-  const { error } = await supabase.from('trial_usage').insert(payload);
-  if (!error || !isMissingSchemaError(error)) {
-    return { error };
+  let insertResult = await supabase.from('trial_usage').insert(payload);
+  if (!insertResult.error) {
+    logger.info('[altText] trial_usage insert succeeded', {
+      operation: 'trial_usage_insert',
+      schema_mode: 'observability',
+      site_hash: payload.site_hash || null,
+      site_url: payload.site_url || null,
+      anon_id: payload.anon_id || null
+    });
+    return insertResult;
   }
 
-  return supabase.from('trial_usage').insert(legacyPayload);
+  if (!isMissingSchemaError(insertResult.error)) {
+    logger.error('[altText] trial_usage insert failed', {
+      operation: 'trial_usage_insert',
+      schema_mode: 'observability',
+      site_hash: payload.site_hash || null,
+      site_url: payload.site_url || null,
+      anon_id: payload.anon_id || null,
+      error: serializeSupabaseError(insertResult.error)
+    });
+    return insertResult;
+  }
+
+  logger.warn('[LEGACY_SCHEMA_FALLBACK] trial_usage observability columns unavailable; retrying legacy payload insert', {
+    site_hash: payload.site_hash || null,
+    site_url: payload.site_url || null,
+    anon_id: payload.anon_id || null,
+    error: serializeSupabaseError(insertResult.error)
+  });
+
+  insertResult = await supabase.from('trial_usage').insert(legacyPayload);
+  if (insertResult.error) {
+    logger.error('[altText] trial_usage insert failed', {
+      operation: 'trial_usage_insert',
+      schema_mode: 'legacy',
+      site_hash: payload.site_hash || null,
+      site_url: payload.site_url || null,
+      anon_id: payload.anon_id || null,
+      error: serializeSupabaseError(insertResult.error)
+    });
+  } else {
+    logger.info('[altText] trial_usage insert succeeded', {
+      operation: 'trial_usage_insert',
+      schema_mode: 'legacy',
+      site_hash: payload.site_hash || null,
+      site_url: payload.site_url || null,
+      anon_id: payload.anon_id || null
+    });
+  }
+
+  return insertResult;
 }
 
 function buildAnonymousResponseFields(anonymousContext, trialInfo) {
-  if (!trialInfo) {
-    return {
-      anon_id: anonymousContext?.anonId || null,
-      signup_required: false
-    };
-  }
+  const resolvedTrialInfo = trialInfo || buildAnonymousTrialStatus({
+    used: 0,
+    limit: getAnonymousTrialLimit(),
+    anonId: anonymousContext?.anonId || null
+  });
 
   return {
-    anon_id: anonymousContext?.anonId || null,
-    signup_required: Boolean(trialInfo.signup_required),
-    anonymous: trialInfo.anonymous
+    auth_state: resolvedTrialInfo.auth_state,
+    quota_type: resolvedTrialInfo.quota_type,
+    quota_state: resolvedTrialInfo.quota_state,
+    credits_total: resolvedTrialInfo.credits_total,
+    credits_used: resolvedTrialInfo.credits_used,
+    credits_remaining: resolvedTrialInfo.credits_remaining,
+    total_limit: resolvedTrialInfo.total_limit,
+    limit: resolvedTrialInfo.limit,
+    plan_type: resolvedTrialInfo.plan_type,
+    anon_id: resolvedTrialInfo.anon_id || anonymousContext?.anonId || null,
+    signup_required: Boolean(resolvedTrialInfo.signup_required),
+    upgrade_required: Boolean(resolvedTrialInfo.upgrade_required),
+    free_plan_offer: resolvedTrialInfo.free_plan_offer,
+    warning_threshold: resolvedTrialInfo.warning_threshold,
+    is_near_limit: resolvedTrialInfo.is_near_limit,
+    trial_used: resolvedTrialInfo.trial_used,
+    trial_remaining: resolvedTrialInfo.trial_remaining,
+    trial_limit: resolvedTrialInfo.trial_limit,
+    trial_exhausted: resolvedTrialInfo.trial_exhausted,
+    anonymous: resolvedTrialInfo.anonymous
   };
 }
 
@@ -166,6 +231,17 @@ function createAltTextRouter({
       siteIdentity
     });
 
+    if (req.trialMode) {
+      logger.info('[altText] Anonymous identity resolved', {
+        site_hash: siteIdentity.siteHash,
+        anon_id: anonymousContext.anonId || null,
+        anon_id_source: anonymousContext.source || null,
+        risk_key: anonymousContext.riskKey || null,
+        site_url: siteIdentity.siteUrl || null,
+        site_fingerprint: siteIdentity.siteFingerprint ? 'present' : 'absent'
+      });
+    }
+
     logger.info('[altText] Request received', {
       mode: req.trialMode ? 'trial' : (req.authMethod || 'unknown'),
       site_hash: req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || null),
@@ -181,6 +257,12 @@ function createAltTextRouter({
     });
 
     if (siteIdentity.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
+      logger.warn('[altText] Request rejected: development site not allowed', {
+        site_hash: siteIdentity.siteHash || null,
+        site_url: siteIdentity.siteUrl || null,
+        request_id: req.id || null,
+        mode: req.trialMode ? 'trial' : (req.authMethod || 'unknown')
+      });
       return res.status(403).json({
         error: 'DEVELOPMENT_SITE_NOT_ALLOWED',
         code: 'DEVELOPMENT_SITE_NOT_ALLOWED',
@@ -200,6 +282,12 @@ function createAltTextRouter({
 
     // Rate limit per site/license
     if (!(await checkRateLimit(rateLimitKey))) {
+      logger.warn('[altText] Request rejected: rate limit exceeded', {
+        site_hash: siteIdentity.siteHash || null,
+        anon_id: anonymousContext.anonId || null,
+        request_id: req.id || null,
+        mode: req.trialMode ? 'trial' : (req.authMethod || 'unknown')
+      });
       return res.status(429).json({
         error: 'RATE_LIMIT_EXCEEDED',
         message: 'Rate limit exceeded for this site. Please retry later.',
@@ -277,6 +365,7 @@ function createAltTextRouter({
         // This ensures the plugin gets up-to-date usage info even from cache
         let creditsInfo = {};
         let trialInfo = null;
+        let anonymousResponseFields = null;
         try {
           const quotaStatus = await getQuotaStatus(supabase, {
             account: req.user || req.license || null,
@@ -290,11 +379,14 @@ function createAltTextRouter({
               siteHash: req.trialSiteHash || siteIdentity.siteHash,
               anonId: anonymousContext.anonId
             });
+            anonymousResponseFields = buildAnonymousResponseFields(anonymousContext, trialInfo);
           }
           if (!quotaStatus.error) {
             creditsInfo = {
               credits_used: quotaStatus.credits_used,
               credits_remaining: quotaStatus.credits_remaining,
+              credits_total: quotaStatus.total_limit,
+              total_limit: quotaStatus.total_limit,
               limit: quotaStatus.total_limit
             };
             logger.info('[altText] Quota status fetched for cached response', creditsInfo);
@@ -303,12 +395,16 @@ function createAltTextRouter({
           logger.warn('[altText] Failed to fetch quota for cached response', { error: err.message });
         }
 
+        if (req.trialMode && !anonymousResponseFields) {
+          anonymousResponseFields = buildAnonymousResponseFields(anonymousContext, null);
+        }
+
         return res.json({
           success: true,
           ...cachedData,
           ...creditsInfo,
           ...(trialInfo || {}),
-          ...(req.trialMode ? buildAnonymousResponseFields(anonymousContext, trialInfo) : {}),
+          ...(anonymousResponseFields || {}),
           cached: true
         });
       }
@@ -370,6 +466,15 @@ function createAltTextRouter({
       anonymous_identity_source: anonymousContext.source || null
     };
 
+    if (req.trialMode) {
+      logger.info('[altText] Anonymous quota check', {
+        site_hash: siteIdentity.siteHash,
+        anon_id: anonymousContext.anonId || null,
+        risk_key: anonymousContext.riskKey || null,
+        request_id: req.id || null
+      });
+    }
+
     const reservation = await reserveGenerationQuota(supabase, {
       account: req.user || req.license || null,
       licenseKey,
@@ -393,18 +498,21 @@ function createAltTextRouter({
         anonId: anonymousContext.anonId
       });
       if (trialInfo?.trial_exhausted) {
-        logger.info('[altText] Anonymous quota denied', {
+        const anonymousResponseFields = buildAnonymousResponseFields(anonymousContext, trialInfo);
+        logger.warn('[altText] Request rejected: anonymous trial exhausted during legacy fallback', {
           site_hash: siteIdentity.siteHash,
           anon_id: anonymousContext.anonId || null,
-          used: trialInfo.trial_used,
-          limit: trialInfo.trial_limit
+          quota_source: reservation.reservation?.quota_source || null,
+          credits_used: anonymousResponseFields.credits_used,
+          credits_total: anonymousResponseFields.credits_total,
+          quota_state: anonymousResponseFields.quota_state
         });
         return res.status(402).json({
           error: 'TRIAL_EXHAUSTED',
           code: 'TRIAL_EXHAUSTED',
           message: 'Free trial exhausted. Upgrade to continue generating alt text.',
           ...trialInfo,
-          ...buildAnonymousResponseFields(anonymousContext, trialInfo)
+          ...anonymousResponseFields
         });
       }
     }
@@ -421,6 +529,7 @@ function createAltTextRouter({
     if (reservation.error) {
       // Trial exhausted must return structured trial status for UI correctness.
       let trialInfo = null;
+      let anonymousResponseFields = null;
       if (req.trialMode) {
         try {
           const quotaStatus = await getQuotaStatus(supabase, {
@@ -434,17 +543,36 @@ function createAltTextRouter({
             siteHash: req.trialSiteHash || siteIdentity.siteHash,
             anonId: anonymousContext.anonId
           });
+          anonymousResponseFields = buildAnonymousResponseFields(anonymousContext, trialInfo);
         } catch (_err) {
           // Best-effort: do not block error response.
+        }
+
+        if (!anonymousResponseFields) {
+          anonymousResponseFields = buildAnonymousResponseFields(anonymousContext, null);
         }
       }
 
       if (req.trialMode) {
-        logger.info('[altText] Anonymous quota denied', {
+        logger.warn('[altText] Request rejected: anonymous quota denied', {
           site_hash: siteIdentity.siteHash,
           anon_id: anonymousContext.anonId || null,
           code: reservation.error,
-          trial_exhausted: trialInfo?.trial_exhausted === true
+          credits_used: anonymousResponseFields?.credits_used ?? null,
+          credits_total: anonymousResponseFields?.credits_total ?? null,
+          quota_state: anonymousResponseFields?.quota_state ?? null,
+          trial_exhausted: anonymousResponseFields?.trial_exhausted === true
+        });
+      }
+
+      if (!req.trialMode) {
+        logger.warn('[altText] Request rejected: quota denied', {
+          site_hash: siteIdentity.siteHash || null,
+          request_id: req.id || null,
+          code: reservation.error,
+          message: reservation.message || null,
+          auth_method: req.authMethod || null,
+          license_key_prefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null
         });
       }
 
@@ -452,13 +580,15 @@ function createAltTextRouter({
         error: reservation.error,
         message: reservation.message || 'Quota exceeded',
         code: reservation.error,
-        credits_used: reservation.payload?.credits_used,
-        total_limit: reservation.payload?.total_limit,
+        credits_used: anonymousResponseFields?.credits_used ?? reservation.payload?.credits_used,
+        credits_remaining: anonymousResponseFields?.credits_remaining ?? reservation.payload?.remaining_credits,
+        credits_total: anonymousResponseFields?.credits_total ?? reservation.payload?.total_limit,
+        total_limit: anonymousResponseFields?.credits_total ?? reservation.payload?.total_limit,
         reset_date: reservation.payload?.quota_period_end || reservation.payload?.reset_date,
-        remaining: reservation.payload?.remaining_credits,
+        remaining: anonymousResponseFields?.credits_remaining ?? reservation.payload?.remaining_credits,
         ...(trialInfo || {}),
-        ...(req.trialMode ? buildAnonymousResponseFields(anonymousContext, trialInfo) : {}),
-        trial_exhausted: trialInfo?.trial_exhausted === true || reservation.error === 'TRIAL_EXHAUSTED' ? true : undefined
+        ...(anonymousResponseFields || {}),
+        trial_exhausted: anonymousResponseFields?.trial_exhausted === true || reservation.error === 'TRIAL_EXHAUSTED' ? true : undefined
       });
     }
 
@@ -507,11 +637,15 @@ function createAltTextRouter({
         isRetryable,
         trialMode: !!req.trialMode,
         requestId: req.id || null,
-        siteHash: siteKey
+        siteHash: siteKey,
+        generation_request_id: reservation.reservation?.generation_request_id || null,
+        quota_source: reservation.reservation?.quota_source || null,
+        anon_id: anonymousContext.anonId || null
       });
 
       // Build trial info even on failure so the plugin knows remaining credits
       let trialInfo = null;
+      let anonymousResponseFields = null;
       if (req.trialMode) {
         try {
           trialInfo = await getAnonymousTrialStatus(supabase, {
@@ -519,7 +653,12 @@ function createAltTextRouter({
             siteHash: req.trialSiteHash || siteIdentity.siteHash,
             anonId: anonymousContext.anonId
           });
+          anonymousResponseFields = buildAnonymousResponseFields(anonymousContext, trialInfo);
         } catch (_e) { /* best effort */ }
+
+        if (!anonymousResponseFields) {
+          anonymousResponseFields = buildAnonymousResponseFields(anonymousContext, null);
+        }
       }
 
       return res.status(httpStatus).json({
@@ -532,7 +671,7 @@ function createAltTextRouter({
             : 'Failed to generate alt text.',
         retryable: isRetryable,
         ...(trialInfo || {}),
-        ...(req.trialMode ? buildAnonymousResponseFields(anonymousContext, trialInfo) : {})
+        ...(anonymousResponseFields || {})
       });
     }
     
@@ -583,7 +722,11 @@ function createAltTextRouter({
       });
       const { error } = await recordLegacyTrialUsage(supabase, trialPayload);
       if (error) {
-        logger.error('[altText] Failed to record anonymous trial usage', { error: error.message, code: error.code });
+        logger.error('[altText] Failed to record anonymous trial usage', {
+          site_hash: trialPayload.site_hash,
+          anon_id: anonymousContext.anonId || null,
+          error: serializeSupabaseError(error)
+        });
       }
       usageResult = { error };
     } else {
@@ -646,9 +789,17 @@ function createAltTextRouter({
     }
     
     if (usageResult.error) {
-      logger.error('[altText] Failed to record usage', { error: usageResult.error });
+      logger.error('[altText] Failed to record usage', {
+        site_hash: effectiveSite?.site_hash || siteKey || null,
+        request_id: req.id || null,
+        error: serializeSupabaseError(usageResult.error)
+      });
     } else {
-      logger.info('[altText] Usage recorded successfully');
+      logger.info('[altText] Usage recorded successfully', {
+        site_hash: effectiveSite?.site_hash || siteKey || null,
+        request_id: req.id || null,
+        mode: req.trialMode ? 'trial' : 'site'
+      });
     }
 
     // Get updated quota status to return accurate credits_remaining
@@ -656,6 +807,7 @@ function createAltTextRouter({
     let totalLimit = null;
     let creditsUsed = 1;
     let trialInfo = null;
+    let anonymousResponseFields = null;
     await new Promise(resolve => setTimeout(resolve, 50));
 
     const quotaStatus = await getQuotaStatus(supabase, {
@@ -697,9 +849,20 @@ function createAltTextRouter({
           siteHash: req.trialSiteHash || siteIdentity.siteHash,
           anonId: anonymousContext.anonId
         });
+        anonymousResponseFields = buildAnonymousResponseFields(anonymousContext, trialInfo);
       } catch (_err) {
         // Best-effort: never block successful generation response.
       }
+
+      if (!anonymousResponseFields) {
+        anonymousResponseFields = buildAnonymousResponseFields(anonymousContext, null);
+      }
+    }
+
+    if (anonymousResponseFields) {
+      creditsRemaining = anonymousResponseFields.credits_remaining;
+      totalLimit = anonymousResponseFields.credits_total;
+      creditsUsed = anonymousResponseFields.credits_used;
     }
 
     if (cacheKey && !bypassCache) {
@@ -716,9 +879,11 @@ function createAltTextRouter({
       altText,
       credits_used: creditsUsed,
       credits_remaining: creditsRemaining !== null ? creditsRemaining : undefined,
+      credits_total: totalLimit !== null ? totalLimit : undefined,
+      total_limit: totalLimit !== null ? totalLimit : undefined,
       limit: totalLimit !== null ? totalLimit : undefined,
       ...(trialInfo || {}),
-      ...(req.trialMode ? buildAnonymousResponseFields(anonymousContext, trialInfo) : {}),
+      ...(anonymousResponseFields || {}),
       usage: {
         prompt_tokens: usage?.prompt_tokens,
         completion_tokens: usage?.completion_tokens,
@@ -747,6 +912,16 @@ function createAltTextRouter({
       site_hash: siteIdentity.siteHash,
       quota_source: reservation.reservation?.quota_source || 'unknown'
     });
+
+    if (req.trialMode && response.signup_required !== undefined) {
+      logger.info('[altText] Anonymous signup_required state returned', {
+        site_hash: siteIdentity.siteHash,
+        anon_id: anonymousContext.anonId || null,
+        signup_required: response.signup_required,
+        quota_state: response.quota_state || null,
+        free_plan_offer: response.free_plan_offer || null
+      });
+    }
     
     res.json(response);
   });

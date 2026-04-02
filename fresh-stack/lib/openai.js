@@ -232,6 +232,253 @@ function fallbackAltText(context = {}) {
   return `${base}: concise descriptive alt text placeholder`;
 }
 
+function getReviewApiKey(service = 'alttext-ai') {
+  if (service === 'seo-ai-meta') {
+    return process.env.OPENAI_REVIEW_API_KEY
+      || process.env.SEO_META_OPENAI_API_KEY
+      || process.env.OPENAI_API_KEY
+      || null;
+  }
+
+  return process.env.OPENAI_REVIEW_API_KEY
+    || process.env.ALTTEXT_OPENAI_API_KEY
+    || process.env.OPENAI_API_KEY
+    || null;
+}
+
+function buildReviewPrompt(altText, image = {}, context = {}) {
+  const lines = [
+    'Evaluate whether the provided alternative text accurately describes the attached image.',
+    'Respond only with a JSON object with keys: score, status, grade, summary, issues.',
+    'Use score as an integer from 0 to 100.',
+    'Use status as one of: great, good, review, critical.',
+    'Keep summary under 120 characters.',
+    `Alt text candidate: "${altText}".`
+  ];
+
+  if (image.title) lines.push(`Media title: ${image.title}`);
+  if (image.caption) lines.push(`Caption: ${image.caption}`);
+  if (image.filename) lines.push(`Filename: ${image.filename}`);
+  if (image.width && image.height) lines.push(`Dimensions: ${image.width}x${image.height}px`);
+  if (context.title) lines.push(`Page title: ${context.title}`);
+  if (context.pageTitle) lines.push(`Page title: ${context.pageTitle}`);
+  if (context.post_title) lines.push(`Page title: ${context.post_title}`);
+  if (context.caption) lines.push(`Page caption: ${context.caption}`);
+
+  return lines.join('\n');
+}
+
+function tryParseJson(payload) {
+  try {
+    return JSON.parse(payload);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function parseReviewResponse(content) {
+  if (!content || typeof content !== 'string') {
+    return null;
+  }
+
+  const direct = tryParseJson(content.trim());
+  if (direct) {
+    return direct;
+  }
+
+  const match = content.match(/\{[\s\S]*\}/);
+  return match ? tryParseJson(match[0]) : null;
+}
+
+function clampScore(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  return Math.min(100, Math.max(0, Math.round(numeric)));
+}
+
+function normalizeReviewStatus(status, score) {
+  const lookup = {
+    great: 'great',
+    excellent: 'great',
+    good: 'good',
+    ok: 'review',
+    needs_review: 'review',
+    review: 'review',
+    poor: 'critical',
+    critical: 'critical',
+    fail: 'critical'
+  };
+
+  if (typeof status === 'string') {
+    const key = status.toLowerCase().replace(/[^a-z]/g, '_');
+    if (lookup[key]) {
+      return lookup[key];
+    }
+  }
+
+  if (typeof score === 'number' && Number.isFinite(score)) {
+    if (score >= 90) return 'great';
+    if (score >= 75) return 'good';
+    if (score >= 55) return 'review';
+    return 'critical';
+  }
+
+  return 'review';
+}
+
+function gradeFromStatus(status) {
+  switch (status) {
+    case 'great':
+      return 'Excellent';
+    case 'good':
+      return 'Strong';
+    case 'review':
+      return 'Needs review';
+    default:
+      return 'Critical';
+  }
+}
+
+function shouldSkipReviewForImageError(error) {
+  const status = error?.response?.status;
+  const message = error?.response?.data?.error?.message || error?.message || '';
+
+  if (!status) {
+    return false;
+  }
+
+  return (status === 400 || status === 422)
+    && /image_url|unable to load image|failed to download image|fetch/i.test(message);
+}
+
+async function reviewAltText({ altText, image = null, context = {}, service = 'alttext-ai' }) {
+  if (!altText || typeof altText !== 'string') {
+    return null;
+  }
+
+  const base64Data = image?.base64 || image?.image_base64 || null;
+  const hasUsableUrl = typeof image?.url === 'string' && /^https:\/\//i.test(image.url);
+  const imageUrl = base64Data
+    ? `data:${image?.mime_type || 'image/jpeg'};base64,${base64Data}`
+    : (hasUsableUrl ? image.url : null);
+
+  if (!imageUrl) {
+    return null;
+  }
+
+  const apiKey = getReviewApiKey(service);
+  if (!apiKey) {
+    const configError = new Error('OpenAI review API key is not configured.');
+    configError.code = 'BACKEND_CONFIG_ERROR';
+    configError.httpStatus = 500;
+    throw configError;
+  }
+
+  const model = process.env.OPENAI_REVIEW_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const prompt = buildReviewPrompt(altText, image, context);
+  const logger = require('./logger');
+
+  try {
+    const response = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model,
+        temperature: 0,
+        max_tokens: 220,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an accessibility QA reviewer. Evaluate how accurately candidate alt text matches the attached image. Return valid JSON only.'
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: imageUrl, detail: 'auto' } }
+            ]
+          }
+        ]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 60000
+      }
+    );
+
+    const content = response.data?.choices?.[0]?.message?.content?.trim() || '';
+    const parsed = parseReviewResponse(content);
+
+    logger.info('[OpenAI] Review response received', {
+      model,
+      imageSource: base64Data ? 'base64' : 'url',
+      parsed: Boolean(parsed)
+    });
+
+    if (!parsed) {
+      return null;
+    }
+
+    const score = clampScore(parsed.score);
+    const status = normalizeReviewStatus(parsed.status, score);
+    const issues = Array.isArray(parsed.issues)
+      ? parsed.issues
+          .filter((item) => typeof item === 'string' && item.trim() !== '')
+          .map((item) => item.trim())
+          .slice(0, 6)
+      : [];
+
+    return {
+      score,
+      status,
+      grade: typeof parsed.grade === 'string' && parsed.grade.trim()
+        ? parsed.grade.trim()
+        : gradeFromStatus(status),
+      summary: typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 120) : '',
+      issues,
+      model,
+      usage: response.data?.usage || null
+    };
+  } catch (error) {
+    if (shouldSkipReviewForImageError(error)) {
+      logger.warn('[OpenAI] Review skipped because image could not be fetched', {
+        status: error?.response?.status || null,
+        message: error?.response?.data?.error?.message || error.message
+      });
+      return null;
+    }
+
+    const message = error?.response?.data?.error?.message || error.message || 'OpenAI review request failed';
+    const httpStatus = error?.response?.status || null;
+    const isApiKeyError = /incorrect.*api.*key|invalid.*api.*key|authentication.*failed/i.test(message);
+    const isRateLimit = httpStatus === 429;
+    const isServerError = httpStatus >= 500;
+
+    logger.error('[OpenAI] Review generation failed', {
+      error: message,
+      status: httpStatus,
+      model,
+      isApiKeyError,
+      isRateLimit,
+      isServerError
+    });
+
+    const reviewError = new Error(message);
+    reviewError.code = isApiKeyError ? 'BACKEND_CONFIG_ERROR'
+      : isRateLimit ? 'UPSTREAM_RATE_LIMITED'
+      : isServerError ? 'UPSTREAM_GENERATION_ERROR'
+      : 'REVIEW_ERROR';
+    reviewError.httpStatus = httpStatus;
+    throw reviewError;
+  }
+}
+
 module.exports = {
-  generateAltText
+  generateAltText,
+  reviewAltText
 };

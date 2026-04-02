@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const logger = require('../lib/logger');
+const { isMissingSchemaError, serializeSupabaseError } = require('../lib/supabaseErrors');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { getAnonymousTrialLimit } = require('./anonymousTrial');
 const { getLimits } = require('./planLimits');
@@ -32,11 +33,6 @@ const ROLE_RANK = {
 };
 
 const DEFAULT_TRIAL_CREDITS = getAnonymousTrialLimit();
-
-function isMissingSchemaError(error) {
-  if (!error) return false;
-  return ['42P01', '42703', '42883'].includes(error.code) || /does not exist|not exist|undefined function/i.test(error.message || '');
-}
 
 function isUniqueViolation(error) {
   return Boolean(error && error.code === '23505');
@@ -74,14 +70,31 @@ async function fetchAccountById(supabase, accountId) {
 }
 
 async function fetchSiteByColumn(supabase, column, value) {
-  if (!supabase || !column || !value) return null;
-  const { data, error } = await maybeSingle(
-    supabase.from('sites').select(SITE_SELECT).eq(column, value)
-  );
+  if (!supabase || !column || !value) return { site: null, candidates: [] };
+  const { data, error } = await supabase
+    .from('sites')
+    .select(SITE_SELECT)
+    .eq(column, value);
+
   if (error && !isMissingSchemaError(error)) {
-    logger.warn('[siteQuota] site lookup failed', { column, value, error: error.message });
+    logger.warn('[siteQuota] site lookup failed', {
+      column,
+      value,
+      error: error.message
+    });
+    return { site: null, candidates: [] };
   }
-  return data || null;
+
+  const candidates = data || [];
+  if (!candidates.length) {
+    return { site: null, candidates: [] };
+  }
+
+  const preferred = choosePreferredSiteCandidate(candidates);
+  return {
+    site: preferred || null,
+    candidates
+  };
 }
 
 async function fetchSitesByColumn(supabase, column, value) {
@@ -99,9 +112,92 @@ async function fetchSitesByColumn(supabase, column, value) {
   return data || [];
 }
 
+function siteStatusPriority(site) {
+  if (!site) return 0;
+  if (site.status === 'active' && !site.merged_into_site_id) return 4;
+  if (site.status === 'active') return 3;
+  if (site.status === 'suspended') return 2;
+  if (site.status === 'deactivated') return 1;
+  return 0;
+}
+
+function siteTimestamp(site) {
+  const value = site?.last_seen_at
+    || site?.updated_at
+    || site?.first_seen_at
+    || site?.activated_at
+    || null;
+  const timestamp = value ? Date.parse(value) : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function choosePreferredSiteCandidate(candidates = []) {
+  return [...candidates].sort((left, right) => {
+    const statusDelta = siteStatusPriority(right) - siteStatusPriority(left);
+    if (statusDelta !== 0) return statusDelta;
+
+    const mergeDelta = Number(Boolean(left?.merged_into_site_id)) - Number(Boolean(right?.merged_into_site_id));
+    if (mergeDelta !== 0) return mergeDelta;
+
+    const licenseDelta = Number(Boolean(right?.license_key)) - Number(Boolean(left?.license_key));
+    if (licenseDelta !== 0) return licenseDelta;
+
+    const ownerDelta = Number(Boolean(right?.owner_user_id)) - Number(Boolean(left?.owner_user_id));
+    if (ownerDelta !== 0) return ownerDelta;
+
+    return siteTimestamp(right) - siteTimestamp(left);
+  })[0] || null;
+}
+
+function truncateMatchValue(value) {
+  if (value === null || value === undefined) return null;
+  const normalized = String(value);
+  return normalized.length > 255 ? `${normalized.slice(0, 255)}...` : normalized;
+}
+
+async function findSiteMatch(supabase, column, value, {
+  account = null,
+  requestId = null
+} = {}) {
+  if (!value) {
+    return { site: null, candidates: [] };
+  }
+
+  const { site, candidates } = await fetchSiteByColumn(supabase, column, value);
+  if (!site) {
+    return { site: null, candidates: [] };
+  }
+
+  if (candidates.length > 1) {
+    logger.warn('[siteQuota] Duplicate site identity candidates detected', {
+      match_column: column,
+      match_value: truncateMatchValue(value),
+      candidate_site_ids: candidates.map((candidate) => candidate.id),
+      chosen_site_id: site.id,
+      duplicate_count: candidates.length
+    });
+
+    await recordSiteAudit(supabase, {
+      siteId: site.id,
+      actorUserId: account?.id || null,
+      eventType: 'duplicate_site_identity_detected',
+      severity: 'warn',
+      requestId,
+      metadata: {
+        match_column: column,
+        match_value: truncateMatchValue(value),
+        candidate_site_ids: candidates.map((candidate) => candidate.id),
+        chosen_site_id: site.id
+      }
+    });
+  }
+
+  return { site, candidates };
+}
+
 async function followMergedSite(supabase, site) {
   if (!site?.merged_into_site_id) return site;
-  const mergedTarget = await fetchSiteByColumn(supabase, 'id', site.merged_into_site_id);
+  const { site: mergedTarget } = await fetchSiteByColumn(supabase, 'id', site.merged_into_site_id);
   return mergedTarget || site;
 }
 
@@ -192,8 +288,9 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
     .single();
 
   if (error && isUniqueViolation(error)) {
-    logger.info('[siteQuota] Site already exists (race-safe duplicate)', {
+    logger.info('[siteQuota] Site create reused existing row after unique race', {
       site_hash: payload.site_hash,
+      site_url: payload.site_url || null,
       canonical_domain: payload.canonical_domain || null
     });
     return null;
@@ -202,8 +299,9 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
   if (error) {
     logger.error('[siteQuota] Site creation failed', {
       site_hash: payload.site_hash,
-      error: error.message,
-      code: error.code
+      site_url: payload.site_url || null,
+      canonical_domain: payload.canonical_domain || null,
+      error: serializeSupabaseError(error)
     });
     throw error;
   }
@@ -211,6 +309,7 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
   logger.info('[siteQuota] Site created', {
     site_id: data?.id || null,
     site_hash: payload.site_hash,
+    site_url: payload.site_url || null,
     canonical_domain: payload.canonical_domain || null,
     environment: payload.environment,
     has_license: !!payload.license_key,
@@ -356,27 +455,47 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
   let site = null;
 
   if (identity.wpInstallUuid) {
-    site = await fetchSiteByColumn(supabase, 'wp_install_uuid', identity.wpInstallUuid);
+    const match = await findSiteMatch(supabase, 'wp_install_uuid', identity.wpInstallUuid, {
+      account,
+      requestId
+    });
+    site = match.site;
     matchedBy = site ? 'wp_install_uuid' : matchedBy;
   }
 
   if (!site && identity.siteHash) {
-    site = await fetchSiteByColumn(supabase, 'site_hash', identity.siteHash);
+    const match = await findSiteMatch(supabase, 'site_hash', identity.siteHash, {
+      account,
+      requestId
+    });
+    site = match.site;
     matchedBy = site ? 'site_hash' : matchedBy;
   }
 
   if (!site && identity.siteFingerprint) {
-    site = await fetchSiteByColumn(supabase, 'site_fingerprint', identity.siteFingerprint);
+    const match = await findSiteMatch(supabase, 'site_fingerprint', identity.siteFingerprint, {
+      account,
+      requestId
+    });
+    site = match.site;
     matchedBy = site ? 'site_fingerprint' : matchedBy;
   }
 
   if (!site && identity.siteFingerprint) {
-    site = await fetchSiteByColumn(supabase, 'fingerprint', identity.siteFingerprint);
+    const match = await findSiteMatch(supabase, 'fingerprint', identity.siteFingerprint, {
+      account,
+      requestId
+    });
+    site = match.site;
     matchedBy = site ? 'legacy_fingerprint' : matchedBy;
   }
 
   if (!site && identity.normalizedSiteUrl) {
-    site = await fetchSiteByColumn(supabase, 'normalized_site_url', identity.normalizedSiteUrl);
+    const match = await findSiteMatch(supabase, 'normalized_site_url', identity.normalizedSiteUrl, {
+      account,
+      requestId
+    });
+    site = match.site;
     matchedBy = site ? 'normalized_site_url' : matchedBy;
   }
 
@@ -410,9 +529,10 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
   }
 
   if (site) {
-    logger.info('[siteQuota] Existing site matched', {
+    logger.info('[siteQuota] Existing site reused', {
       site_id: site.id,
       site_hash: site.site_hash,
+      site_url: site.site_url || identity.siteUrl || null,
       matched_by: matchedBy,
       canonical_domain: site.canonical_domain || null
     });
@@ -451,6 +571,27 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
   }
 
   try {
+    if (identity.siteHash) {
+      const preInsertMatch = await findSiteMatch(supabase, 'site_hash', identity.siteHash, {
+        account,
+        requestId
+      });
+      if (preInsertMatch.site) {
+        logger.info('[siteQuota] Site creation short-circuited to existing site', {
+          site_id: preInsertMatch.site.id,
+          site_hash: preInsertMatch.site.site_hash,
+          site_url: preInsertMatch.site.site_url || identity.siteUrl || null
+        });
+        return {
+          site: preInsertMatch.site,
+          identity,
+          matchedBy: 'site_hash_preinsert',
+          created: false,
+          error: null
+        };
+      }
+    }
+
     let createdSite = await createCanonicalSite(supabase, identity, { legacyLicenseKey, account });
 
     if (!createdSite) {
@@ -480,8 +621,9 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
     };
   } catch (error) {
     logger.error('[siteQuota] canonical site create failed', {
-      error: error.message,
-      code: error.code || null
+      site_hash: identity.siteHash || identity.syntheticSiteHash || null,
+      site_url: identity.siteUrl || identity.normalizedSiteUrl || null,
+      error: serializeSupabaseError(error)
     });
     if (isMissingSchemaError(error)) {
       return {
@@ -720,7 +862,9 @@ async function reserveSiteCredits(supabase, {
 
     logger.error('[siteQuota] reserve rpc failed', {
       siteId: resolved.site.id,
-      error: error.message
+      site_hash: resolved.site.site_hash || null,
+      quota_mode: rpcPayload.p_quota_mode,
+      error: serializeSupabaseError(error)
     });
     return {
       error: 'SITE_QUOTA_RESERVE_FAILED',
@@ -730,6 +874,15 @@ async function reserveSiteCredits(supabase, {
   }
 
   if (!data?.ok) {
+    logger.warn('[siteQuota] reserve rpc rejected request', {
+      site_id: resolved.site.id,
+      site_hash: resolved.site.site_hash || null,
+      quota_mode: rpcPayload.p_quota_mode,
+      generation_request_id: data?.generation_request_id || null,
+      response_code: data?.code || 'QUOTA_EXCEEDED',
+      remaining_credits: data?.remaining_credits ?? null,
+      total_limit: data?.total_limit ?? null
+    });
     return {
       error: data?.code || 'QUOTA_EXCEEDED',
       status: data?.code === 'TRIAL_EXHAUSTED' || data?.code === 'QUOTA_EXCEEDED' ? 402 : 400,
@@ -738,6 +891,16 @@ async function reserveSiteCredits(supabase, {
       site: resolved.site
     };
   }
+
+  logger.info('[siteQuota] reserve rpc succeeded', {
+    site_id: resolved.site.id,
+    site_hash: resolved.site.site_hash || null,
+    quota_mode: rpcPayload.p_quota_mode,
+    generation_request_id: data?.generation_request_id || null,
+    quota_source: data?.quota_source || null,
+    remaining_credits: data?.remaining_credits ?? null,
+    total_limit: data?.total_limit ?? null
+  });
 
   return {
     error: null,
@@ -767,10 +930,18 @@ async function finalizeSiteGeneration(supabase, {
   if (error && !isMissingSchemaError(error)) {
     logger.warn('[siteQuota] finalize generation failed', {
       generationRequestId,
-      error: error.message
+      success: Boolean(success),
+      error: serializeSupabaseError(error)
     });
     return { error };
   }
+
+  logger.info('[siteQuota] finalize generation rpc completed', {
+    generation_request_id: generationRequestId,
+    success: Boolean(success),
+    status: data?.status || null,
+    skipped_missing_schema: Boolean(error && isMissingSchemaError(error))
+  });
 
   return { data, error };
 }

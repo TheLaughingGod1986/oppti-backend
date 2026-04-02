@@ -1,0 +1,224 @@
+-- Post-deploy verification for the restored site-owned quota V2 schema.
+-- Safe to run after the repair migration, and again after the optional backfill.
+
+CREATE OR REPLACE FUNCTION pg_temp.bbai_relation_row_count(p_qualified_name TEXT)
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_regclass REGCLASS;
+  v_count BIGINT;
+BEGIN
+  v_regclass := to_regclass(p_qualified_name);
+  IF v_regclass IS NULL THEN
+    RETURN NULL;
+  END IF;
+
+  EXECUTE format('SELECT count(*) FROM %s', v_regclass) INTO v_count;
+  RETURN v_count;
+END;
+$$;
+
+-- 1. V2 relations must now exist.
+SELECT
+  object_name,
+  to_regclass(format('public.%I', object_name)) IS NOT NULL AS exists_in_public
+FROM (
+  VALUES
+    ('plans'),
+    ('site_memberships'),
+    ('site_subscriptions'),
+    ('site_quotas'),
+    ('site_trials'),
+    ('generation_requests'),
+    ('usage_events'),
+    ('site_audit_logs'),
+    ('site_merges')
+) AS expected(object_name)
+ORDER BY object_name;
+
+-- 2. V2 RPC functions must now exist.
+SELECT
+  expected.function_name,
+  proc.oid IS NOT NULL AS exists_in_public,
+  CASE
+    WHEN proc.oid IS NOT NULL THEN pg_get_function_identity_arguments(proc.oid)
+    ELSE NULL
+  END AS identity_arguments
+FROM (
+  VALUES
+    ('bbai_reserve_site_generation'),
+    ('bbai_finalize_site_generation'),
+    ('bbai_apply_site_billing_event'),
+    ('bbai_merge_sites')
+) AS expected(function_name)
+LEFT JOIN LATERAL (
+  SELECT p.oid
+  FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname = 'public'
+    AND p.proname = expected.function_name
+  ORDER BY p.oid
+  LIMIT 1
+) AS proc ON TRUE
+ORDER BY expected.function_name;
+
+-- 3. The backend startup probe should now return SITE_REQUIRED instead of a
+-- missing-function error for bbai_reserve_site_generation.
+SELECT public.bbai_reserve_site_generation(NULL::uuid) AS reserve_null_site_probe;
+
+-- 4. RLS remains intentionally untouched by this rollout; verify current state.
+SELECT
+  expected.table_name,
+  cls.relrowsecurity AS rls_enabled,
+  cls.relforcerowsecurity AS rls_forced
+FROM (
+  VALUES
+    ('plans'),
+    ('site_memberships'),
+    ('site_subscriptions'),
+    ('site_quotas'),
+    ('site_trials'),
+    ('generation_requests'),
+    ('usage_events'),
+    ('site_audit_logs'),
+    ('site_merges')
+) AS expected(table_name)
+LEFT JOIN pg_class cls
+  ON cls.relname = expected.table_name
+LEFT JOIN pg_namespace nsp
+  ON nsp.oid = cls.relnamespace
+WHERE nsp.nspname = 'public' OR nsp.nspname IS NULL
+ORDER BY expected.table_name;
+
+-- 5. Key row counts after restore / backfill.
+SELECT
+  table_name,
+  pg_temp.bbai_relation_row_count(format('public.%I', table_name)) AS row_count
+FROM (
+  VALUES
+    ('licenses'),
+    ('sites'),
+    ('trial_usage'),
+    ('usage_logs'),
+    ('subscriptions'),
+    ('site_memberships'),
+    ('site_subscriptions'),
+    ('site_quotas'),
+    ('site_trials'),
+    ('generation_requests'),
+    ('usage_events'),
+    ('site_audit_logs'),
+    ('site_merges')
+) AS expected(table_name)
+ORDER BY table_name;
+
+-- 6. Operational sanity checks.
+WITH active_site_subscriptions AS (
+  SELECT DISTINCT ON (ss.site_id)
+    ss.site_id,
+    COALESCE(ss.current_period_start, date_trunc('month', NOW())) AS quota_period_start,
+    COALESCE(ss.current_period_end, date_trunc('month', NOW()) + INTERVAL '1 month') AS quota_period_end
+  FROM public.site_subscriptions ss
+  WHERE ss.status IN ('active', 'trialing', 'past_due')
+  ORDER BY ss.site_id, COALESCE(ss.current_period_end, NOW()) DESC NULLS LAST, ss.updated_at DESC
+),
+duplicate_site_hashes AS (
+  SELECT
+    site_hash,
+    count(*) AS row_count
+  FROM public.sites
+  WHERE merged_into_site_id IS NULL
+    AND site_hash IS NOT NULL
+    AND btrim(site_hash) <> ''
+  GROUP BY site_hash
+  HAVING count(*) > 1
+)
+SELECT
+  (SELECT count(*) FROM active_site_subscriptions sub
+    LEFT JOIN public.site_quotas sq
+      ON sq.site_id = sub.site_id
+     AND sq.quota_period_start = sub.quota_period_start
+     AND sq.quota_period_end = sub.quota_period_end
+    WHERE sq.id IS NULL
+  ) AS active_site_subscriptions_missing_current_quota,
+  (SELECT count(*) FROM duplicate_site_hashes) AS duplicate_site_hash_groups_remaining,
+  (SELECT count(DISTINCT tu.site_hash)
+   FROM public.trial_usage tu
+   WHERE tu.site_hash IS NOT NULL
+     AND btrim(tu.site_hash) <> ''
+     AND NOT EXISTS (
+       SELECT 1
+       FROM public.sites s
+       WHERE s.site_hash = tu.site_hash
+     )
+  ) AS trial_hashes_without_any_site_row,
+  (SELECT count(*)
+   FROM public.subscriptions sub
+   WHERE sub.site_id IS NULL
+     AND lower(COALESCE(sub.status, '')) IN ('active', 'trialing', 'past_due', 'cancelled', 'canceled')
+  ) AS legacy_subscriptions_still_without_site_id;
+
+-- 7. Rolled-back smoke test for reserve/finalize on a throwaway trial site.
+BEGIN;
+
+WITH inserted_site AS (
+  INSERT INTO public.sites (
+    site_hash,
+    wp_install_uuid,
+    site_url,
+    normalized_site_url,
+    canonical_domain,
+    fingerprint,
+    site_fingerprint,
+    status,
+    activated_at,
+    last_activity_at,
+    first_seen_at,
+    last_seen_at,
+    updated_at,
+    environment
+  )
+  VALUES (
+    'verify-site-hash-' || gen_random_uuid()::text,
+    'verify-install-' || gen_random_uuid()::text,
+    'https://verify.example.invalid',
+    'verify.example.invalid',
+    'verify.example.invalid',
+    'verify-fingerprint-' || gen_random_uuid()::text,
+    'verify-fingerprint-' || gen_random_uuid()::text,
+    'active',
+    NOW(),
+    NOW(),
+    NOW(),
+    NOW(),
+    NOW(),
+    'production'
+  )
+  RETURNING id, site_hash
+),
+reserved AS (
+  SELECT public.bbai_reserve_site_generation(
+    (SELECT id FROM inserted_site),
+    NULL,
+    1,
+    'verify-idempotency-' || gen_random_uuid()::text,
+    'verify-request-' || gen_random_uuid()::text,
+    '{"source":"post_deploy_verification"}'::jsonb,
+    'trial',
+    5
+  ) AS reserve_result
+),
+finalized AS (
+  SELECT public.bbai_finalize_site_generation(
+    ((SELECT reserve_result FROM reserved) ->> 'generation_request_id')::uuid,
+    TRUE,
+    '{"source":"post_deploy_verification"}'::jsonb
+  ) AS finalize_result
+)
+SELECT
+  (SELECT id FROM inserted_site) AS smoke_site_id,
+  (SELECT reserve_result FROM reserved) AS reserve_result,
+  (SELECT finalize_result FROM finalized) AS finalize_result;
+
+ROLLBACK;

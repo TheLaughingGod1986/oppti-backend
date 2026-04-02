@@ -1,11 +1,16 @@
 const { getLimits } = require('./planLimits');
 const logger = require('../lib/logger');
+const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const {
   buildSiteIdentity,
   finalizeSiteGeneration,
   getSiteQuotaStatus,
   reserveSiteCredits
 } = require('./siteQuota');
+
+function logV2Fallback(message, details = {}) {
+  logger.warn(`[V2_FALLBACK] ${message}`, details);
+}
 
 /**
  * Calculate reset date and quota status for a license.
@@ -201,6 +206,12 @@ async function getQuotaStatus(supabase, {
     return siteStatus;
   }
 
+  logV2Fallback('Quota status V2 path failed; using legacy quota status', {
+    v2_error_code: siteStatus.error,
+    v2_error_message: siteStatus.message || null,
+    site_hash: siteHash || identity?.siteHash || null,
+    license_key_prefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null
+  });
   return getLegacyQuotaStatus(supabase, { licenseKey, siteHash: siteHash || identity?.siteHash });
 }
 
@@ -317,17 +328,37 @@ async function reserveGenerationQuota(supabase, {
   });
 
   if (!result.error) {
+    logger.info('[Quota] Generation reservation succeeded', {
+      site_hash: result.site?.site_hash || effectiveSiteHash || null,
+      site_id: result.site?.id || null,
+      quota_mode: quotaMode,
+      quota_source: result.reservation?.quota_source || null,
+      generation_request_id: result.reservation?.generation_request_id || null,
+      created_site: Boolean(result.created),
+      matched_by: result.matchedBy || null,
+      request_id: requestId || null
+    });
     return result;
   }
+
+  logger.warn('[Quota] Generation reservation returned non-success', {
+    site_hash: effectiveSiteHash || identity?.siteHash || null,
+    quota_mode: quotaMode,
+    error_code: result.error,
+    error_message: result.message || null,
+    request_id: requestId || null
+  });
 
   // For trial mode, any V2 error is recoverable — fall back to legacy trial
   // tracking (trial_usage table). The V2 RPC may fail for new trial sites
   // that have no site_trials row yet, or due to constraint violations.
   if (quotaMode === 'trial') {
     if (result.error !== 'TRIAL_EXHAUSTED') {
-      logger.info('[Quota] Trial V2 reservation failed, falling back to legacy trial', {
-        v2Error: result.error,
-        siteHash: effectiveSiteHash
+      logV2Fallback('Trial reservation V2 path failed; using legacy trial fallback', {
+        v2_error_code: result.error,
+        v2_error_message: result.message || null,
+        site_hash: effectiveSiteHash || identity?.siteHash || null,
+        request_id: requestId || null
       });
       return {
         error: null,
@@ -361,13 +392,13 @@ async function reserveGenerationQuota(supabase, {
     return result;
   }
 
-  if (result.error !== 'SITE_QUOTA_V2_UNAVAILABLE') {
-    logger.warn('[Quota] V2 site reservation failed, falling back to legacy quota', {
-      v2Error: result.error,
-      siteHash,
-      licenseKeyPrefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null
-    });
-  }
+  logV2Fallback('Site reservation V2 path failed; using legacy license quota fallback', {
+    v2_error_code: result.error,
+    v2_error_message: result.message || null,
+    site_hash: effectiveSiteHash || identity?.siteHash || null,
+    license_key_prefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null,
+    request_id: requestId || null
+  });
 
   const legacy = await checkQuotaAvailable(supabase, { licenseKey, siteHash: effectiveSiteHash, creditsNeeded });
   if (legacy.error) {
@@ -402,14 +433,34 @@ async function finalizeGenerationQuotaReservation(supabase, {
   finalMetadata = {}
 } = {}) {
   if (!generationRequestId) {
+    logger.info('[Quota] Generation finalization skipped', {
+      success: Boolean(success),
+      reason: 'missing_generation_request_id'
+    });
     return { error: null, skipped: true };
   }
 
-  return finalizeSiteGeneration(supabase, {
+  const result = await finalizeSiteGeneration(supabase, {
     generationRequestId,
     success,
     finalMetadata
   });
+
+  if (result.error) {
+    logger.warn('[Quota] Generation finalization failed', {
+      generation_request_id: generationRequestId,
+      success: Boolean(success),
+      error: serializeSupabaseError(result.error)
+    });
+  } else {
+    logger.info('[Quota] Generation finalization completed', {
+      generation_request_id: generationRequestId,
+      success: Boolean(success),
+      final_status: result.data?.status || null
+    });
+  }
+
+  return result;
 }
 
 function computePeriodStart(billingDay = 1, now = new Date()) {
@@ -428,5 +479,6 @@ module.exports = {
   enforceQuota,
   reserveGenerationQuota,
   finalizeGenerationQuotaReservation,
-  computePeriodStart
+  computePeriodStart,
+  logV2Fallback
 };

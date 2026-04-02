@@ -2,6 +2,7 @@ const { computePeriodStart } = require('./quota');
 const { getLimits } = require('./planLimits');
 const { trackGenerationMilestone, trackCreditsExhausted } = require('../../src/services/loops');
 const logger = require('../lib/logger');
+const { serializeSupabaseError } = require('../lib/supabaseErrors');
 
 /**
  * Check if a string is a valid UUID format
@@ -72,10 +73,8 @@ async function recordUsage(supabase, {
 
   if (error) {
     logger.error('[usage] Failed to insert usage log', { 
-      error: error.message, 
-      code: error.code,
-      details: error.details,
-      hint: error.hint,
+      operation: 'usage_logs_insert',
+      error: serializeSupabaseError(error),
       payload: {
         ...payload,
         license_key: payload.license_key ? `${payload.license_key.substring(0, 8)}...` : null,
@@ -84,7 +83,15 @@ async function recordUsage(supabase, {
       }
     });
   } else {
-    logger.info('[usage] Usage log inserted successfully', { inserted_id: data?.[0]?.id });
+    logger.info('[usage] Usage log inserted successfully', {
+      operation: 'usage_logs_insert',
+      inserted_id: data?.[0]?.id || null,
+      site_hash: payload.site_hash,
+      endpoint: payload.endpoint,
+      status: payload.status,
+      cached: payload.cached,
+      credits_used: payload.credits_used
+    });
 
     if (userEmail && licenseKey) {
       (async () => {

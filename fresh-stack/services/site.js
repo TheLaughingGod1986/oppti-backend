@@ -1,5 +1,6 @@
 const { getLimits } = require('./planLimits');
 const logger = require('../lib/logger');
+const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const {
   fetchAccountByLicenseKey,
@@ -28,6 +29,11 @@ async function findOrCreateTrialSite(supabase, { siteHash, siteUrl, fingerprint 
   });
 
   if (!identity.isValid) {
+    logger.error('[Site] Trial site identity invalid', {
+      site_hash: siteHash || null,
+      site_url: siteUrl || null,
+      error: identity.error || 'site_hash is required'
+    });
     return { data: null, error: { message: identity.error || 'site_hash is required' } };
   }
 
@@ -38,7 +44,11 @@ async function findOrCreateTrialSite(supabase, { siteHash, siteUrl, fingerprint 
   });
 
   if (resolved.error) {
-    logger.error('[Site] findOrCreateTrialSite failed', { error: resolved.error, site_hash: siteHash });
+    logger.error('[Site] Trial site resolve failed', {
+      site_hash: siteHash || identity.siteHash || null,
+      site_url: siteUrl || identity.siteUrl || null,
+      error: resolved.error
+    });
     return { data: null, error: { message: resolved.error } };
   }
 
@@ -54,14 +64,21 @@ async function findOrCreateTrialSite(supabase, { siteHash, siteUrl, fingerprint 
     if (activityUpdate && typeof activityUpdate.then === 'function') {
       await activityUpdate;
     }
-  } catch (_error) {
-    // Non-blocking activity update.
+  } catch (error) {
+    logger.warn('[Site] Trial site activity update failed', {
+      site_id: resolved.site.id,
+      site_hash: resolved.site.site_hash || identity.siteHash || null,
+      site_url: resolved.site.site_url || identity.siteUrl || null,
+      error: serializeSupabaseError(error)
+    });
   }
 
-  logger.info('[Site] Trial site resolved', {
+  logger.info(resolved.created ? '[Site] Trial site created' : '[Site] Trial site reused', {
     site_hash: resolved.site.site_hash,
     site_id: resolved.site.id,
-    matched_by: resolved.matchedBy
+    site_url: resolved.site.site_url || identity.siteUrl || null,
+    matched_by: resolved.matchedBy,
+    created: Boolean(resolved.created)
   });
 
   return { data: resolved.site, error: null };

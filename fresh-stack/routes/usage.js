@@ -1,4 +1,5 @@
 const express = require('express');
+const logger = require('../lib/logger');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const {
   buildAnonymousTrialStatus,
@@ -7,6 +8,24 @@ const {
 } = require('../services/anonymousTrial');
 const { getQuotaStatus } = require('../services/quota');
 const { getUserUsage, getSiteUsage, getPeriodBounds } = require('../services/usage');
+
+function inferQuotaType(planType = 'free') {
+  if (planType === 'free') return 'monthly';
+  if (planType === 'credits') return 'credits';
+  return 'paid';
+}
+
+function resolveQuotaState(status = {}) {
+  if (Number(status.credits_remaining) <= 0) {
+    return 'exhausted';
+  }
+
+  if (status.is_near_limit) {
+    return 'near_limit';
+  }
+
+  return 'active';
+}
 
 function createUsageRouter({ supabase }) {
   const router = express.Router();
@@ -53,25 +72,50 @@ function createUsageRouter({ supabase }) {
         limit: getAnonymousTrialLimit(),
         anonId: anonymousContext.anonId
       });
+
+      logger.info('[usage] Anonymous identity resolved', {
+        site_hash: siteKey,
+        anon_id: anonymousContext.anonId || null,
+        anon_id_source: anonymousContext.source || null,
+        risk_key: anonymousContext.riskKey || null,
+        site_url: siteUrl,
+        site_fingerprint: siteFingerprint ? 'present' : 'absent'
+      });
+      logger.info('[usage] Anonymous quota check', {
+        site_hash: siteKey,
+        anon_id: trialInfo.anon_id || null,
+        credits_used: trialInfo.credits_used,
+        credits_total: trialInfo.credits_total,
+        credits_remaining: trialInfo.credits_remaining,
+        quota_state: trialInfo.quota_state,
+        quota_source: status?.trial ? 'site_trials' : 'trial_usage'
+      });
+      logger.info('[usage] Anonymous signup_required state returned', {
+        site_hash: siteKey,
+        anon_id: trialInfo.anon_id || null,
+        signup_required: trialInfo.signup_required,
+        quota_state: trialInfo.quota_state,
+        free_plan_offer: trialInfo.free_plan_offer
+      });
+
       return res.json({
         success: true,
         data: {
           usage: {
-            used: trialInfo.trial_used,
-            remaining: trialInfo.trial_remaining,
-            limit: trialInfo.trial_limit,
+            used: trialInfo.credits_used,
+            remaining: trialInfo.credits_remaining,
+            limit: trialInfo.credits_total,
             plan: 'trial',
             plan_type: 'trial',
             billing_cycle: 'trial',
+            auth_state: trialInfo.auth_state,
+            quota_type: trialInfo.quota_type,
+            quota_state: trialInfo.quota_state,
+            signup_required: trialInfo.signup_required,
+            upgrade_required: trialInfo.upgrade_required,
+            free_plan_offer: trialInfo.free_plan_offer,
             trial: trialInfo
           },
-          credits_used: trialInfo.trial_used,
-          credits_remaining: trialInfo.trial_remaining,
-          total_limit: trialInfo.trial_limit,
-          plan_type: 'trial',
-          anon_id: trialInfo.anon_id,
-          signup_required: trialInfo.signup_required,
-          anonymous: trialInfo.anonymous,
           ...trialInfo
         }
       });
@@ -86,6 +130,8 @@ function createUsageRouter({ supabase }) {
       siteHash: siteKey,
       anonId: anonymousContext.anonId
     });
+    const quotaState = status.quota_state || resolveQuotaState(status);
+    const quotaType = inferQuotaType(status.plan_type);
 
     // Return in format expected by plugin
     return res.json({
@@ -100,16 +146,28 @@ function createUsageRouter({ supabase }) {
           resetDate: status.reset_date,
           reset_date: status.reset_date,
           billing_cycle: 'monthly',
+          auth_state: 'authenticated',
+          quota_type: quotaType,
+          quota_state: quotaState,
+          signup_required: false,
+          upgrade_required: false,
+          free_plan_offer: 50,
           warning_threshold: status.warning_threshold,
           is_near_limit: status.is_near_limit,
           trial
         },
+        auth_state: 'authenticated',
+        quota_type: quotaType,
+        quota_state: quotaState,
+        credits_total: status.total_limit,
         credits_used: status.credits_used,
         credits_remaining: status.credits_remaining,
         total_limit: status.total_limit,
         plan_type: status.plan_type,
         reset_date: status.reset_date,
-        ...(trial || {})
+        signup_required: false,
+        upgrade_required: false,
+        free_plan_offer: 50
       }
     });
   });
