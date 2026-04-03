@@ -22,6 +22,7 @@ const { findOrCreateTrialSite } = require('../services/site');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { hashRequestFingerprint } = require('../services/siteQuota');
 const { extractUserInfo } = require('../middleware/auth');
+const { buildTrialGenerationForSingleRequest } = require('../lib/trialGenerationContract');
 
 function hashPayload(base64) {
   return crypto.createHash('md5').update(base64).digest('hex');
@@ -182,6 +183,11 @@ const requestSchema = z.object({
       caption: z.string().optional(),
       pageTitle: z.string().optional(),
       altTextSuggestion: z.string().optional()
+    })
+    .optional(),
+  trial_batch: z
+    .object({
+      requested_total: z.number().int().positive().max(500).optional()
     })
     .optional()
 });
@@ -399,12 +405,25 @@ function createAltTextRouter({
           anonymousResponseFields = buildAnonymousResponseFields(anonymousContext, null);
         }
 
+        const cachedTrialGeneration = req.trialMode && anonymousResponseFields
+          ? buildTrialGenerationForSingleRequest({
+            outcome: 'cached_hit',
+            batchRequestedTotal: parsed.data.trial_batch?.requested_total,
+            trialLimit: anonymousResponseFields.trial_limit,
+            trialUsedBefore: anonymousResponseFields.trial_used,
+            trialRemainingBefore: anonymousResponseFields.trial_remaining,
+            trialUsedAfter: anonymousResponseFields.trial_used,
+            trialRemainingAfter: anonymousResponseFields.trial_remaining
+          })
+          : null;
+
         return res.json({
           success: true,
           ...cachedData,
           ...creditsInfo,
           ...(trialInfo || {}),
           ...(anonymousResponseFields || {}),
+          ...(cachedTrialGeneration ? { trial_generation: cachedTrialGeneration } : {}),
           cached: true
         });
       }
@@ -466,12 +485,42 @@ function createAltTextRouter({
       anonymous_identity_source: anonymousContext.source || null
     };
 
+    let trialAtRequestStart = null;
     if (req.trialMode) {
       logger.info('[altText] Anonymous quota check', {
         site_hash: siteIdentity.siteHash,
         anon_id: anonymousContext.anonId || null,
         risk_key: anonymousContext.riskKey || null,
         request_id: req.id || null
+      });
+
+      const quotaStatusBefore = await getQuotaStatus(supabase, {
+        account: req.user || req.license || null,
+        licenseKey,
+        siteIdentity,
+        requestId: req.id || null
+      });
+      trialAtRequestStart =
+        (await getAnonymousTrialStatus(supabase, {
+          quotaStatus: quotaStatusBefore.error ? {} : quotaStatusBefore,
+          siteHash: req.trialSiteHash || siteIdentity.siteHash,
+          anonId: anonymousContext.anonId
+        }))
+        || buildAnonymousTrialStatus({
+          used: 0,
+          limit: getAnonymousTrialLimit(),
+          anonId: anonymousContext.anonId
+        });
+
+      logger.info('[altText] trial_quota_checkpoint', {
+        site_hash: siteIdentity.siteHash,
+        anon_id: anonymousContext.anonId || null,
+        requested_count: 1,
+        processable_count: trialAtRequestStart.trial_remaining > 0 ? 1 : 0,
+        trial_used_before: trialAtRequestStart.trial_used,
+        trial_remaining_before: trialAtRequestStart.trial_remaining,
+        trial_limit: trialAtRequestStart.trial_limit,
+        batch_requested_total: parsed.data.trial_batch?.requested_total ?? null
       });
     }
 
@@ -512,7 +561,16 @@ function createAltTextRouter({
           code: 'TRIAL_EXHAUSTED',
           message: 'Free trial exhausted. Upgrade to continue generating alt text.',
           ...trialInfo,
-          ...anonymousResponseFields
+          ...anonymousResponseFields,
+          trial_generation: buildTrialGenerationForSingleRequest({
+            outcome: 'quota_denied',
+            batchRequestedTotal: parsed.data.trial_batch?.requested_total,
+            trialLimit: anonymousResponseFields.trial_limit,
+            trialUsedBefore: anonymousResponseFields.trial_used,
+            trialRemainingBefore: anonymousResponseFields.trial_remaining,
+            trialUsedAfter: anonymousResponseFields.trial_used,
+            trialRemainingAfter: anonymousResponseFields.trial_remaining
+          })
         });
       }
     }
@@ -576,6 +634,29 @@ function createAltTextRouter({
         });
       }
 
+      const trialGenerationDenied = req.trialMode && trialAtRequestStart
+        ? buildTrialGenerationForSingleRequest({
+          outcome: 'quota_denied',
+          batchRequestedTotal: parsed.data.trial_batch?.requested_total,
+          trialLimit: trialAtRequestStart.trial_limit,
+          trialUsedBefore: trialAtRequestStart.trial_used,
+          trialRemainingBefore: trialAtRequestStart.trial_remaining,
+          trialUsedAfter: anonymousResponseFields?.trial_used ?? trialAtRequestStart.trial_used,
+          trialRemainingAfter: anonymousResponseFields?.trial_remaining ?? trialAtRequestStart.trial_remaining
+        })
+        : null;
+
+      if (req.trialMode && trialGenerationDenied) {
+        logger.info('[altText] trial_generation_quota_denied', {
+          site_hash: siteIdentity.siteHash,
+          anon_id: anonymousContext.anonId || null,
+          skipped_due_to_limit: trialGenerationDenied.skipped_due_to_limit,
+          trial_used_before: trialGenerationDenied.trial_used_before,
+          trial_limit: trialGenerationDenied.trial_limit,
+          processed_count: trialGenerationDenied.processed_count
+        });
+      }
+
       return res.status(reservation.status || 402).json({
         error: reservation.error,
         message: reservation.message || 'Quota exceeded',
@@ -588,7 +669,8 @@ function createAltTextRouter({
         remaining: anonymousResponseFields?.credits_remaining ?? reservation.payload?.remaining_credits,
         ...(trialInfo || {}),
         ...(anonymousResponseFields || {}),
-        trial_exhausted: anonymousResponseFields?.trial_exhausted === true || reservation.error === 'TRIAL_EXHAUSTED' ? true : undefined
+        trial_exhausted: anonymousResponseFields?.trial_exhausted === true || reservation.error === 'TRIAL_EXHAUSTED' ? true : undefined,
+        ...(trialGenerationDenied ? { trial_generation: trialGenerationDenied } : {})
       });
     }
 
@@ -661,6 +743,18 @@ function createAltTextRouter({
         }
       }
 
+      const trialGenerationFailed = req.trialMode && trialAtRequestStart && anonymousResponseFields
+        ? buildTrialGenerationForSingleRequest({
+          outcome: 'generation_failed',
+          batchRequestedTotal: parsed.data.trial_batch?.requested_total,
+          trialLimit: anonymousResponseFields.trial_limit,
+          trialUsedBefore: trialAtRequestStart.trial_used,
+          trialRemainingBefore: trialAtRequestStart.trial_remaining,
+          trialUsedAfter: anonymousResponseFields.trial_used,
+          trialRemainingAfter: anonymousResponseFields.trial_remaining
+        })
+        : null;
+
       return res.status(httpStatus).json({
         error: errorCode,
         code: errorCode,
@@ -671,7 +765,8 @@ function createAltTextRouter({
             : 'Failed to generate alt text.',
         retryable: isRetryable,
         ...(trialInfo || {}),
-        ...(anonymousResponseFields || {})
+        ...(anonymousResponseFields || {}),
+        ...(trialGenerationFailed ? { trial_generation: trialGenerationFailed } : {})
       });
     }
     
@@ -895,7 +990,26 @@ function createAltTextRouter({
         generation_time_ms: meta?.generation_time_ms
       }
     };
-    
+
+    if (req.trialMode && trialAtRequestStart && anonymousResponseFields) {
+      response.trial_generation = buildTrialGenerationForSingleRequest({
+        outcome: 'success',
+        batchRequestedTotal: parsed.data.trial_batch?.requested_total,
+        trialLimit: anonymousResponseFields.trial_limit,
+        trialUsedBefore: trialAtRequestStart.trial_used,
+        trialRemainingBefore: trialAtRequestStart.trial_remaining,
+        trialUsedAfter: anonymousResponseFields.trial_used,
+        trialRemainingAfter: anonymousResponseFields.trial_remaining
+      });
+      logger.info('[altText] trial_generation_success', {
+        processed_count: response.trial_generation.processed_count,
+        skipped_due_to_limit: response.trial_generation.skipped_due_to_limit,
+        trial_used_before: response.trial_generation.trial_used_before,
+        trial_used_after: response.trial_generation.trial_used_after,
+        trial_limit: response.trial_generation.trial_limit
+      });
+    }
+
     // Log the response being sent
     logger.info('[altText] Sending response', {
       mode: req.trialMode ? 'trial' : 'site',

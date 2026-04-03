@@ -1,6 +1,8 @@
 const express = require('express');
+const { z } = require('zod');
 const logger = require('../lib/logger');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
+const { buildTrialGenerationForBatchPlan } = require('../lib/trialGenerationContract');
 const {
   buildAnonymousTrialStatus,
   getAnonymousTrialLimit,
@@ -27,8 +29,95 @@ function resolveQuotaState(status = {}) {
   return 'active';
 }
 
+const trialBatchPlanSchema = z.object({
+  requested_count: z.number().int().positive().max(500)
+});
+
 function createUsageRouter({ supabase }) {
   const router = express.Router();
+
+  /**
+   * POST /usage/trial-batch-plan
+   * Authoritative batch sizing for anonymous trial bulk generation (call once before the loop).
+   */
+  router.post('/trial-batch-plan', async (req, res) => {
+    if (!req.trialMode) {
+      return res.status(403).json({
+        success: false,
+        error: 'TRIAL_ONLY',
+        message: 'trial-batch-plan requires anonymous trial headers'
+      });
+    }
+
+    const parsed = trialBatchPlanSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        error: 'INVALID_REQUEST',
+        details: parsed.error.flatten()
+      });
+    }
+
+    const siteKey = req.trialSiteHash;
+    const siteFingerprint = req.header('X-Site-Fingerprint') || null;
+    const siteUrl = req.header('X-Site-URL') || null;
+    const anonymousContext = buildAnonymousContext({
+      req,
+      siteIdentity: {
+        siteHash: siteKey,
+        siteFingerprint
+      }
+    });
+
+    const status = await getQuotaStatus(supabase, {
+      account: req.user || req.license || null,
+      licenseKey: req.header('X-License-Key') || req.license?.license_key,
+      siteHash: siteKey,
+      siteUrl,
+      siteFingerprint,
+      installUuid: siteKey,
+      requestId: req.id || null
+    });
+
+    const trial =
+      (await getAnonymousTrialStatus(supabase, {
+        quotaStatus: status.error ? {} : status,
+        siteHash: siteKey,
+        anonId: anonymousContext.anonId
+      }))
+      || buildAnonymousTrialStatus({
+        used: 0,
+        limit: getAnonymousTrialLimit(),
+        anonId: anonymousContext.anonId
+      });
+
+    const trialGeneration = buildTrialGenerationForBatchPlan({
+      requestedCount: parsed.data.requested_count,
+      trialLimit: trial.trial_limit,
+      trialUsedBefore: trial.trial_used,
+      trialRemainingBefore: trial.trial_remaining
+    });
+
+    logger.info('[usage] trial_batch_plan', {
+      site_hash: siteKey,
+      anon_id: anonymousContext.anonId || null,
+      requested_count: trialGeneration.requested_count,
+      processable_count: trialGeneration.processable_count,
+      skipped_due_to_limit: trialGeneration.skipped_due_to_limit,
+      trial_used_before: trialGeneration.trial_used_before,
+      trial_limit: trialGeneration.trial_limit
+    });
+
+    return res.json({
+      success: true,
+      trial_generation: trialGeneration,
+      trial_limit: trial.trial_limit,
+      trial_used: trial.trial_used,
+      trial_remaining: trial.trial_remaining,
+      trial_exhausted: trial.trial_exhausted,
+      anon_id: trial.anon_id || anonymousContext.anonId || null
+    });
+  });
 
   // GET /usage - current quota status
   router.get('/', async (req, res) => {
@@ -115,6 +204,14 @@ function createUsageRouter({ supabase }) {
             upgrade_required: trialInfo.upgrade_required,
             free_plan_offer: trialInfo.free_plan_offer,
             trial: trialInfo
+          },
+          trial_generation_contract_version: 1,
+          trial_authoritative: {
+            trial_limit: trialInfo.trial_limit,
+            trial_used: trialInfo.trial_used,
+            trial_remaining: trialInfo.trial_remaining,
+            trial_exhausted: trialInfo.trial_exhausted,
+            scope: 'dashboard_bootstrap'
           },
           ...trialInfo
         }

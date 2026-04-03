@@ -32,8 +32,6 @@ const ROLE_RANK = {
   owner: 3
 };
 
-const DEFAULT_TRIAL_CREDITS = getAnonymousTrialLimit();
-
 function isUniqueViolation(error) {
   return Boolean(error && error.code === '23505');
 }
@@ -847,7 +845,7 @@ async function reserveSiteCredits(supabase, {
     p_request_fingerprint: requestFingerprint || null,
     p_request_metadata: requestMetadata || {},
     p_quota_mode: quotaMode === 'trial' ? 'trial' : 'site',
-    p_trial_credits: DEFAULT_TRIAL_CREDITS
+    p_trial_credits: getAnonymousTrialLimit()
   };
 
   const { data, error } = await supabase.rpc('bbai_reserve_site_generation', rpcPayload);
@@ -899,7 +897,8 @@ async function reserveSiteCredits(supabase, {
     generation_request_id: data?.generation_request_id || null,
     quota_source: data?.quota_source || null,
     remaining_credits: data?.remaining_credits ?? null,
-    total_limit: data?.total_limit ?? null
+    total_limit: data?.total_limit ?? null,
+    p_trial_credits: rpcPayload.p_quota_mode === 'trial' ? rpcPayload.p_trial_credits : null
   });
 
   return {
@@ -1047,7 +1046,6 @@ async function syncLegacySitePointers(supabase, {
 }
 
 module.exports = {
-  DEFAULT_TRIAL_CREDITS,
   buildSiteIdentity,
   fetchAccountById,
   fetchAccountByLicenseKey,
