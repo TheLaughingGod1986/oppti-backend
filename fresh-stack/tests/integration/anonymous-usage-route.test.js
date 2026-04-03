@@ -128,6 +128,44 @@ describe('GET /usage anonymous trial status', () => {
     expect(res.body.data.free_plan_offer).toBe(50);
   });
 
+  test('POST /api/usage/trial-batch-plan returns authoritative processable and skip counts', async () => {
+    quotaService.getQuotaStatus.mockResolvedValue({
+      error: null,
+      plan_type: 'free',
+      credits_used: 0,
+      credits_remaining: 50,
+      total_limit: 50,
+      reset_date: '2026-04-30T00:00:00.000Z',
+      warning_threshold: 0.9,
+      is_near_limit: false,
+      trial: {
+        total_trial_credits: 5,
+        used_trial_credits: 2
+      }
+    });
+
+    const supabase = createAnonymousSupabaseMock(0);
+    const app = express();
+    app.use(express.json());
+    app.use(authMiddleware({ supabase }));
+    app.use('/api/usage', createUsageRouter({ supabase }));
+
+    const res = await request(app)
+      .post('/api/usage/trial-batch-plan')
+      .set('X-Trial-Mode', 'true')
+      .set('X-Trial-Site-Hash', 'site-usage-anon')
+      .set('X-Site-URL', 'https://example.com')
+      .send({ requested_count: 6 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.trial_generation.requested_count).toBe(6);
+    expect(res.body.trial_generation.processable_count).toBe(3);
+    expect(res.body.trial_generation.skipped_due_to_limit).toBe(3);
+    expect(res.body.trial_generation.trial_limit).toBe(5);
+    expect(res.body.trial_generation.trial_used_before).toBe(2);
+  });
+
   test('keeps authenticated free-account quota separate from anonymous trial quota', async () => {
     quotaService.getQuotaStatus.mockResolvedValue({
       error: null,

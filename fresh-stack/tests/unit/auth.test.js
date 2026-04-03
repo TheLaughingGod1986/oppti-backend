@@ -109,6 +109,29 @@ describe('auth middleware', () => {
     expect(req.authMethod).toBe('trial');
   });
 
+  test('allows anonymous trial requests to trial-batch-plan', async () => {
+    const supabase = createSupabaseMock(null);
+    const mw = authMiddleware({ supabase });
+    const req = {
+      path: '/api/usage/trial-batch-plan',
+      header: (name) => {
+        if (name === 'X-Trial-Mode') return 'true';
+        if (name === 'X-Trial-Site-Hash') return 'plan-site';
+        return null;
+      }
+    };
+    const res = createRes();
+    let nextCalled = false;
+
+    await mw(req, res, () => {
+      nextCalled = true;
+    });
+
+    expect(nextCalled).toBe(true);
+    expect(req.trialMode).toBe(true);
+    expect(req.trialSiteHash).toBe('plan-site');
+  });
+
   test('allows anonymous dashboard trial requests with persistent anon id', async () => {
     const supabase = createSupabaseMock(null);
     const mw = authMiddleware({ supabase });
