@@ -28,7 +28,8 @@ function authMiddleware({ supabase }) {
       '/api/licenses/activate',
       '/api/licenses/deactivate',
       '/api/licenses/transfer',
-      '/billing/plans'
+      '/billing/plans',
+      '/api/billing/plans'
     ];
 
     // Skip auth for public paths

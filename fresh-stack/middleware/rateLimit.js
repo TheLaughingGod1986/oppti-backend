@@ -65,6 +65,11 @@ function rateLimitMiddleware({ redis, perSiteOverride, globalOverride }) {
   const memoryBuckets = new Map();
 
   return async function rateLimit(req, res, next) {
+    // Public catalog: never block on Redis for these (avoids long hangs if Redis is slow).
+    if (req.path === '/billing/plans' || req.path === '/api/billing/plans') {
+      return next();
+    }
+
     const plan = req.license?.plan || 'free';
     const limit = perSiteOverride || PLAN_LIMITS[plan] || PLAN_LIMITS.free;
     const globalLimit = globalOverride || 0;

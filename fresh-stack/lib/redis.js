@@ -10,7 +10,9 @@ function getRedis() {
   client = new Redis(url, {
     lazyConnect: true,
     maxRetriesPerRequest: 2,
-    enableAutoPipelining: true
+    enableAutoPipelining: true,
+    connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 5000),
+    commandTimeout: Number(process.env.REDIS_COMMAND_TIMEOUT_MS || 4000)
   });
   client.on('error', (err) => {
     logger.error('[redis] error', err.message);

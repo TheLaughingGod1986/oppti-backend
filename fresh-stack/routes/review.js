@@ -40,6 +40,11 @@ function createReviewRouter() {
   const router = express.Router();
 
   router.post('/', async (req, res) => {
+    logger.info('[review] post', {
+      path: req.path,
+      originalUrl: req.originalUrl,
+      authMethod: req.authMethod || null
+    });
     const parsed = requestSchema.safeParse(req.body || {});
     if (!parsed.success) {
       logger.warn('[review] Schema validation failed', {

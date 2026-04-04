@@ -9,6 +9,7 @@ const {
   selectActiveSiteSubscription,
   syncLegacySitePointers
 } = require('../services/siteQuota');
+const { getBillingPlansJson, buildPlansList } = require('../services/billingPlansCatalog');
 
 const ACCOUNT_SELECT = 'id, email, license_key, stripe_customer_id, stripe_subscription_id, plan, billing_cycle';
 const SITE_SELECT = 'id, site_hash, license_key, site_url, site_name, status';
@@ -1479,78 +1480,28 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
 function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
   const router = express.Router();
 
-  const plans = [
-    {
-      id: 'pro',
-      name: 'Pro Plan',
-      price: 14.99,
-      currency: 'usd',
-      interval: 'month',
-      quota: 1000,
-      sites: 1,
-      features: [
-        '1,000 AI-generated alt texts per month',
-        'WCAG-compliant descriptions',
-        'Bulk generate for media library',
-        'Priority email support',
-        'Use on one WordPress site'
-      ],
-      priceId: priceIds.pro,
-      trialDays: 0,
-      scope: 'site'
-    },
-    {
-      id: 'agency',
-      name: 'Agency Plan',
-      price: 59.99,
-      currency: 'usd',
-      interval: 'month',
-      quota: 10000,
-      sites: 'unlimited',
-      features: [
-        '10,000 AI-generated alt texts per month',
-        'WCAG 2.1 AA for all client sites',
-        'Bulk generate across multiple sites',
-        'Dedicated account manager and priority support',
-        'Use on unlimited WordPress sites'
-      ],
-      priceId: priceIds.agency,
-      trialDays: 0,
-      scope: 'shared'
-    },
-    {
-      id: 'credits',
-      name: 'Credit Pack',
-      price: 11.99,
-      currency: 'usd',
-      interval: 'one-time',
-      quota: 100,
-      sites: 'any',
-      features: [
-        '100 credits for alt text generation',
-        'Credits never expire',
-        'No subscription required',
-        'Use on any WordPress site'
-      ],
-      priceId: priceIds.credits,
-      trialDays: 0,
-      scope: 'site'
-    }
-  ];
+  const plans = buildPlansList(priceIds || {});
 
-  const PLANS_CACHE_TTL_MS = 5 * 60 * 1000;
-  let plansCache = null;
-  let plansCacheExpiry = 0;
-
-  router.get('/plans', (_req, res) => {
-    const now = Date.now();
-    if (plansCache && plansCacheExpiry > now) {
-      return res.json(plansCache);
+  router.get('/plans', (req, res) => {
+    const t0 = Date.now();
+    try {
+      const payload = getBillingPlansJson(priceIds || {});
+      res.set('Cache-Control', 'public, max-age=300');
+      res.json(payload);
+      logger.info('[billing] GET /plans ok', {
+        path: req.path,
+        duration_ms: Date.now() - t0,
+        plan_count: payload.plans?.length || 0
+      });
+    } catch (err) {
+      logger.error('[billing] GET /plans failed', { error: err.message });
+      res.status(500).json({
+        success: false,
+        error: 'PLANS_UNAVAILABLE',
+        code: 'PLANS_UNAVAILABLE',
+        message: err.message || 'Unable to load plans'
+      });
     }
-    const payload = { success: true, plans };
-    plansCache = payload;
-    plansCacheExpiry = now + PLANS_CACHE_TTL_MS;
-    res.json(payload);
   });
 
   function requireBillingAuth(req, res) {

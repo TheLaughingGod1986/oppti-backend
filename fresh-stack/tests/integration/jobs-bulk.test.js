@@ -1,0 +1,229 @@
+/**
+ * Bulk /api/jobs pipeline: real generation path with mocks for OpenAI + quota.
+ */
+const express = require('express');
+const request = require('supertest');
+
+jest.mock('../../middleware/auth', () => ({
+  authMiddleware: () => (req, res, next) => {
+    req.license = {
+      id: '11111111-1111-1111-1111-111111111111',
+      license_key: 'test-bulk-license',
+      plan: 'pro',
+      status: 'active'
+    };
+    req.authMethod = 'license';
+    next();
+  },
+  extractUserInfo: () => ({ user_id: null, user_email: null, plugin_version: '1.0.0' })
+}));
+
+jest.mock('../../services/quota', () => ({
+  enforceQuota: jest.fn().mockResolvedValue({ credits_remaining: 1000 }),
+  reserveGenerationQuota: jest.fn().mockResolvedValue({
+    error: null,
+    reservation: { generation_request_id: null, quota_source: 'site' },
+    site: { site_hash: 'bulk-site', license_key: 'test-bulk-license' }
+  }),
+  finalizeGenerationQuotaReservation: jest.fn().mockResolvedValue({})
+}));
+
+jest.mock('../../lib/openai', () => ({
+  generateAltText: jest.fn().mockImplementation(async ({ image }) => {
+    if (image?.url === 'https://fail.example/bad.jpg') {
+      const e = new Error('simulated provider failure');
+      e.code = 'UPSTREAM_GENERATION_ERROR';
+      throw e;
+    }
+    return {
+      altText: `alt for ${image?.filename || 'img'}`,
+      usage: { total_tokens: 12, prompt_tokens: 10, completion_tokens: 2 },
+      meta: { modelUsed: 'gpt-4o-mini', generation_time_ms: 5 }
+    };
+  })
+}));
+
+jest.mock('../../services/usage', () => ({
+  recordUsage: jest.fn().mockResolvedValue({ error: null })
+}));
+
+const { createQueue } = require('../../lib/queue');
+const { createBulkAltTextProcessor } = require('../../services/bulkAltTextProcessor');
+const { createJobsRouter } = require('../../routes/jobs');
+
+function flushImmediate() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+describe('POST /api/jobs bulk pipeline', () => {
+  let app;
+  let queue;
+  let quota;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.BULK_JOB_DISPATCH = 'immediate';
+
+    const queueHolder = { q: null };
+    const supabase = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () => Promise.resolve({
+              data: { id: '11111111-1111-1111-1111-111111111111' },
+              error: null
+            })
+          })
+        })
+      })
+    };
+
+    const bulkProcessor = createBulkAltTextProcessor({
+      supabase,
+      getJobRecord: (id) => queueHolder.q.getJobRecord(id),
+      setJobRecord: (id, rec) => queueHolder.q.setJobRecord(id, rec),
+      itemConcurrency: 3
+    });
+
+    queue = createQueue({
+      redis: null,
+      concurrency: 2,
+      ttlSeconds: 3600,
+      queueKey: 'test:queue',
+      bulkDispatchMode: 'immediate',
+      bulkRunner: (job) => bulkProcessor.run(job),
+      jobHandler: async () => {}
+    });
+    queueHolder.q = queue;
+
+    quota = require('../../services/quota');
+
+    app = express();
+    app.use(express.json());
+    app.use('/api/jobs', createJobsRouter({
+      supabase,
+      checkRateLimit: async () => true,
+      getSiteFromHeaders: async () => null,
+      createJob: queue.createJob,
+      getJobRecord: queue.getJobRecord
+    }));
+  });
+
+  test('accepts job quickly and completes 5 images with per-item state', async () => {
+    const images = Array.from({ length: 5 }, (_, i) => ({
+      id: `att-${i}`,
+      image: {
+        url: `https://example.com/${i}.jpg`,
+        width: 100,
+        height: 100,
+        filename: `f${i}.jpg`
+      }
+    }));
+
+    const acceptStart = Date.now();
+    const res = await request(app)
+      .post('/api/jobs')
+      .set('X-License-Key', 'test-bulk-license')
+      .set('X-Site-Key', 'bulk-site')
+      .send({ images, context: { pageTitle: 'Gallery' } });
+
+    expect(res.status).toBe(202);
+    expect(res.body.jobId).toBeTruthy();
+    expect(res.body.total).toBe(5);
+    const acceptMs = Date.now() - acceptStart;
+    expect(acceptMs).toBeLessThan(5000);
+
+    await flushImmediate();
+    await flushImmediate();
+
+    let job;
+    for (let i = 0; i < 50; i += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+      const st = await request(app).get(`/api/jobs/${res.body.jobId}`);
+      job = st.body;
+      if (job.status === 'completed') break;
+    }
+
+    expect(job.status).toBe('completed');
+    expect(job.completed).toBe(5);
+    expect(job.failed).toBe(0);
+    expect(job.items.every((it) => it.status === 'completed')).toBe(true);
+    expect(job.results).toHaveLength(5);
+    expect(quota.enforceQuota).toHaveBeenCalled();
+  });
+
+  test('isolates a single failing image in a mixed batch', async () => {
+    const images = [
+      {
+        id: 'a',
+        image: { url: 'https://example.com/ok.jpg', width: 10, height: 10, filename: 'ok.jpg' }
+      },
+      {
+        id: 'b',
+        image: { url: 'https://fail.example/bad.jpg', width: 10, height: 10, filename: 'bad.jpg' }
+      },
+      {
+        id: 'c',
+        image: { url: 'https://example.com/ok2.jpg', width: 10, height: 10, filename: 'ok2.jpg' }
+      }
+    ];
+
+    const res = await request(app)
+      .post('/api/jobs')
+      .set('X-License-Key', 'test-bulk-license')
+      .set('X-Site-Key', 'bulk-site')
+      .send({ images });
+
+    expect(res.status).toBe(202);
+    await flushImmediate();
+    await flushImmediate();
+
+    let job;
+    for (let i = 0; i < 80; i += 1) {
+      await new Promise((r) => setTimeout(r, 25));
+      const st = await request(app).get(`/api/jobs/${res.body.jobId}`);
+      job = st.body;
+      if (job.status === 'completed') break;
+    }
+
+    expect(job.completed).toBe(2);
+    expect(job.failed).toBe(1);
+    const failed = job.items.find((it) => it.id === 'b');
+    expect(failed.status).toBe('failed');
+  });
+
+  test('returns 402 when batch quota gate fails', async () => {
+    quota.enforceQuota.mockRejectedValueOnce(
+      Object.assign(new Error('quota'), {
+        status: 402,
+        code: 'QUOTA_EXCEEDED',
+        payload: { credits_remaining: 0 }
+      })
+    );
+
+    const res = await request(app)
+      .post('/api/jobs')
+      .set('X-License-Key', 'test-bulk-license')
+      .set('X-Site-Key', 'bulk-site')
+      .send({
+        images: [
+          { image: { url: 'https://example.com/1.jpg', width: 1, height: 1 } }
+        ]
+      });
+
+    expect(res.status).toBe(402);
+  });
+
+  test('returns 401 without license key', async () => {
+    const res = await request(app)
+      .post('/api/jobs')
+      .set('X-Site-Key', 'bulk-site')
+      .send({
+        images: [
+          { image: { url: 'https://example.com/1.jpg', width: 1, height: 1 } }
+        ]
+      });
+
+    expect(res.status).toBe(401);
+  });
+});
