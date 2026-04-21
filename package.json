@@ -13,7 +13,8 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:ci": "jest --runInBand --coverage --ci",
-    "smoke": "bash fresh-stack/tests/smoke.sh"
+    "smoke": "bash fresh-stack/tests/smoke.sh",
+    "diagnostics:data-integrity": "node fresh-stack/scripts/print-data-integrity-diagnostics.js"
   },
   "keywords": [
     "alttext",

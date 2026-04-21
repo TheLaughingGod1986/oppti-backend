@@ -90,6 +90,18 @@ Development and testing utilities are in the `scripts/` folder:
 - `scripts/test-supabase.js` - Test Supabase connection
 - `scripts/setup-test-license.js` - Create a test license for development
 
+Operator diagnostics:
+
+```bash
+# Local shell or any environment with backend env vars loaded
+npm run diagnostics:data-integrity -- --pretty
+
+# Render shell
+node fresh-stack/scripts/print-data-integrity-diagnostics.js --pretty
+```
+
+The CLI prints the same diagnostics object used by `GET /admin/diagnostics/data-integrity` and only emits safe metadata such as runtime identity, Supabase host, schema presence, and row counts.
+
 ## License
 
 Proprietary - Oppti
