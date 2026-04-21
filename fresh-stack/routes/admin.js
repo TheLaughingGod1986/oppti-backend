@@ -1,6 +1,7 @@
 const express = require('express');
 const logger = require('../lib/logger');
 const { getPipelineDiagnostics } = require('../services/v2Diagnostics');
+const { buildDataIntegrityDiagnostics } = require('../services/dataIntegrityDiagnostics');
 
 function hasValidAdminKey(adminKey) {
   const expectedAdminKey = process.env.ADMIN_KEY || process.env.ADMIN_SECRET;
@@ -11,7 +12,7 @@ function getAdminKey(req) {
   return req.header('X-Admin-Key') || req.header('X-Admin-Secret');
 }
 
-function createAdminRouter({ redis, supabase, resultCache }) {
+function createAdminRouter({ redis, supabase, resultCache, runtimeIdentityProvider = null }) {
   const router = express.Router();
 
   // Database cleanup - protected by admin key (cron job)
@@ -113,9 +114,44 @@ function createAdminRouter({ redis, supabase, resultCache }) {
     }
   });
 
+  router.get('/diagnostics/data-integrity', async (req, res) => {
+    const adminKey = getAdminKey(req);
+    if (!hasValidAdminKey(adminKey)) {
+      return res.status(401).json({ error: 'Unauthorized', message: 'Invalid admin key' });
+    }
+
+    try {
+      const diagnostics = await buildDataIntegrityDiagnostics(supabase, {
+        days: 7,
+        runtimeIdentity: typeof runtimeIdentityProvider === 'function'
+          ? runtimeIdentityProvider()
+          : null
+      });
+      return res.json({
+        success: true,
+        diagnostics
+      });
+    } catch (error) {
+      logger.error('[admin] Data integrity diagnostics failed', {
+        error: error.message
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'DATA_INTEGRITY_DIAGNOSTICS_FAILED',
+        message: error.message
+      });
+    }
+  });
+
   // Health check
   router.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      runtime: typeof runtimeIdentityProvider === 'function'
+        ? runtimeIdentityProvider()
+        : null
+    });
   });
 
   return router;
