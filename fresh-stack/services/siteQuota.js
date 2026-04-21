@@ -1049,7 +1049,7 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
     matchedBy = site ? 'legacy_fingerprint' : matchedBy;
   }
 
-  if (!site && identity.normalizedSiteUrl) {
+  if (!site && !identity.isDevelopment && identity.normalizedSiteUrl) {
     const match = await findSiteMatch(supabase, 'normalized_site_url', identity.normalizedSiteUrl, {
       account,
       requestId
@@ -1058,7 +1058,7 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
     matchedBy = site ? 'normalized_site_url' : matchedBy;
   }
 
-  if (!site && identity.canonicalDomain) {
+  if (!site && !identity.isDevelopment && identity.canonicalDomain) {
     const candidates = await fetchSitesByColumn(supabase, 'canonical_domain', identity.canonicalDomain);
     if (candidates.length === 1) {
       site = candidates[0];

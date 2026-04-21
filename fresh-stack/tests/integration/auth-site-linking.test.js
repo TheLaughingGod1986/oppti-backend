@@ -433,6 +433,46 @@ describe('site-aware auth linking', () => {
     ]));
   });
 
+  test('localhost installs do not merge solely by normalized URL or canonical domain', async () => {
+    const supabase = createSupabaseMock();
+    supabase._state.sites.push({
+      id: 'site_existing_localhost',
+      license_key: 'license-existing-localhost',
+      site_hash: 'localhost-existing',
+      wp_install_uuid: 'localhost-existing',
+      site_url: 'http://localhost:8080/wp-admin/',
+      normalized_site_url: 'localhost:8080/wp-admin',
+      canonical_domain: 'localhost',
+      fingerprint: 'localhost-fingerprint-old',
+      site_fingerprint: 'localhost-fingerprint-old',
+      status: 'active',
+      activated_at: new Date().toISOString(),
+      last_activity_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    });
+
+    const app = createApp(supabase);
+    const res = await request(app)
+      .post('/auth/register')
+      .send({
+        email: 'localhost-new@example.com',
+        password: 'Password123!',
+        site_id: 'localhost-new-install',
+        install_uuid: 'localhost-new-install',
+        site_url: 'http://localhost:8080/wp-admin/',
+        site_fingerprint: 'localhost-fingerprint-new'
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.site).toEqual(expect.objectContaining({
+      site_hash: 'localhost-new-install',
+      fingerprint: 'localhost-fingerprint-new'
+    }));
+    expect(res.body.site.id).not.toBe('site_existing_localhost');
+    expect(supabase._state.sites).toHaveLength(2);
+  });
+
   test('register/login still link and return a site when only the legacy sites schema is available', async () => {
     const supabase = createSupabaseMock({
       legacySiteSchema: true,
