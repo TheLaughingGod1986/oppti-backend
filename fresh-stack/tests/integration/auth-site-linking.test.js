@@ -8,8 +8,57 @@ jest.mock('../../../src/services/loops', () => ({
 }));
 
 const { createAuthRouter } = require('../../routes/auth');
+const { createLicenseRouter } = require('../../routes/license');
 
-function createSupabaseMock() {
+const LEGACY_UNSUPPORTED_SITE_COLUMNS = [
+  'site_fingerprint',
+  'wp_install_uuid',
+  'normalized_site_url',
+  'canonical_domain',
+  'owner_user_id',
+  'merged_into_site_id',
+  'first_seen_at',
+  'last_seen_at',
+  'updated_at',
+  'environment'
+];
+const LEGACY_SITE_KEYS = [
+  'license_key',
+  'site_hash',
+  'site_url',
+  'site_name',
+  'fingerprint',
+  'status',
+  'activated_at',
+  'last_activity_at',
+  'deactivated_at'
+];
+
+function createMissingSchemaError(subject = 'column') {
+  return {
+    code: '42703',
+    message: `${subject} does not exist`
+  };
+}
+
+function selectionUsesLegacyUnsupportedSiteColumns(selection = '') {
+  return LEGACY_UNSUPPORTED_SITE_COLUMNS.some((column) => selection.includes(column));
+}
+
+function payloadUsesLegacyUnsupportedSiteColumns(payload = {}) {
+  return Object.keys(payload).some((key) => LEGACY_UNSUPPORTED_SITE_COLUMNS.includes(key));
+}
+
+function stripToLegacySitePayload(payload = {}) {
+  return Object.fromEntries(
+    Object.entries(payload).filter(([key]) => LEGACY_SITE_KEYS.includes(key))
+  );
+}
+
+function createSupabaseMock({
+  legacySiteSchema = false,
+  missingSiteMembershipsTable = false
+} = {}) {
   const licenses = [];
   const sites = [];
   const siteMemberships = [];
@@ -19,7 +68,7 @@ function createSupabaseMock() {
   let siteCounter = 1;
   let membershipCounter = 1;
 
-  function buildFilterableChain(rows) {
+  function buildFilterableChain(rows, error = null) {
     const state = { rows: rows.slice() };
 
     const chain = {
@@ -44,15 +93,18 @@ function createSupabaseMock() {
         return chain;
       },
       maybeSingle: jest.fn().mockImplementation(async () => ({
-        data: state.rows[0] || null,
-        error: null
+        data: error ? null : (state.rows[0] || null),
+        error
       })),
       single: jest.fn().mockImplementation(async () => ({
-        data: state.rows[0] || null,
-        error: null
+        data: error ? null : (state.rows[0] || null),
+        error
       })),
       then(resolve, reject) {
-        return Promise.resolve({ data: state.rows, error: null }).then(resolve, reject);
+        return Promise.resolve({
+          data: error ? null : state.rows,
+          error
+        }).then(resolve, reject);
       }
     };
 
@@ -116,23 +168,37 @@ function createSupabaseMock() {
 
       if (table === 'sites') {
         return {
-          select() {
+          select(selection = '') {
+            if (legacySiteSchema && selectionUsesLegacyUnsupportedSiteColumns(selection)) {
+              return buildFilterableChain([], createMissingSchemaError('sites v2 column'));
+            }
             return buildFilterableChain(sites);
           },
           insert(payload) {
+            const unsupportedError = legacySiteSchema && payloadUsesLegacyUnsupportedSiteColumns(payload)
+              ? createMissingSchemaError('sites v2 column')
+              : null;
+            const normalizedPayload = legacySiteSchema
+              ? stripToLegacySitePayload(payload)
+              : payload;
             const row = {
               id: `site_${siteCounter++}`,
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
-              ...payload
+              ...normalizedPayload
             };
-            sites.push(row);
+            if (!unsupportedError) {
+              sites.push(row);
+            }
             return {
-              select() {
+              select(selection = '') {
+                const selectionError = legacySiteSchema && selectionUsesLegacyUnsupportedSiteColumns(selection)
+                  ? createMissingSchemaError('sites v2 column')
+                  : unsupportedError;
                 return {
                   single: jest.fn().mockResolvedValue({
-                    data: row,
-                    error: null
+                    data: selectionError ? null : row,
+                    error: selectionError
                   })
                 };
               }
@@ -141,18 +207,29 @@ function createSupabaseMock() {
           update(payload) {
             return {
               eq(column, value) {
+                const unsupportedError = legacySiteSchema && payloadUsesLegacyUnsupportedSiteColumns(payload)
+                  ? createMissingSchemaError('sites v2 column')
+                  : null;
                 const row = sites.find((site) => site[column] === value);
-                if (row) Object.assign(row, payload);
+                if (row && !unsupportedError) {
+                  Object.assign(row, legacySiteSchema ? stripToLegacySitePayload(payload) : payload);
+                }
                 return {
-                  select() {
+                  select(selection = '') {
+                    const selectionError = legacySiteSchema && selectionUsesLegacyUnsupportedSiteColumns(selection)
+                      ? createMissingSchemaError('sites v2 column')
+                      : unsupportedError;
                     return {
                       single: jest.fn().mockResolvedValue({
-                        data: row || null,
-                        error: null
+                        data: selectionError ? null : (row || null),
+                        error: selectionError
                       })
                     };
                   },
-                  then: (resolve, reject) => Promise.resolve({ data: row || null, error: null }).then(resolve, reject)
+                  then: (resolve, reject) => Promise.resolve({
+                    data: unsupportedError ? null : (row || null),
+                    error: unsupportedError
+                  }).then(resolve, reject)
                 };
               }
             };
@@ -161,6 +238,42 @@ function createSupabaseMock() {
       }
 
       if (table === 'site_memberships') {
+        if (missingSiteMembershipsTable) {
+          const schemaError = createMissingSchemaError('site_memberships table');
+          return {
+            select() {
+              return buildFilterableChain([], schemaError);
+            },
+            insert() {
+              return {
+                select() {
+                  return {
+                    single: jest.fn().mockResolvedValue({
+                      data: null,
+                      error: schemaError
+                    })
+                  };
+                }
+              };
+            },
+            update() {
+              return {
+                eq() {
+                  return {
+                    select() {
+                      return {
+                        single: jest.fn().mockResolvedValue({
+                          data: null,
+                          error: schemaError
+                        })
+                      };
+                    }
+                  };
+                }
+              };
+            }
+          };
+        }
         return {
           select() {
             return buildFilterableChain(siteMemberships);
@@ -217,10 +330,13 @@ function createSupabaseMock() {
   };
 }
 
-function createApp(supabase) {
+function createApp(supabase, { includeLicenseRoutes = false } = {}) {
   const app = express();
   app.use(express.json());
   app.use('/auth', createAuthRouter({ supabase }));
+  if (includeLicenseRoutes) {
+    app.use('/api/license', createLicenseRouter({ supabase }));
+  }
   return app;
 }
 
@@ -315,5 +431,58 @@ describe('site-aware auth linking', () => {
         })
       })
     ]));
+  });
+
+  test('register/login still link and return a site when only the legacy sites schema is available', async () => {
+    const supabase = createSupabaseMock({
+      legacySiteSchema: true,
+      missingSiteMembershipsTable: true
+    });
+    const app = createApp(supabase, { includeLicenseRoutes: true });
+    const payload = {
+      email: 'legacyschema@example.com',
+      password: 'Password123!',
+      site_id: 'legacy-install',
+      install_uuid: 'legacy-install',
+      site_url: 'http://localhost:8080/wp-admin/',
+      site_fingerprint: 'legacy-fingerprint'
+    };
+
+    const register = await request(app)
+      .post('/auth/register')
+      .send(payload);
+
+    expect(register.status).toBe(200);
+    expect(register.body.site).toEqual(expect.objectContaining({
+      id: expect.any(String),
+      site_hash: 'legacy-install',
+      site_url: 'http://localhost:8080/wp-admin/',
+      fingerprint: 'legacy-fingerprint',
+      license_key: register.body.user.license_key
+    }));
+
+    const login = await request(app)
+      .post('/auth/login')
+      .send(payload);
+
+    expect(login.status).toBe(200);
+    expect(login.body.site).toEqual(expect.objectContaining({
+      id: register.body.site.id,
+      site_hash: 'legacy-install',
+      license_key: register.body.user.license_key
+    }));
+
+    const sitesRes = await request(app)
+      .get('/api/license/sites')
+      .set('X-License-Key', register.body.user.license_key);
+
+    expect(sitesRes.status).toBe(200);
+    expect(sitesRes.body.sites).toHaveLength(1);
+    expect(sitesRes.body.sites[0]).toEqual(expect.objectContaining({
+      id: register.body.site.id,
+      site_hash: 'legacy-install',
+      license_key: register.body.user.license_key
+    }));
+    expect(supabase._state.siteMemberships).toHaveLength(0);
   });
 });

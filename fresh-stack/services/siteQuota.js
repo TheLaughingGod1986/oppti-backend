@@ -23,6 +23,18 @@ const SITE_SELECT = [
   'last_seen_at',
   'updated_at'
 ].join(', ');
+const LEGACY_SITE_SELECT = [
+  'id',
+  'license_key',
+  'site_hash',
+  'site_url',
+  'site_name',
+  'fingerprint',
+  'status',
+  'activated_at',
+  'last_activity_at',
+  'deactivated_at'
+].join(', ');
 
 const ACCOUNT_SELECT = 'id, email, license_key, plan, status, billing_cycle, billing_day_of_month, stripe_customer_id, stripe_subscription_id';
 const PLAN_SELECT = 'id, display_name, monthly_included_credits, credit_grant_amount, billing_interval_default, is_paid';
@@ -31,9 +43,56 @@ const ROLE_RANK = {
   admin: 2,
   owner: 3
 };
+const LEGACY_SITE_COLUMN_MAP = {
+  id: 'id',
+  license_key: 'license_key',
+  site_hash: 'site_hash',
+  site_url: 'site_url',
+  site_name: 'site_name',
+  fingerprint: 'fingerprint',
+  site_fingerprint: 'fingerprint',
+  wp_install_uuid: 'site_hash',
+  status: 'status',
+  activated_at: 'activated_at',
+  last_activity_at: 'last_activity_at',
+  deactivated_at: 'deactivated_at'
+};
+
+function ensureDiagnosticsBucket(target, key) {
+  if (!target) return null;
+  if (!target[key]) {
+    target[key] = {
+      attempted: false,
+      success: null,
+      error: null
+    };
+  }
+  return target[key];
+}
+
+function finalizeSiteDiagnostics(diagnostics) {
+  if (!diagnostics) return null;
+
+  const siteWrites = ['create', 'reconcile']
+    .map((key) => diagnostics[key])
+    .filter((entry) => entry && entry.attempted);
+  const failedSiteWrite = siteWrites.find((entry) => entry.success === false) || null;
+
+  diagnostics.site_write_attempted = siteWrites.length > 0;
+  diagnostics.site_write_succeeded = siteWrites.length > 0
+    ? !failedSiteWrite
+    : null;
+  diagnostics.site_write_error = failedSiteWrite?.error || null;
+
+  return diagnostics;
+}
 
 function isUniqueViolation(error) {
   return Boolean(error && error.code === '23505');
+}
+
+function isMissingSitesV2Schema(error) {
+  return isMissingSchemaError(error);
 }
 
 function hashRequestFingerprint(payload) {
@@ -67,12 +126,123 @@ async function fetchAccountById(supabase, accountId) {
   return data || null;
 }
 
+function normalizeLegacySiteRecord(site = {}) {
+  if (!site) return null;
+
+  const derivedIdentity = buildSiteIdentity({
+    siteHash: site.site_hash || null,
+    installUuid: site.wp_install_uuid || site.site_hash || null,
+    siteUrl: site.site_url || null,
+    siteFingerprint: site.site_fingerprint || site.fingerprint || null,
+    allowDevelopment: true
+  });
+
+  return {
+    ...site,
+    site_fingerprint: site.site_fingerprint || site.fingerprint || derivedIdentity.siteFingerprint || null,
+    wp_install_uuid: site.wp_install_uuid || site.site_hash || derivedIdentity.wpInstallUuid || null,
+    normalized_site_url: site.normalized_site_url || derivedIdentity.normalizedSiteUrl || null,
+    canonical_domain: site.canonical_domain || derivedIdentity.canonicalDomain || null,
+    owner_user_id: site.owner_user_id || null,
+    merged_into_site_id: site.merged_into_site_id || null,
+    first_seen_at: site.first_seen_at || site.activated_at || site.last_activity_at || site.created_at || null,
+    last_seen_at: site.last_seen_at || site.last_activity_at || site.activated_at || site.updated_at || null,
+    updated_at: site.updated_at || site.last_activity_at || site.activated_at || site.created_at || null,
+    environment: site.environment || (derivedIdentity.isDevelopment ? 'development' : 'production')
+  };
+}
+
+function logLegacySitesFallback(event, {
+  column = null,
+  value = null,
+  error = null,
+  siteHash = null,
+  siteUrl = null
+} = {}) {
+  logger.warn(`[site] ${event}`, {
+    match_column: column,
+    match_value: truncateMatchValue(value),
+    site_hash: siteHash || null,
+    site_url: siteUrl || null,
+    error: serializeSupabaseError(error)
+  });
+}
+
+async function queryLegacySitesByColumn(supabase, column, value) {
+  if (!supabase || !column || value === null || value === undefined) {
+    return { data: [], error: null, matchedBy: null };
+  }
+
+  const mappedColumn = LEGACY_SITE_COLUMN_MAP[column];
+  if (mappedColumn) {
+    const { data, error } = await supabase
+      .from('sites')
+      .select(LEGACY_SITE_SELECT)
+      .eq(mappedColumn, value);
+
+    return {
+      data: Array.isArray(data) ? data.map((row) => normalizeLegacySiteRecord(row)) : [],
+      error,
+      matchedBy: mappedColumn
+    };
+  }
+
+  if (column === 'normalized_site_url' || column === 'canonical_domain') {
+    const { data, error } = await supabase
+      .from('sites')
+      .select(LEGACY_SITE_SELECT);
+
+    const rows = Array.isArray(data) ? data.map((row) => normalizeLegacySiteRecord(row)) : [];
+    const filtered = rows.filter((row) => (
+      column === 'normalized_site_url'
+        ? row.normalized_site_url === value
+        : row.canonical_domain === value
+    ));
+
+    return {
+      data: filtered,
+      error,
+      matchedBy: column
+    };
+  }
+
+  return { data: [], error: null, matchedBy: null };
+}
+
 async function fetchSiteByColumn(supabase, column, value) {
   if (!supabase || !column || !value) return { site: null, candidates: [] };
   const { data, error } = await supabase
     .from('sites')
     .select(SITE_SELECT)
     .eq(column, value);
+
+  if (error && isMissingSitesV2Schema(error)) {
+    logLegacySitesFallback('canonical_site_lookup_v2_unavailable', {
+      column,
+      value,
+      error
+    });
+
+    const legacyResult = await queryLegacySitesByColumn(supabase, column, value);
+    if (legacyResult.error && !isMissingSchemaError(legacyResult.error)) {
+      logger.warn('[siteQuota] legacy site lookup failed', {
+        column,
+        value,
+        error: legacyResult.error.message
+      });
+      return { site: null, candidates: [] };
+    }
+
+    const legacyCandidates = legacyResult.data || [];
+    if (!legacyCandidates.length) {
+      return { site: null, candidates: [] };
+    }
+
+    return {
+      site: choosePreferredSiteCandidate(legacyCandidates) || null,
+      candidates: legacyCandidates
+    };
+  }
 
   if (error && !isMissingSchemaError(error)) {
     logger.warn('[siteQuota] site lookup failed', {
@@ -101,6 +271,26 @@ async function fetchSitesByColumn(supabase, column, value) {
     .from('sites')
     .select(SITE_SELECT)
     .eq(column, value);
+
+  if (error && isMissingSitesV2Schema(error)) {
+    logLegacySitesFallback('canonical_site_candidate_lookup_v2_unavailable', {
+      column,
+      value,
+      error
+    });
+
+    const legacyResult = await queryLegacySitesByColumn(supabase, column, value);
+    if (legacyResult.error && !isMissingSchemaError(legacyResult.error)) {
+      logger.warn('[siteQuota] legacy site candidate lookup failed', {
+        column,
+        value,
+        error: legacyResult.error.message
+      });
+      return [];
+    }
+
+    return legacyResult.data || [];
+  }
 
   if (error && !isMissingSchemaError(error)) {
     logger.warn('[siteQuota] site candidate lookup failed', { column, value, error: error.message });
@@ -199,8 +389,9 @@ async function followMergedSite(supabase, site) {
   return mergedTarget || site;
 }
 
-async function reconcileResolvedSite(supabase, site, identity, { legacyLicenseKey = null, account = null } = {}) {
+async function reconcileResolvedSite(supabase, site, identity, { legacyLicenseKey = null, account = null, diagnostics = null } = {}) {
   if (!supabase || !site?.id) return site;
+  const reconcileDiagnostics = ensureDiagnosticsBucket(diagnostics, 'reconcile');
 
   const updates = {
     last_seen_at: new Date().toISOString(),
@@ -231,6 +422,12 @@ async function reconcileResolvedSite(supabase, site, identity, { legacyLicenseKe
   }
 
   if (Object.keys(updates).length <= 2) {
+    if (reconcileDiagnostics) {
+      reconcileDiagnostics.attempted = false;
+      reconcileDiagnostics.success = null;
+      reconcileDiagnostics.error = null;
+      reconcileDiagnostics.updated_fields = [];
+    }
     return site;
   }
 
@@ -241,7 +438,91 @@ async function reconcileResolvedSite(supabase, site, identity, { legacyLicenseKe
     .select(SITE_SELECT)
     .single();
 
+  if (error && isMissingSitesV2Schema(error)) {
+    logLegacySitesFallback('canonical_site_reconcile_v2_unavailable', {
+      column: 'id',
+      value: site.id,
+      error,
+      siteHash: site.site_hash || identity.siteHash || null,
+      siteUrl: site.site_url || identity.siteUrl || null
+    });
+
+    const legacyUpdates = {
+      last_activity_at: updates.last_seen_at || new Date().toISOString()
+    };
+    if ((!site.fingerprint || site.fingerprint === 'unknown') && identity.siteFingerprint) {
+      legacyUpdates.fingerprint = identity.siteFingerprint;
+    }
+    if ((!site.site_url || site.site_url === 'unknown') && identity.siteUrl) {
+      legacyUpdates.site_url = identity.siteUrl;
+    }
+    if (!site.license_key && (legacyLicenseKey || account?.license_key)) {
+      legacyUpdates.license_key = legacyLicenseKey || account.license_key;
+    }
+    if (site.status !== 'active') {
+      legacyUpdates.status = 'active';
+    }
+
+    const { data: legacyData, error: legacyError } = await supabase
+      .from('sites')
+      .update(legacyUpdates)
+      .eq('id', site.id)
+      .select(LEGACY_SITE_SELECT)
+      .single();
+
+    if (legacyError) {
+      if (reconcileDiagnostics) {
+        reconcileDiagnostics.attempted = true;
+        reconcileDiagnostics.success = false;
+        reconcileDiagnostics.error = serializeSupabaseError(legacyError);
+        reconcileDiagnostics.updated_fields = Object.keys(legacyUpdates);
+        reconcileDiagnostics.schema_mode = 'legacy';
+      }
+      logger.error('[site] canonical_site_reconcile_failed', {
+        site_id: site.id,
+        site_hash: site.site_hash || identity.siteHash || null,
+        schema_mode: 'legacy',
+        error: serializeSupabaseError(legacyError)
+      });
+      logger.warn('[siteQuota] legacy resolved site reconcile failed', {
+        siteId: site.id,
+        error: legacyError.message
+      });
+      return normalizeLegacySiteRecord(site);
+    }
+
+    if (reconcileDiagnostics) {
+      reconcileDiagnostics.attempted = true;
+      reconcileDiagnostics.success = true;
+      reconcileDiagnostics.error = null;
+      reconcileDiagnostics.updated_fields = Object.keys(legacyUpdates);
+      reconcileDiagnostics.schema_mode = 'legacy';
+    }
+    logger.info('[site] canonical_site_reconciled', {
+      site_id: legacyData?.id || site.id,
+      site_hash: legacyData?.site_hash || site.site_hash || identity.siteHash || null,
+      updated_fields: Object.keys(legacyUpdates),
+      schema_mode: 'legacy'
+    });
+
+    return normalizeLegacySiteRecord(legacyData || {
+      ...site,
+      ...legacyUpdates
+    });
+  }
+
   if (error) {
+    if (reconcileDiagnostics) {
+      reconcileDiagnostics.attempted = true;
+      reconcileDiagnostics.success = false;
+      reconcileDiagnostics.error = serializeSupabaseError(error);
+      reconcileDiagnostics.updated_fields = Object.keys(updates);
+    }
+    logger.error('[site] canonical_site_reconcile_failed', {
+      site_id: site.id,
+      site_hash: site.site_hash || identity.siteHash || null,
+      error: serializeSupabaseError(error)
+    });
     logger.warn('[siteQuota] failed to reconcile resolved site', {
       siteId: site.id,
       error: error.message
@@ -252,14 +533,27 @@ async function reconcileResolvedSite(supabase, site, identity, { legacyLicenseKe
     };
   }
 
+  if (reconcileDiagnostics) {
+    reconcileDiagnostics.attempted = true;
+    reconcileDiagnostics.success = true;
+    reconcileDiagnostics.error = null;
+    reconcileDiagnostics.updated_fields = Object.keys(updates);
+  }
+  logger.info('[site] canonical_site_reconciled', {
+    site_id: data?.id || site.id,
+    site_hash: data?.site_hash || site.site_hash || identity.siteHash || null,
+    updated_fields: Object.keys(updates)
+  });
+
   return data || {
     ...site,
     ...updates
   };
 }
 
-async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null, account = null } = {}) {
+async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null, account = null, diagnostics = null } = {}) {
   const now = new Date().toISOString();
+  const createDiagnostics = ensureDiagnosticsBucket(diagnostics, 'create');
   const payload = {
     site_hash: identity.siteHash || identity.syntheticSiteHash,
     wp_install_uuid: identity.wpInstallUuid || identity.siteHash || identity.syntheticSiteHash,
@@ -285,7 +579,106 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
     .select(SITE_SELECT)
     .single();
 
+  if (error && isMissingSitesV2Schema(error)) {
+    logLegacySitesFallback('canonical_site_create_v2_unavailable', {
+      error,
+      siteHash: payload.site_hash,
+      siteUrl: payload.site_url || null
+    });
+
+    const legacyPayload = {
+      license_key: legacyLicenseKey || account?.license_key || null,
+      site_hash: payload.site_hash,
+      site_url: payload.site_url || 'unknown',
+      fingerprint: payload.site_fingerprint || null,
+      status: 'active',
+      activated_at: now,
+      last_activity_at: now
+    };
+
+    const { data: legacyData, error: legacyError } = await supabase
+      .from('sites')
+      .insert(legacyPayload)
+      .select(LEGACY_SITE_SELECT)
+      .single();
+
+    if (legacyError && isUniqueViolation(legacyError)) {
+      if (createDiagnostics) {
+        createDiagnostics.attempted = true;
+        createDiagnostics.success = false;
+        createDiagnostics.error = {
+          code: 'UNIQUE_REUSED_EXISTING',
+          message: 'Unique race reused existing legacy row'
+        };
+        createDiagnostics.reused_existing = true;
+        createDiagnostics.schema_mode = 'legacy';
+      }
+      logger.info('[siteQuota] Legacy site create reused existing row after unique race', {
+        site_hash: legacyPayload.site_hash,
+        site_url: legacyPayload.site_url || null
+      });
+      return null;
+    }
+
+    if (legacyError) {
+      if (createDiagnostics) {
+        createDiagnostics.attempted = true;
+        createDiagnostics.success = false;
+        createDiagnostics.error = serializeSupabaseError(legacyError);
+        createDiagnostics.reused_existing = false;
+        createDiagnostics.schema_mode = 'legacy';
+      }
+      logger.error('[site] canonical_site_create_failed', {
+        site_hash: legacyPayload.site_hash,
+        site_url: legacyPayload.site_url || null,
+        canonical_domain: payload.canonical_domain || null,
+        schema_mode: 'legacy',
+        error: serializeSupabaseError(legacyError)
+      });
+      logger.error('[siteQuota] Legacy site creation failed', {
+        site_hash: legacyPayload.site_hash,
+        site_url: legacyPayload.site_url || null,
+        error: serializeSupabaseError(legacyError)
+      });
+      throw legacyError;
+    }
+
+    if (createDiagnostics) {
+      createDiagnostics.attempted = true;
+      createDiagnostics.success = true;
+      createDiagnostics.error = null;
+      createDiagnostics.reused_existing = false;
+      createDiagnostics.schema_mode = 'legacy';
+    }
+
+    logger.info('[site] canonical_site_created', {
+      site_id: legacyData?.id || null,
+      site_hash: legacyPayload.site_hash,
+      site_url: legacyPayload.site_url || null,
+      canonical_domain: payload.canonical_domain || null,
+      schema_mode: 'legacy'
+    });
+
+    logger.info('[siteQuota] Legacy site created', {
+      site_id: legacyData?.id || null,
+      site_hash: legacyPayload.site_hash,
+      site_url: legacyPayload.site_url || null,
+      has_license: !!legacyPayload.license_key
+    });
+
+    return normalizeLegacySiteRecord(legacyData || legacyPayload);
+  }
+
   if (error && isUniqueViolation(error)) {
+    if (createDiagnostics) {
+      createDiagnostics.attempted = true;
+      createDiagnostics.success = false;
+      createDiagnostics.error = {
+        code: 'UNIQUE_REUSED_EXISTING',
+        message: 'Unique race reused existing row'
+      };
+      createDiagnostics.reused_existing = true;
+    }
     logger.info('[siteQuota] Site create reused existing row after unique race', {
       site_hash: payload.site_hash,
       site_url: payload.site_url || null,
@@ -295,6 +688,18 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
   }
 
   if (error) {
+    if (createDiagnostics) {
+      createDiagnostics.attempted = true;
+      createDiagnostics.success = false;
+      createDiagnostics.error = serializeSupabaseError(error);
+      createDiagnostics.reused_existing = false;
+    }
+    logger.error('[site] canonical_site_create_failed', {
+      site_hash: payload.site_hash,
+      site_url: payload.site_url || null,
+      canonical_domain: payload.canonical_domain || null,
+      error: serializeSupabaseError(error)
+    });
     logger.error('[siteQuota] Site creation failed', {
       site_hash: payload.site_hash,
       site_url: payload.site_url || null,
@@ -303,6 +708,20 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
     });
     throw error;
   }
+
+  if (createDiagnostics) {
+    createDiagnostics.attempted = true;
+    createDiagnostics.success = true;
+    createDiagnostics.error = null;
+    createDiagnostics.reused_existing = false;
+  }
+
+  logger.info('[site] canonical_site_created', {
+    site_id: data?.id || null,
+    site_hash: payload.site_hash,
+    site_url: payload.site_url || null,
+    canonical_domain: payload.canonical_domain || null
+  });
 
   logger.info('[siteQuota] Site created', {
     site_id: data?.id || null,
@@ -352,15 +771,49 @@ async function ensureSiteMembership(supabase, {
   siteId,
   userId,
   role = 'member',
-  invitedByUserId = null
+  invitedByUserId = null,
+  diagnostics = null
 } = {}) {
   if (!supabase || !siteId || !userId) return null;
+  const membershipDiagnostics = ensureDiagnosticsBucket(diagnostics, 'membership');
+  if (membershipDiagnostics) {
+    membershipDiagnostics.attempted = true;
+    membershipDiagnostics.site_id = siteId;
+    membershipDiagnostics.user_id = userId;
+    membershipDiagnostics.role = role;
+  }
 
   const { data: existing, error: existingError } = await maybeSingle(
     supabase.from('site_memberships').select('id, role, site_id, user_id').eq('site_id', siteId).eq('user_id', userId)
   );
 
+  if (existingError && isMissingSchemaError(existingError)) {
+    if (membershipDiagnostics) {
+      membershipDiagnostics.success = false;
+      membershipDiagnostics.error = serializeSupabaseError(existingError);
+      membershipDiagnostics.stage = 'lookup';
+      membershipDiagnostics.skipped = 'site_memberships_unavailable';
+    }
+    logger.warn('[site] site_membership_schema_unavailable', {
+      site_id: siteId,
+      user_id: userId,
+      role,
+      error: serializeSupabaseError(existingError)
+    });
+    return null;
+  }
+
   if (existingError && !isMissingSchemaError(existingError)) {
+    if (membershipDiagnostics) {
+      membershipDiagnostics.success = false;
+      membershipDiagnostics.error = serializeSupabaseError(existingError);
+      membershipDiagnostics.stage = 'lookup';
+    }
+    logger.error('[site] site_membership_lookup_failed', {
+      site_id: siteId,
+      user_id: userId,
+      error: serializeSupabaseError(existingError)
+    });
     logger.warn('[siteQuota] membership lookup failed', {
       siteId,
       userId,
@@ -370,6 +823,16 @@ async function ensureSiteMembership(supabase, {
 
   if (existing) {
     if ((ROLE_RANK[role] || 0) <= (ROLE_RANK[existing.role] || 0)) {
+      if (membershipDiagnostics) {
+        membershipDiagnostics.success = true;
+        membershipDiagnostics.error = null;
+        membershipDiagnostics.action = 'existing';
+      }
+      logger.info('[site] site_membership_reused', {
+        site_id: siteId,
+        user_id: userId,
+        role: existing.role
+      });
       return existing;
     }
 
@@ -383,12 +846,56 @@ async function ensureSiteMembership(supabase, {
       .select('id, role, site_id, user_id')
       .single();
 
+    if (error && isMissingSchemaError(error)) {
+      if (membershipDiagnostics) {
+        membershipDiagnostics.success = false;
+        membershipDiagnostics.error = serializeSupabaseError(error);
+        membershipDiagnostics.stage = 'update';
+        membershipDiagnostics.action = 'update';
+        membershipDiagnostics.skipped = 'site_memberships_unavailable';
+      }
+      logger.warn('[site] site_membership_schema_unavailable', {
+        site_id: siteId,
+        user_id: userId,
+        role,
+        action: 'update',
+        error: serializeSupabaseError(error)
+      });
+      return existing;
+    }
+
     if (error && !isMissingSchemaError(error)) {
+      if (membershipDiagnostics) {
+        membershipDiagnostics.success = false;
+        membershipDiagnostics.error = serializeSupabaseError(error);
+        membershipDiagnostics.stage = 'update';
+        membershipDiagnostics.action = 'update';
+      }
+      logger.error('[site] site_membership_upsert_failed', {
+        site_id: siteId,
+        user_id: userId,
+        role,
+        error: serializeSupabaseError(error)
+      });
       logger.warn('[siteQuota] membership escalation failed', {
         siteId,
         userId,
         role,
         error: error.message
+      });
+    }
+
+    if (!error && membershipDiagnostics) {
+      membershipDiagnostics.success = true;
+      membershipDiagnostics.error = null;
+      membershipDiagnostics.action = 'update';
+    }
+    if (!error) {
+      logger.info('[site] site_membership_upsert_succeeded', {
+        site_id: siteId,
+        user_id: userId,
+        role,
+        action: 'update'
       });
     }
 
@@ -406,7 +913,37 @@ async function ensureSiteMembership(supabase, {
     .select('id, role, site_id, user_id')
     .single();
 
+  if (error && isMissingSchemaError(error)) {
+    if (membershipDiagnostics) {
+      membershipDiagnostics.success = false;
+      membershipDiagnostics.error = serializeSupabaseError(error);
+      membershipDiagnostics.stage = 'insert';
+      membershipDiagnostics.action = 'insert';
+      membershipDiagnostics.skipped = 'site_memberships_unavailable';
+    }
+    logger.warn('[site] site_membership_schema_unavailable', {
+      site_id: siteId,
+      user_id: userId,
+      role,
+      action: 'insert',
+      error: serializeSupabaseError(error)
+    });
+    return null;
+  }
+
   if (error && !isMissingSchemaError(error)) {
+    if (membershipDiagnostics) {
+      membershipDiagnostics.success = false;
+      membershipDiagnostics.error = serializeSupabaseError(error);
+      membershipDiagnostics.stage = 'insert';
+      membershipDiagnostics.action = 'insert';
+    }
+    logger.error('[site] site_membership_upsert_failed', {
+      site_id: siteId,
+      user_id: userId,
+      role,
+      error: serializeSupabaseError(error)
+    });
     logger.warn('[siteQuota] membership create failed', {
       siteId,
       userId,
@@ -415,6 +952,18 @@ async function ensureSiteMembership(supabase, {
     });
     return null;
   }
+
+  if (membershipDiagnostics) {
+    membershipDiagnostics.success = true;
+    membershipDiagnostics.error = null;
+    membershipDiagnostics.action = 'insert';
+  }
+  logger.info('[site] site_membership_upsert_succeeded', {
+    site_id: siteId,
+    user_id: userId,
+    role,
+    action: 'insert'
+  });
 
   return data || null;
 }
@@ -435,7 +984,10 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
       identity,
       matchedBy: null,
       created: false,
-      error: identity.error || 'INVALID_SITE_IDENTITY'
+      error: identity.error || 'INVALID_SITE_IDENTITY',
+      diagnostics: finalizeSiteDiagnostics({
+        identity_error: identity.error || 'INVALID_SITE_IDENTITY'
+      })
     };
   }
 
@@ -445,9 +997,18 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
       identity,
       matchedBy: null,
       created: false,
-      error: identity.error
+      error: identity.error,
+      diagnostics: finalizeSiteDiagnostics({
+        identity_error: identity.error
+      })
     };
   }
+
+  const diagnostics = {
+    create: { attempted: false, success: null, error: null },
+    reconcile: { attempted: false, success: null, error: null },
+    membership: { attempted: false, success: null, error: null }
+  };
 
   let matchedBy = null;
   let site = null;
@@ -521,7 +1082,8 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
         matchedBy: null,
         created: false,
         error: 'AMBIGUOUS_SITE_MATCH',
-        candidates
+        candidates,
+        diagnostics: finalizeSiteDiagnostics(diagnostics)
       };
     }
   }
@@ -537,7 +1099,8 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
     const resolvedSite = await followMergedSite(supabase, site);
     const reconciledSite = await reconcileResolvedSite(supabase, resolvedSite, identity, {
       legacyLicenseKey,
-      account
+      account,
+      diagnostics
     });
 
     if (account?.id) {
@@ -545,7 +1108,8 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
         siteId: reconciledSite.id,
         userId: account.id,
         role: reconciledSite.owner_user_id === account.id ? 'owner' : 'member',
-        invitedByUserId: account.id
+        invitedByUserId: account.id,
+        diagnostics
       });
     }
 
@@ -554,7 +1118,8 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
       identity,
       matchedBy,
       created: false,
-      error: null
+      error: null,
+      diagnostics: finalizeSiteDiagnostics(diagnostics)
     };
   }
 
@@ -564,7 +1129,8 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
       identity,
       matchedBy: null,
       created: false,
-      error: 'SITE_NOT_FOUND'
+      error: 'SITE_NOT_FOUND',
+      diagnostics: finalizeSiteDiagnostics(diagnostics)
     };
   }
 
@@ -585,12 +1151,13 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
           identity,
           matchedBy: 'site_hash_preinsert',
           created: false,
-          error: null
+          error: null,
+          diagnostics: finalizeSiteDiagnostics(diagnostics)
         };
       }
     }
 
-    let createdSite = await createCanonicalSite(supabase, identity, { legacyLicenseKey, account });
+    let createdSite = await createCanonicalSite(supabase, identity, { legacyLicenseKey, account, diagnostics });
 
     if (!createdSite) {
       createdSite = await resolveCanonicalSite(supabase, identity, {
@@ -598,7 +1165,12 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
         legacyLicenseKey,
         account,
         requestId
-      }).then((result) => result.site);
+      }).then((result) => {
+        diagnostics.reconcile = result?.diagnostics?.reconcile || diagnostics.reconcile;
+        diagnostics.membership = result?.diagnostics?.membership || diagnostics.membership;
+        diagnostics.create = result?.diagnostics?.create || diagnostics.create;
+        return result.site;
+      });
     }
 
     if (createdSite && account?.id) {
@@ -606,7 +1178,8 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
         siteId: createdSite.id,
         userId: account.id,
         role: 'owner',
-        invitedByUserId: account.id
+        invitedByUserId: account.id,
+        diagnostics
       });
     }
 
@@ -615,7 +1188,8 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
       identity,
       matchedBy: createdSite ? 'created' : null,
       created: Boolean(createdSite),
-      error: createdSite ? null : 'SITE_CREATE_FAILED'
+      error: createdSite ? null : 'SITE_CREATE_FAILED',
+      diagnostics: finalizeSiteDiagnostics(diagnostics)
     };
   } catch (error) {
     logger.error('[siteQuota] canonical site create failed', {
@@ -623,13 +1197,19 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
       site_url: identity.siteUrl || identity.normalizedSiteUrl || null,
       error: serializeSupabaseError(error)
     });
+    diagnostics.create = {
+      attempted: true,
+      success: false,
+      error: serializeSupabaseError(error)
+    };
     if (isMissingSchemaError(error)) {
       return {
         site: null,
         identity,
         matchedBy: null,
         created: false,
-        error: 'SITE_QUOTA_V2_UNAVAILABLE'
+        error: 'SITE_QUOTA_V2_UNAVAILABLE',
+        diagnostics: finalizeSiteDiagnostics(diagnostics)
       };
     }
     return {
@@ -637,7 +1217,8 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
       identity,
       matchedBy: null,
       created: false,
-      error: 'SITE_CREATE_FAILED'
+      error: 'SITE_CREATE_FAILED',
+      diagnostics: finalizeSiteDiagnostics(diagnostics)
     };
   }
 }
@@ -996,12 +1577,18 @@ async function syncLegacySitePointers(supabase, {
   site,
   account,
   subscription = null,
-  planId = null
+  planId = null,
+  diagnostics = null
 } = {}) {
   if (!supabase || !site?.id) return;
+  const sitePointerDiagnostics = ensureDiagnosticsBucket(diagnostics, 'legacy_site_pointer_sync');
+  const licensePointerDiagnostics = ensureDiagnosticsBucket(diagnostics, 'legacy_license_pointer_sync');
 
   if (account?.license_key && (!site.license_key || site.license_key === account.license_key)) {
     try {
+      if (sitePointerDiagnostics) {
+        sitePointerDiagnostics.attempted = true;
+      }
       const siteUpdate = supabase
         .from('sites')
         .update({
@@ -1014,8 +1601,74 @@ async function syncLegacySitePointers(supabase, {
       if (siteUpdate && typeof siteUpdate.then === 'function') {
         await siteUpdate;
       }
-    } catch (_error) {
-      // Best-effort legacy pointer sync.
+      if (sitePointerDiagnostics) {
+        sitePointerDiagnostics.success = true;
+        sitePointerDiagnostics.error = null;
+      }
+      logger.info('[site] legacy_site_pointer_sync_succeeded', {
+        site_id: site.id,
+        site_hash: site.site_hash || null,
+        account_id: account.id || null
+      });
+    } catch (error) {
+      if (isMissingSchemaError(error)) {
+        logLegacySitesFallback('legacy_site_pointer_sync_v2_unavailable', {
+          column: 'id',
+          value: site.id,
+          error,
+          siteHash: site.site_hash || null,
+          siteUrl: site.site_url || null
+        });
+        try {
+          const legacySiteUpdate = supabase
+            .from('sites')
+            .update({
+              license_key: account.license_key,
+              status: site.status || 'active',
+              last_activity_at: new Date().toISOString()
+            })
+            .eq('id', site.id);
+          if (legacySiteUpdate && typeof legacySiteUpdate.then === 'function') {
+            await legacySiteUpdate;
+          }
+          if (sitePointerDiagnostics) {
+            sitePointerDiagnostics.success = true;
+            sitePointerDiagnostics.error = null;
+            sitePointerDiagnostics.schema_mode = 'legacy';
+          }
+          logger.info('[site] legacy_site_pointer_sync_succeeded', {
+            site_id: site.id,
+            site_hash: site.site_hash || null,
+            account_id: account.id || null,
+            schema_mode: 'legacy'
+          });
+          return;
+        } catch (legacyError) {
+          if (sitePointerDiagnostics) {
+            sitePointerDiagnostics.success = false;
+            sitePointerDiagnostics.error = serializeSupabaseError(legacyError);
+            sitePointerDiagnostics.schema_mode = 'legacy';
+          }
+          logger.error('[site] legacy_site_pointer_sync_failed', {
+            site_id: site.id,
+            site_hash: site.site_hash || null,
+            account_id: account.id || null,
+            schema_mode: 'legacy',
+            error: serializeSupabaseError(legacyError)
+          });
+          return;
+        }
+      }
+      if (sitePointerDiagnostics) {
+        sitePointerDiagnostics.success = false;
+        sitePointerDiagnostics.error = serializeSupabaseError(error);
+      }
+      logger.error('[site] legacy_site_pointer_sync_failed', {
+        site_id: site.id,
+        site_hash: site.site_hash || null,
+        account_id: account.id || null,
+        error: serializeSupabaseError(error)
+      });
     }
   }
 
@@ -1033,6 +1686,9 @@ async function syncLegacySitePointers(supabase, {
   }
 
   try {
+    if (licensePointerDiagnostics) {
+      licensePointerDiagnostics.attempted = true;
+    }
     const licenseUpdate = supabase
       .from('licenses')
       .update(licenseUpdates)
@@ -1040,8 +1696,26 @@ async function syncLegacySitePointers(supabase, {
     if (licenseUpdate && typeof licenseUpdate.then === 'function') {
       await licenseUpdate;
     }
-  } catch (_error) {
-    // Best-effort legacy account sync.
+    if (licensePointerDiagnostics) {
+      licensePointerDiagnostics.success = true;
+      licensePointerDiagnostics.error = null;
+    }
+    logger.info('[site] legacy_license_pointer_sync_succeeded', {
+      account_id: account.id,
+      site_id: site.id,
+      plan_id: planId || null
+    });
+  } catch (error) {
+    if (licensePointerDiagnostics) {
+      licensePointerDiagnostics.success = false;
+      licensePointerDiagnostics.error = serializeSupabaseError(error);
+    }
+    logger.error('[site] legacy_license_pointer_sync_failed', {
+      account_id: account.id,
+      site_id: site.id,
+      plan_id: planId || null,
+      error: serializeSupabaseError(error)
+    });
   }
 }
 
