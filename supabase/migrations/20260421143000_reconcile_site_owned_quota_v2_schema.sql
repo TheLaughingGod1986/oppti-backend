@@ -1,4 +1,9 @@
--- Migration 011: Production-safe restore of the missing site-owned quota V2 schema
+-- Migration 20260421143000: linked-project replay of the production-safe
+-- site-owned quota V2 restore.
+--
+-- This mirrors fresh-stack/migrations/011_restore_site_owned_quota_v2_safe.sql
+-- so the linked Supabase project's migration history records the repair that
+-- closes the live 008/009 deployment gap.
 --
 -- Purpose:
 -- - replay the additive V2 schema from migration 008 when production never received it

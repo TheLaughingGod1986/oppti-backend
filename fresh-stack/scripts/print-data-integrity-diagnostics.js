@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 const { buildDataIntegrityDiagnostics } = require('../services/dataIntegrityDiagnostics');
+const REQUIRED_OPERATOR_ENV_VARS = [
+  'SUPABASE_URL',
+  'SUPABASE_SERVICE_ROLE_KEY'
+];
 
 function parseCliArgs(argv = []) {
   const args = Array.isArray(argv) ? [...argv] : [];
@@ -46,6 +50,26 @@ function getUsageText() {
   ].join('\n');
 }
 
+function getMissingRequiredEnv(env = process.env) {
+  return REQUIRED_OPERATOR_ENV_VARS.filter((key) => {
+    const value = env[key];
+    return value === undefined || value === null || value === '';
+  });
+}
+
+function buildMissingEnvErrorPayload(missing) {
+  return {
+    success: false,
+    error: 'MISSING_REQUIRED_ENV',
+    missing,
+    message: 'Run this command inside the backend runtime environment (e.g. Render shell) or load the backend env vars first.',
+    operator_hints: [
+      'printenv | grep SUPABASE',
+      'echo $SUPABASE_URL'
+    ]
+  };
+}
+
 function loadSupabaseClient() {
   const supabaseClient = require('../../db/supabase-client');
   return supabaseClient.supabase || supabaseClient;
@@ -55,7 +79,9 @@ async function runDataIntegrityDiagnosticsCli({
   argv = process.argv.slice(2),
   stdout = process.stdout,
   stderr = process.stderr,
+  env = process.env,
   supabase = null,
+  supabaseLoader = loadSupabaseClient,
   diagnosticsBuilder = buildDataIntegrityDiagnostics,
   exit = (code) => {
     process.exitCode = code;
@@ -69,7 +95,15 @@ async function runDataIntegrityDiagnosticsCli({
       return null;
     }
 
-    const diagnostics = await diagnosticsBuilder(supabase || loadSupabaseClient(), {
+    const missing = !supabase ? getMissingRequiredEnv(env) : [];
+    if (missing.length > 0) {
+      const payload = buildMissingEnvErrorPayload(missing);
+      stderr.write(`${JSON.stringify(payload)}\n`);
+      exit(1);
+      return null;
+    }
+
+    const diagnostics = await diagnosticsBuilder(supabase || supabaseLoader(), {
       days: options.days
     });
 
@@ -91,8 +125,11 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildMissingEnvErrorPayload,
   getUsageText,
+  getMissingRequiredEnv,
   loadSupabaseClient,
   parseCliArgs,
+  REQUIRED_OPERATOR_ENV_VARS,
   runDataIntegrityDiagnosticsCli
 };

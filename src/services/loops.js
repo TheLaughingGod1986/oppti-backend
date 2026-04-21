@@ -1,9 +1,23 @@
+const logger = require('../../fresh-stack/lib/logger');
+
 const LOOPS_API_KEY = process.env.LOOPS_API_KEY;
 const LOOPS_BASE = 'https://app.loops.so/api/v1';
 const PLUGIN_USERS_LIST_ID = 'cmn7g83oddsuu0izg27ia6tgv';
+const LOOPS_TIMEOUT_MS = Number(process.env.LOOPS_TIMEOUT_MS || 5000);
 
 async function loopsRequest(method, path, body) {
-  if (!LOOPS_API_KEY) return null;
+  if (!LOOPS_API_KEY) {
+    logger.info('[signup] Loops request skipped', {
+      path,
+      method,
+      reason: 'LOOPS_API_KEY missing'
+    });
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LOOPS_TIMEOUT_MS);
+
   try {
     const res = await fetch(`${LOOPS_BASE}${path}`, {
       method,
@@ -11,12 +25,34 @@ async function loopsRequest(method, path, body) {
         'Authorization': `Bearer ${LOOPS_API_KEY}`,
         'Content-Type': 'application/json',
       },
+      signal: controller.signal,
       body: JSON.stringify(body),
     });
-    return res.json().catch(() => ({}));
+
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const error = new Error(`Loops ${method} ${path} failed with status ${res.status}`);
+      error.status = res.status;
+      error.payload = payload;
+      throw error;
+    }
+
+    logger.info('[signup] Loops request succeeded', {
+      path,
+      method,
+      status: res.status
+    });
+    return payload;
   } catch (err) {
-    console.error('[Loops]', err.message);
-    return null;
+    logger.error('[signup] Loops request failed', {
+      path,
+      method,
+      error: err.message,
+      status: err.status || null
+    });
+    throw err;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

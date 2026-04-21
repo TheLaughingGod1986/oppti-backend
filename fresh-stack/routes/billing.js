@@ -614,6 +614,14 @@ async function persistStripeMappings(supabase, account, { stripeCustomerId, stri
     .single();
 
   if (error) {
+    logger.error('[billing] stripe_mapping_write', {
+      table: 'licenses',
+      success: false,
+      account_id: account.id,
+      stripe_customer_id: payload.stripe_customer_id || null,
+      stripe_subscription_id: payload.stripe_subscription_id || null,
+      error: error.message
+    });
     logger.warn('[billing] failed to persist stripe mappings', {
       accountId: account.id,
       stripeCustomerId: payload.stripe_customer_id || null,
@@ -626,6 +634,13 @@ async function persistStripeMappings(supabase, account, { stripeCustomerId, stri
     };
   }
 
+  logger.info('[billing] stripe_mapping_write', {
+    table: 'licenses',
+    success: true,
+    account_id: account.id,
+    stripe_customer_id: payload.stripe_customer_id || null,
+    stripe_subscription_id: payload.stripe_subscription_id || null
+  });
   logger.info('[billing] persisted stripe mappings', {
     accountId: account.id,
     stripeCustomerId: payload.stripe_customer_id || null,
@@ -1221,8 +1236,24 @@ async function reconcileSiteEntitlement({
   currentPeriodStart = null,
   currentPeriodEnd = null
 }) {
+  const trace = {
+    stripe_event_id: stripeEventId,
+    stripe_event_type: eventProperties?.stripe_event_type || null,
+    site_id: site?.id || null,
+    site_hash: site?.site_hash || eventProperties?.site_hash || null,
+    plan: eventProperties?.plan || null,
+    purchase_type: eventProperties?.purchase_type || null,
+    licenses_updated: false,
+    subscriptions_written: false,
+    site_subscription_rpc_executed: false,
+    site_subscription_rpc_skipped: false,
+    site_subscription_rpc_error: null,
+    billing_info_source: 'licenses'
+  };
+
   if (!site?.id || !eventProperties?.plan) {
-    return;
+    trace.billing_info_source = site?.id ? 'licenses' : 'legacy_license_only';
+    return trace;
   }
 
   const reconciliation = await reconcileBillingEntitlement(supabase, {
@@ -1243,6 +1274,14 @@ async function reconcileSiteEntitlement({
       account_id: eventProperties.account_id || null
     }
   });
+  trace.site_subscription_rpc_executed = Boolean(!reconciliation?.skipped);
+  trace.site_subscription_rpc_skipped = Boolean(reconciliation?.skipped);
+  trace.site_subscription_rpc_error = reconciliation?.error
+    ? reconciliation.error.message
+    : null;
+  trace.billing_info_source = reconciliation?.skipped
+    ? 'licenses'
+    : 'site_subscriptions';
 
   if (reconciliation?.error) {
     logger.warn('[billing] site entitlement reconciliation failed', {
@@ -1252,9 +1291,10 @@ async function reconcileSiteEntitlement({
       purchaseType: eventProperties.purchase_type,
       error: reconciliation.error.message
     });
-    return;
+    return trace;
   }
 
+  const pointerDiagnostics = {};
   await syncLegacySitePointers(supabase, {
     site,
     account,
@@ -1264,8 +1304,12 @@ async function reconcileSiteEntitlement({
       billing_interval: normalizeBillingInterval(eventProperties.billing_period),
       status: subscriptionStatus
     },
-    planId: eventProperties.plan
+    planId: eventProperties.plan,
+    diagnostics: pointerDiagnostics
   });
+  trace.licenses_updated = Boolean(pointerDiagnostics.legacy_license_pointer_sync?.success);
+  trace.legacy_license_pointer_sync = pointerDiagnostics.legacy_license_pointer_sync || null;
+  trace.legacy_site_pointer_sync = pointerDiagnostics.legacy_site_pointer_sync || null;
 
   logger.info('[billing] site entitlement reconciled', {
     stripeEventId,
@@ -1273,6 +1317,8 @@ async function reconcileSiteEntitlement({
     plan: eventProperties.plan,
     purchaseType: eventProperties.purchase_type
   });
+
+  return trace;
 }
 
 async function emitPaymentSucceeded({
@@ -1383,6 +1429,17 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
     const stripeClient = typeof getStripe === 'function' ? getStripe() : null;
 
     try {
+      let billingTrace = {
+        stripe_event_id: event.id,
+        stripe_event_type: event.type,
+        licenses_updated: false,
+        subscriptions_written: false,
+        site_subscription_rpc_executed: false,
+        site_subscription_rpc_skipped: false,
+        site_subscription_rpc_error: null,
+        billing_info_source: 'licenses'
+      };
+
       switch (event.type) {
         case 'checkout.session.completed': {
           const session = event.data?.object;
@@ -1393,7 +1450,7 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               session,
               priceIds
             });
-            await reconcileSiteEntitlement({
+            const entitlementTrace = await reconcileSiteEntitlement({
               supabase,
               stripeEventId: event.id,
               account: payload.account,
@@ -1401,6 +1458,14 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               eventProperties: payload.eventProperties,
               subscriptionStatus: 'active'
             });
+            billingTrace = {
+              ...billingTrace,
+              ...entitlementTrace,
+              account_id: payload.account?.id || null,
+              license_key: payload.eventProperties.license_key || null,
+              site_id: payload.site?.id || null,
+              site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
+            };
             await emitPaymentSucceeded({
               stripeEventId: event.id,
               distinctId: payload.distinctId,
@@ -1415,7 +1480,7 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               session,
               priceIds
             });
-            await reconcileSiteEntitlement({
+            const entitlementTrace = await reconcileSiteEntitlement({
               supabase,
               stripeEventId: event.id,
               account: payload.account,
@@ -1423,7 +1488,16 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               eventProperties: payload.eventProperties,
               subscriptionStatus: 'active'
             });
+            billingTrace = {
+              ...billingTrace,
+              ...entitlementTrace,
+              account_id: payload.account?.id || null,
+              license_key: payload.eventProperties.license_key || null,
+              site_id: payload.site?.id || null,
+              site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
+            };
           }
+          logger.info('[billing] webhook_write_trace', billingTrace);
           break;
         }
         case 'invoice.payment_succeeded': {
@@ -1438,7 +1512,7 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
             const firstLinePeriod = Array.isArray(invoice.lines?.data) && invoice.lines.data[0]?.period
               ? invoice.lines.data[0].period
               : null;
-            await reconcileSiteEntitlement({
+            const entitlementTrace = await reconcileSiteEntitlement({
               supabase,
               stripeEventId: event.id,
               account: payload.account,
@@ -1448,6 +1522,14 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               currentPeriodStart: firstLinePeriod?.start ? new Date(firstLinePeriod.start * 1000).toISOString() : null,
               currentPeriodEnd: firstLinePeriod?.end ? new Date(firstLinePeriod.end * 1000).toISOString() : null
             });
+            billingTrace = {
+              ...billingTrace,
+              ...entitlementTrace,
+              account_id: payload.account?.id || null,
+              license_key: payload.eventProperties.license_key || null,
+              site_id: payload.site?.id || null,
+              site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
+            };
             await emitPaymentSucceeded({
               stripeEventId: event.id,
               distinctId: payload.distinctId,
@@ -1456,6 +1538,7 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               eventProperties: payload.eventProperties
             });
           }
+          logger.info('[billing] webhook_write_trace', billingTrace);
           break;
         }
         default:
@@ -1533,6 +1616,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       let subscriptionId = null;
       let cancelAtPeriodEnd = false;
       let customerId = null;
+      let billingInfoSource = 'licenses';
 
       if (license) {
         plan = license.plan || 'free';
@@ -1555,8 +1639,16 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
           status = sub.status || status;
           nextBillingDate = sub.current_period_end || nextBillingDate;
           cancelAtPeriodEnd = sub.cancel_at_period_end || false;
+          billingInfoSource = 'legacy_subscriptions';
         }
       }
+
+      logger.info('[billing] info_source_resolved', {
+        source: billingInfoSource,
+        account_id: license?.id || null,
+        license_key: license?.license_key || null,
+        stripe_subscription_id: subscriptionId || null
+      });
 
       const billing = {
         plan,
@@ -1763,6 +1855,12 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
 
       const siteSubscription = await selectActiveSiteSubscription(supabase, effectiveSite.id);
       if (siteSubscription) {
+        logger.info('[billing] subscription_source_resolved', {
+          source: 'site_subscriptions',
+          site_id: effectiveSite.id,
+          site_hash: effectiveSite.site_hash || null,
+          stripe_subscription_id: siteSubscription.stripe_subscription_id || null
+        });
         return res.json({
           success: true,
           data: {
@@ -1781,6 +1879,13 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         .select('plan, status, billing_cycle, stripe_subscription_id')
         .eq('license_key', effectiveSite.license_key)
         .maybeSingle();
+
+      logger.info('[billing] subscription_source_resolved', {
+        source: 'licenses',
+        site_id: effectiveSite.id,
+        site_hash: effectiveSite.site_hash || null,
+        stripe_subscription_id: license?.stripe_subscription_id || null
+      });
 
       res.json({
         success: true,

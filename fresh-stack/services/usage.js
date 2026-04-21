@@ -72,6 +72,14 @@ async function recordUsage(supabase, {
   const { error, data } = await supabase.from('usage_logs').insert(payload).select();
 
   if (error) {
+    logger.error('[usage] usage_log_write', {
+      table: 'usage_logs',
+      success: false,
+      site_hash: payload.site_hash || null,
+      endpoint: payload.endpoint,
+      status: payload.status,
+      error: serializeSupabaseError(error)
+    });
     logger.error('[usage] Failed to insert usage log', { 
       operation: 'usage_logs_insert',
       error: serializeSupabaseError(error),
@@ -83,6 +91,14 @@ async function recordUsage(supabase, {
       }
     });
   } else {
+    logger.info('[usage] usage_log_write', {
+      table: 'usage_logs',
+      success: true,
+      inserted_id: data?.[0]?.id || null,
+      site_hash: payload.site_hash || null,
+      endpoint: payload.endpoint,
+      status: payload.status
+    });
     logger.info('[usage] Usage log inserted successfully', {
       operation: 'usage_logs_insert',
       inserted_id: data?.[0]?.id || null,
@@ -131,7 +147,12 @@ async function recordUsage(supabase, {
   // when a row is inserted into usage_logs. Calling it manually would cause double-counting.
   // The trigger handles quota updates to ensure data consistency even if code paths skip manual updates.
 
-  return { error };
+  return {
+    error,
+    data: Array.isArray(data) ? data[0] || null : data || null,
+    table: 'usage_logs',
+    quota_summary_expected: Boolean(!error && payload.license_key)
+  };
 }
 
 /**

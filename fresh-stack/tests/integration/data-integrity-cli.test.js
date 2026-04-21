@@ -130,4 +130,40 @@ describe('data-integrity diagnostics CLI', () => {
       runtimeIdentity: null
     });
   });
+
+  test('returns a structured missing-env error before loading diagnostics dependencies', async () => {
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    const exit = jest.fn();
+
+    const cliResult = await runDataIntegrityDiagnosticsCli({
+      argv: ['--pretty'],
+      env: {},
+      stdout: {
+        write: (chunk) => stdoutChunks.push(chunk)
+      },
+      stderr: {
+        write: (chunk) => stderrChunks.push(chunk)
+      },
+      supabaseLoader: jest.fn(),
+      exit
+    });
+
+    expect(cliResult).toBeNull();
+    expect(stdoutChunks).toHaveLength(0);
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(buildDataIntegrityDiagnostics).not.toHaveBeenCalled();
+
+    const parsedError = JSON.parse(stderrChunks.join(''));
+    expect(parsedError).toEqual({
+      success: false,
+      error: 'MISSING_REQUIRED_ENV',
+      missing: ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
+      message: 'Run this command inside the backend runtime environment (e.g. Render shell) or load the backend env vars first.',
+      operator_hints: [
+        'printenv | grep SUPABASE',
+        'echo $SUPABASE_URL'
+      ]
+    });
+  });
 });

@@ -67,6 +67,59 @@ function stripBulkMeta(context = {}) {
   return rest;
 }
 
+function resolveQuotaPathLabel(reservation) {
+  if (reservation?.reservation?.generation_request_id) {
+    return 'V2 RPC';
+  }
+  if (reservation?.reservation?.quota_source === 'legacy_trial') {
+    return 'legacy trial fallback';
+  }
+  if (reservation?.reservation?.quota_source === 'legacy') {
+    return 'legacy license fallback';
+  }
+  return reservation?.reservation?.quota_source || 'unknown';
+}
+
+function logBulkGenerationTrace({
+  reservation,
+  effectiveSite,
+  effectiveLicenseKey,
+  userInfo,
+  usageWrite,
+  finalizeResult,
+  jobId,
+  itemIndex,
+  finalResultState
+}) {
+  const payload = {
+    endpoint: 'api/jobs/bulk',
+    batch_job_id: jobId,
+    item_index: itemIndex,
+    final_result_state: finalResultState,
+    user_id: userInfo?.user_id || null,
+    user_email: userInfo?.user_email || null,
+    license_key_prefix: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : null,
+    site_id: effectiveSite?.id || reservation?.site?.id || null,
+    site_hash: effectiveSite?.site_hash || reservation?.site?.site_hash || null,
+    quota_path: resolveQuotaPathLabel(reservation),
+    quota_source: reservation?.reservation?.quota_source || null,
+    generation_request_id: reservation?.reservation?.generation_request_id || null,
+    generation_requests_used: Boolean(reservation?.reservation?.generation_request_id),
+    usage_events_used: Boolean(reservation?.reservation?.generation_request_id),
+    usage_logs_write_succeeded: usageWrite ? !usageWrite.error : null,
+    usage_logs_write_error: usageWrite?.error ? usageWrite.error.message || String(usageWrite.error) : null,
+    quota_summaries_should_have_updated: Boolean(usageWrite?.quota_summary_expected),
+    generation_requests_final_status: finalizeResult?.data?.status || null,
+    generation_finalize_error: finalizeResult?.error ? finalizeResult.error.message || String(finalizeResult.error) : null
+  };
+  const hasFailure = Boolean(
+    payload.usage_logs_write_error
+    || payload.generation_finalize_error
+    || finalResultState !== 'succeeded'
+  );
+  logger[hasFailure ? 'warn' : 'info']('[usage] generation_accounting_trace', payload);
+}
+
 /**
  * One licensed (non-trial) alt-text generation for bulk jobs.
  */
@@ -137,6 +190,17 @@ async function processLicensedBulkItem({
   });
 
   if (reservation.error) {
+    logBulkGenerationTrace({
+      reservation,
+      effectiveSite: reservation.site || null,
+      effectiveLicenseKey: licenseKey,
+      userInfo,
+      usageWrite: null,
+      finalizeResult: null,
+      jobId,
+      itemIndex,
+      finalResultState: 'quota_denied'
+    });
     return {
       success: false,
       code: reservation.error,
@@ -157,7 +221,7 @@ async function processLicensedBulkItem({
     });
     const generationTimeMs = Date.now() - genStart;
 
-    await finalizeGenerationQuotaReservation(supabase, {
+    const finalizeResult = await finalizeGenerationQuotaReservation(supabase, {
       generationRequestId: reservation.reservation?.generation_request_id || null,
       success: true,
       finalMetadata: {
@@ -181,7 +245,7 @@ async function processLicensedBulkItem({
       }
     }
 
-    await recordUsage(supabase, {
+    const usageWrite = await recordUsage(supabase, {
       licenseKey: effectiveLicenseKey,
       licenseId,
       siteHash: effectiveSite?.site_hash || siteKey,
@@ -201,6 +265,18 @@ async function processLicensedBulkItem({
       status: 'success'
     });
 
+    logBulkGenerationTrace({
+      reservation,
+      effectiveSite,
+      effectiveLicenseKey,
+      userInfo,
+      usageWrite,
+      finalizeResult,
+      jobId,
+      itemIndex,
+      finalResultState: 'succeeded'
+    });
+
     return {
       success: true,
       altText: generationResult.altText,
@@ -210,7 +286,7 @@ async function processLicensedBulkItem({
       providerDurationMs: generationTimeMs
     };
   } catch (error) {
-    await finalizeGenerationQuotaReservation(supabase, {
+    const finalizeResult = await finalizeGenerationQuotaReservation(supabase, {
       generationRequestId: reservation.reservation?.generation_request_id || null,
       success: false,
       finalMetadata: {
@@ -219,6 +295,18 @@ async function processLicensedBulkItem({
         batch_job_id: jobId,
         item_index: itemIndex
       }
+    });
+
+    logBulkGenerationTrace({
+      reservation,
+      effectiveSite,
+      effectiveLicenseKey,
+      userInfo,
+      usageWrite: null,
+      finalizeResult,
+      jobId,
+      itemIndex,
+      finalResultState: 'generation_failed'
     });
 
     return {

@@ -76,9 +76,17 @@ async function recordLegacyTrialUsage(supabase, payload) {
     generation_time_ms: payload.generation_time_ms,
     image_filename: payload.image_filename
   };
+  let schemaMode = 'observability';
 
   let insertResult = await supabase.from('trial_usage').insert(payload);
   if (!insertResult.error) {
+    logger.info('[usage] trial_usage_write', {
+      table: 'trial_usage',
+      success: true,
+      schema_mode: schemaMode,
+      site_hash: payload.site_hash || null,
+      anon_id: payload.anon_id || null
+    });
     logger.info('[altText] trial_usage insert succeeded', {
       operation: 'trial_usage_insert',
       schema_mode: 'observability',
@@ -90,6 +98,14 @@ async function recordLegacyTrialUsage(supabase, payload) {
   }
 
   if (!isMissingSchemaError(insertResult.error)) {
+    logger.error('[usage] trial_usage_write', {
+      table: 'trial_usage',
+      success: false,
+      schema_mode: schemaMode,
+      site_hash: payload.site_hash || null,
+      anon_id: payload.anon_id || null,
+      error: serializeSupabaseError(insertResult.error)
+    });
     logger.error('[altText] trial_usage insert failed', {
       operation: 'trial_usage_insert',
       schema_mode: 'observability',
@@ -108,8 +124,17 @@ async function recordLegacyTrialUsage(supabase, payload) {
     error: serializeSupabaseError(insertResult.error)
   });
 
+  schemaMode = 'legacy';
   insertResult = await supabase.from('trial_usage').insert(legacyPayload);
   if (insertResult.error) {
+    logger.error('[usage] trial_usage_write', {
+      table: 'trial_usage',
+      success: false,
+      schema_mode: schemaMode,
+      site_hash: payload.site_hash || null,
+      anon_id: payload.anon_id || null,
+      error: serializeSupabaseError(insertResult.error)
+    });
     logger.error('[altText] trial_usage insert failed', {
       operation: 'trial_usage_insert',
       schema_mode: 'legacy',
@@ -119,6 +144,13 @@ async function recordLegacyTrialUsage(supabase, payload) {
       error: serializeSupabaseError(insertResult.error)
     });
   } else {
+    logger.info('[usage] trial_usage_write', {
+      table: 'trial_usage',
+      success: true,
+      schema_mode: schemaMode,
+      site_hash: payload.site_hash || null,
+      anon_id: payload.anon_id || null
+    });
     logger.info('[altText] trial_usage insert succeeded', {
       operation: 'trial_usage_insert',
       schema_mode: 'legacy',
@@ -128,7 +160,12 @@ async function recordLegacyTrialUsage(supabase, payload) {
     });
   }
 
-  return insertResult;
+  return {
+    ...insertResult,
+    data: insertResult.data || null,
+    table: 'trial_usage',
+    schemaMode
+  };
 }
 
 function buildAnonymousResponseFields(anonymousContext, trialInfo) {
@@ -160,6 +197,61 @@ function buildAnonymousResponseFields(anonymousContext, trialInfo) {
     trial_exhausted: resolvedTrialInfo.trial_exhausted,
     anonymous: resolvedTrialInfo.anonymous
   };
+}
+
+function resolveQuotaPathLabel(reservation) {
+  if (reservation?.reservation?.generation_request_id) {
+    return 'V2 RPC';
+  }
+  if (reservation?.reservation?.quota_source === 'legacy_trial') {
+    return 'legacy trial fallback';
+  }
+  if (reservation?.reservation?.quota_source === 'legacy') {
+    return 'legacy license fallback';
+  }
+  return reservation?.reservation?.quota_source || 'unknown';
+}
+
+function logGenerationAccountingTrace({
+  requestId,
+  reservation,
+  effectiveSite,
+  effectiveLicenseKey,
+  userInfo,
+  usageWrite,
+  trialWrite,
+  finalizeResult,
+  finalResultState
+}) {
+  const payload = {
+    request_id: requestId || null,
+    final_result_state: finalResultState,
+    user_id: userInfo?.user_id || null,
+    user_email: userInfo?.user_email || null,
+    license_key_prefix: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : null,
+    site_id: effectiveSite?.id || reservation?.site?.id || null,
+    site_hash: effectiveSite?.site_hash || reservation?.site?.site_hash || null,
+    quota_path: resolveQuotaPathLabel(reservation),
+    quota_source: reservation?.reservation?.quota_source || null,
+    generation_request_id: reservation?.reservation?.generation_request_id || null,
+    generation_requests_used: Boolean(reservation?.reservation?.generation_request_id),
+    usage_events_used: Boolean(reservation?.reservation?.generation_request_id),
+    usage_logs_write_succeeded: usageWrite ? !usageWrite.error : null,
+    trial_usage_write_succeeded: trialWrite ? !trialWrite.error : null,
+    usage_logs_write_error: usageWrite?.error ? serializeSupabaseError(usageWrite.error) : null,
+    trial_usage_write_error: trialWrite?.error ? serializeSupabaseError(trialWrite.error) : null,
+    quota_summaries_should_have_updated: Boolean(usageWrite?.quota_summary_expected),
+    generation_requests_final_status: finalizeResult?.data?.status || null,
+    generation_finalize_error: finalizeResult?.error ? serializeSupabaseError(finalizeResult.error) : null
+  };
+
+  const hasFailure = Boolean(
+    payload.usage_logs_write_error
+    || payload.trial_usage_write_error
+    || payload.generation_finalize_error
+    || finalResultState !== 'succeeded'
+  );
+  logger[hasFailure ? 'warn' : 'info']('[usage] generation_accounting_trace', payload);
 }
 
 const requestSchema = z.object({
@@ -657,6 +749,18 @@ function createAltTextRouter({
         });
       }
 
+      logGenerationAccountingTrace({
+        requestId: req.id || null,
+        reservation,
+        effectiveSite: reservation.site || null,
+        effectiveLicenseKey: licenseKey,
+        userInfo,
+        usageWrite: null,
+        trialWrite: null,
+        finalizeResult: null,
+        finalResultState: 'quota_denied'
+      });
+
       return res.status(reservation.status || 402).json({
         error: reservation.error,
         message: reservation.message || 'Quota exceeded',
@@ -696,7 +800,7 @@ function createAltTextRouter({
       meta = generationResult.meta;
       generationTime = Date.now() - startTime;
     } catch (error) {
-      await finalizeGenerationQuotaReservation(supabase, {
+      const finalizeResult = await finalizeGenerationQuotaReservation(supabase, {
         generationRequestId: reservation.reservation?.generation_request_id || null,
         success: false,
         finalMetadata: {
@@ -723,6 +827,18 @@ function createAltTextRouter({
         generation_request_id: reservation.reservation?.generation_request_id || null,
         quota_source: reservation.reservation?.quota_source || null,
         anon_id: anonymousContext.anonId || null
+      });
+
+      logGenerationAccountingTrace({
+        requestId: req.id || null,
+        reservation,
+        effectiveSite: reservation.site || null,
+        effectiveLicenseKey: licenseKey,
+        userInfo,
+        usageWrite: null,
+        trialWrite: null,
+        finalizeResult,
+        finalResultState: 'generation_failed'
       });
 
       // Build trial info even on failure so the plugin knows remaining credits
@@ -778,7 +894,7 @@ function createAltTextRouter({
       tokensUsed: usage?.total_tokens
     });
 
-    await finalizeGenerationQuotaReservation(supabase, {
+    const finalizeResult = await finalizeGenerationQuotaReservation(supabase, {
       generationRequestId: reservation.reservation?.generation_request_id || null,
       success: true,
       finalMetadata: {
@@ -896,6 +1012,18 @@ function createAltTextRouter({
         mode: req.trialMode ? 'trial' : 'site'
       });
     }
+
+    logGenerationAccountingTrace({
+      requestId: req.id || null,
+      reservation,
+      effectiveSite,
+      effectiveLicenseKey,
+      userInfo,
+      usageWrite: req.trialMode ? null : usageResult,
+      trialWrite: req.trialMode ? usageResult : null,
+      finalizeResult,
+      finalResultState: 'succeeded'
+    });
 
     // Get updated quota status to return accurate credits_remaining
     let creditsRemaining = null;

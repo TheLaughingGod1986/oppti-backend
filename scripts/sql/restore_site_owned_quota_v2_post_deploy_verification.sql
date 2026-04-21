@@ -63,11 +63,54 @@ LEFT JOIN LATERAL (
 ) AS proc ON TRUE
 ORDER BY expected.function_name;
 
--- 3. The backend startup probe should now return SITE_REQUIRED instead of a
+-- 3. 009 anonymous trial observability columns must exist and site_trials
+-- should carry the default limit expected by the live backend.
+SELECT
+  expected.column_name,
+  cols.data_type,
+  cols.column_default,
+  cols.is_nullable,
+  cols.column_name IS NOT NULL AS exists_in_public
+FROM (
+  VALUES
+    ('anon_id'),
+    ('anonymous_risk_key'),
+    ('ip_hash')
+) AS expected(column_name)
+LEFT JOIN information_schema.columns cols
+  ON cols.table_schema = 'public'
+ AND cols.table_name = 'trial_usage'
+ AND cols.column_name = expected.column_name
+ORDER BY expected.column_name;
+
+SELECT
+  cols.column_default AS site_trials_total_trial_credits_default
+FROM information_schema.columns cols
+WHERE cols.table_schema = 'public'
+  AND cols.table_name = 'site_trials'
+  AND cols.column_name = 'total_trial_credits';
+
+-- 4. The legacy quota trigger must still be present.
+SELECT
+  trg.tgname AS trigger_name,
+  tbl.relname AS table_name,
+  fn.proname AS function_name,
+  NOT trg.tgisinternal AS is_user_trigger
+FROM pg_trigger trg
+JOIN pg_class tbl
+  ON tbl.oid = trg.tgrelid
+JOIN pg_namespace nsp
+  ON nsp.oid = tbl.relnamespace
+JOIN pg_proc fn
+  ON fn.oid = trg.tgfoid
+WHERE nsp.nspname = 'public'
+  AND trg.tgname = 'trg_update_quota_summary';
+
+-- 5. The backend startup probe should now return SITE_REQUIRED instead of a
 -- missing-function error for bbai_reserve_site_generation.
 SELECT public.bbai_reserve_site_generation(NULL::uuid) AS reserve_null_site_probe;
 
--- 4. RLS remains intentionally untouched by this rollout; verify current state.
+-- 6. RLS remains intentionally untouched by this rollout; verify current state.
 SELECT
   expected.table_name,
   cls.relrowsecurity AS rls_enabled,
@@ -91,7 +134,7 @@ LEFT JOIN pg_namespace nsp
 WHERE nsp.nspname = 'public' OR nsp.nspname IS NULL
 ORDER BY expected.table_name;
 
--- 5. Key row counts after restore / backfill.
+-- 7. Key row counts after restore / backfill.
 SELECT
   table_name,
   pg_temp.bbai_relation_row_count(format('public.%I', table_name)) AS row_count
@@ -113,7 +156,7 @@ FROM (
 ) AS expected(table_name)
 ORDER BY table_name;
 
--- 6. Operational sanity checks.
+-- 8. Operational sanity checks.
 WITH active_site_subscriptions AS (
   SELECT DISTINCT ON (ss.site_id)
     ss.site_id,
@@ -159,7 +202,7 @@ SELECT
      AND lower(COALESCE(sub.status, '')) IN ('active', 'trialing', 'past_due', 'cancelled', 'canceled')
   ) AS legacy_subscriptions_still_without_site_id;
 
--- 7. Rolled-back smoke test for reserve/finalize on a throwaway trial site.
+-- 9. Rolled-back smoke test for reserve/finalize on a throwaway trial site.
 BEGIN;
 
 WITH inserted_site AS (

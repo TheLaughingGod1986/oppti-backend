@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
+const logger = require('../lib/logger');
 const { getQuotaStatus } = require('../services/quota');
 const { getUsageLogs } = require('../services/usage');
 
@@ -27,9 +28,31 @@ function createDashboardRouter({ supabase }) {
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
 
-    await supabase.from('dashboard_sessions').insert({
+    const { error: sessionError } = await supabase.from('dashboard_sessions').insert({
       license_key: license.license_key,
       session_token: sessionToken,
+      expires_at: expiresAt.toISOString()
+    });
+
+    if (sessionError) {
+      logger.error('[session] dashboard_session_create_failed', {
+        table: 'dashboard_sessions',
+        success: false,
+        license_key_prefix: license.license_key ? `${license.license_key.substring(0, 8)}...` : null,
+        email: license.email || null,
+        error: sessionError.message
+      });
+      return res.status(500).json({
+        error: 'SESSION_CREATE_FAILED',
+        message: sessionError.message || 'Failed to create dashboard session'
+      });
+    }
+
+    logger.info('[session] dashboard_session_create_succeeded', {
+      table: 'dashboard_sessions',
+      success: true,
+      license_key_prefix: license.license_key ? `${license.license_key.substring(0, 8)}...` : null,
+      email: license.email || null,
       expires_at: expiresAt.toISOString()
     });
 

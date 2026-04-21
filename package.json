@@ -14,7 +14,8 @@
     "test:coverage": "jest --coverage",
     "test:ci": "jest --runInBand --coverage --ci",
     "smoke": "bash fresh-stack/tests/smoke.sh",
-    "diagnostics:data-integrity": "node fresh-stack/scripts/print-data-integrity-diagnostics.js"
+    "diagnostics:data-integrity": "node fresh-stack/scripts/print-data-integrity-diagnostics.js",
+    "verify:site-quota-v2": "node fresh-stack/scripts/verify-site-quota-v2-schema.js --pretty"
   },
   "keywords": [
     "alttext",
