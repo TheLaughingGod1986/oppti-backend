@@ -65,6 +65,36 @@ function createDiagnosticsSupabaseMock() {
   };
 }
 
+function createHealthyDiagnosticsSupabaseMock() {
+  const missingSchemaError = {
+    code: 'PGRST202',
+    message: 'Could not find the function in the schema cache'
+  };
+
+  return {
+    rpc: async (name) => {
+      if (name === 'bbai_merge_sites') {
+        return { data: null, error: missingSchemaError };
+      }
+
+      return {
+        data: { ok: false, code: 'SITE_REQUIRED' },
+        error: {
+          code: '22023',
+          message: 'diagnostic validation error'
+        }
+      };
+    },
+    from(table) {
+      if (['plans', 'site_memberships', 'site_subscriptions', 'site_quotas', 'site_trials', 'generation_requests', 'usage_events', 'site_audit_logs'].includes(table)) {
+        return buildCountResponse({ count: 1, error: null });
+      }
+
+      return buildCountResponse({ count: 0, error: null });
+    }
+  };
+}
+
 describe('GET /admin/diagnostics/pipeline', () => {
   const originalAdminKey = process.env.ADMIN_KEY;
   const originalSupabaseUrl = process.env.SUPABASE_URL;
@@ -116,7 +146,7 @@ describe('GET /admin/diagnostics/pipeline', () => {
       'bbai_finalize_site_generation'
     ]));
     expect(response.body.diagnostics.v2_schema.missing_functions).not.toContain('bbai_merge_sites');
-    expect(response.body.diagnostics.v2_schema.missing_optional_functions).toContain('bbai_merge_sites');
+    expect(response.body.diagnostics.v2_schema.missing_deprecated_functions).toContain('bbai_merge_sites');
     expect(response.body.diagnostics.counts_last_7d.sites).toEqual(expect.objectContaining({
       available: true,
       count: 4
@@ -158,7 +188,12 @@ describe('GET /admin/diagnostics/pipeline', () => {
     expect(response.body.diagnostics.schema.has_trigger_trg_update_quota_summary).toBe(true);
     expect(response.body.diagnostics.schema.has_v2_rpcs.bbai_apply_site_billing_event).toBe(false);
     expect(response.body.diagnostics.schema.has_v2_rpcs.bbai_merge_sites).toBeUndefined();
-    expect(response.body.diagnostics.schema.optional_admin_rpcs.bbai_merge_sites).toBe(false);
+    expect(response.body.diagnostics.schema.deprecated_rpcs.bbai_merge_sites).toEqual({
+      present: false,
+      classification: 'DEPRECATED_RPC',
+      note: 'present for backward compatibility; no runtime callers',
+      required_for_v2_health: false
+    });
     expect(response.body.diagnostics.recent_activity).toEqual(expect.objectContaining({
       licenses_last_7d: 0,
       sites_last_7d: 4,
@@ -171,14 +206,49 @@ describe('GET /admin/diagnostics/pipeline', () => {
       generation_writes_trial_usage: true,
       billing_writes_subscriptions: false
     }));
+    expect(response.body.diagnostics.classification.merge_only_legacy).toEqual(['site_merges', 'subscriptions']);
     expect(response.body.diagnostics.table_health.sites).toEqual(expect.objectContaining({
       total_count: 4,
       last_7d_count: 4
     }));
+    expect(response.body.diagnostics.table_health.site_merges).toEqual(expect.objectContaining({
+      classification: 'MERGE_ONLY_LEGACY',
+      note: 'merge-history table written only by deprecated bbai_merge_sites RPC; no runtime readers'
+    }));
+    expect(response.body.diagnostics.table_health.subscriptions).toEqual(expect.objectContaining({
+      classification: 'MERGE_ONLY_LEGACY',
+      note: 'not used in runtime billing paths; retained only for merge compatibility'
+    }));
     expect(response.body.diagnostics.table_health.debug_logs.classification).toBe('DEAD');
     expect(response.body.diagnostics.suspicions).toContain(
-      'bbai_merge_sites has no live runtime caller in backend JS. Treat it as an optional operator/admin merge tool, not a required V2 request-path RPC.'
+      'bbai_merge_sites has no live runtime caller in backend JS. Treat it as a deprecated compatibility RPC, not a required V2 request-path RPC.'
     );
     expect(Array.isArray(response.body.diagnostics.suspicions)).toBe(true);
+  });
+
+  test('keeps V2 healthy on the diagnostics endpoint when only bbai_merge_sites is missing', async () => {
+    const app = express();
+    app.use('/admin', createAdminRouter({
+      redis: null,
+      supabase: createHealthyDiagnosticsSupabaseMock(),
+      resultCache: new Map()
+    }));
+
+    const response = await request(app)
+      .get('/admin/diagnostics/pipeline')
+      .set('X-Admin-Key', 'test-admin-key');
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.diagnostics.v2_schema.available).toBe(true);
+    expect(response.body.diagnostics.v2_schema.fallback_mode).toBe(false);
+    expect(response.body.diagnostics.v2_schema.missing_functions).toEqual([]);
+    expect(response.body.diagnostics.v2_schema.missing_deprecated_functions).toEqual(['bbai_merge_sites']);
+    expect(response.body.diagnostics.v2_schema.deprecated_functions.bbai_merge_sites).toEqual(expect.objectContaining({
+      available: false,
+      classification: 'DEPRECATED_RPC',
+      note: 'present for backward compatibility; no runtime callers',
+      required_for_v2_health: false
+    }));
   });
 });

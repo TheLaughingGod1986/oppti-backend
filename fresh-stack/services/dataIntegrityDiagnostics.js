@@ -62,6 +62,12 @@ const TABLE_HEALTH_CONFIG = {
     criticalColumns: ['id', 'level', 'message', 'created_at'],
     expectedNullHeavyColumns: ['license_key', 'site_hash', 'error_code', 'endpoint', 'http_status']
   },
+  site_merges: {
+    timeColumns: ['created_at'],
+    sampleColumns: ['id', 'source_site_id', 'target_site_id', 'merged_by_user_id', 'reason', 'created_at'],
+    criticalColumns: ['id', 'source_site_id', 'target_site_id', 'created_at'],
+    expectedNullHeavyColumns: ['merged_by_user_id', 'reason']
+  },
   subscriptions: {
     timeColumns: ['updated_at', 'created_at', 'current_period_end'],
     sampleColumns: ['id', 'license_key', 'site_id', 'plan', 'status', 'stripe_customer_id', 'stripe_subscription_id', 'current_period_end', 'updated_at'],
@@ -108,7 +114,8 @@ const CLASSIFICATION_HINTS = {
   quota_summaries: 'ACTIVE',
   dashboard_sessions: 'EXPECTED_EMPTY',
   debug_logs: 'DEAD',
-  subscriptions: 'DEAD',
+  site_merges: 'MERGE_ONLY_LEGACY',
+  subscriptions: 'MERGE_ONLY_LEGACY',
   site_subscriptions: 'ACTIVE',
   site_trials: 'ACTIVE',
   generation_requests: 'ACTIVE',
@@ -536,11 +543,18 @@ function classifyTable(table, summary, scan, triggerCheck) {
     return hasDirectWrites ? 'ACTIVE' : 'DEAD';
   }
 
+  if (table === 'site_merges') {
+    if (hasDirectWrites) {
+      return 'ACTIVE';
+    }
+    return hasReads ? 'LEGACY' : 'MERGE_ONLY_LEGACY';
+  }
+
   if (table === 'subscriptions') {
     if (hasDirectWrites) {
       return 'ACTIVE';
     }
-    return hasReads ? 'LEGACY' : 'DEAD';
+    return hasReads ? 'LEGACY' : 'MERGE_ONLY_LEGACY';
   }
 
   if (table === 'v_license_quota_current') {
@@ -556,6 +570,18 @@ function classifyTable(table, summary, scan, triggerCheck) {
   }
 
   return CLASSIFICATION_HINTS[table] || 'DEAD';
+}
+
+function buildTableNote(table, classification) {
+  if (table === 'site_merges' && classification === 'MERGE_ONLY_LEGACY') {
+    return 'merge-history table written only by deprecated bbai_merge_sites RPC; no runtime readers';
+  }
+
+  if (table === 'subscriptions' && classification === 'MERGE_ONLY_LEGACY') {
+    return 'not used in runtime billing paths; retained only for merge compatibility';
+  }
+
+  return null;
 }
 
 function deriveBackendWriteStatus(table, scan, triggerCheck) {
@@ -682,6 +708,7 @@ function buildWritePathHealth(writePaths, scan, tableHealth) {
 function buildClassificationSummary(tableHealth = {}) {
   const summary = {
     active: [],
+    merge_only_legacy: [],
     legacy: [],
     dead: [],
     expected_empty: []
@@ -691,6 +718,8 @@ function buildClassificationSummary(tableHealth = {}) {
     const classification = info?.classification;
     if (classification === 'ACTIVE') {
       summary.active.push(table);
+    } else if (classification === 'MERGE_ONLY_LEGACY') {
+      summary.merge_only_legacy.push(table);
     } else if (classification === 'LEGACY') {
       summary.legacy.push(table);
     } else if (classification === 'DEAD') {
@@ -739,7 +768,7 @@ function buildSuspicions({
   }
 
   if ((scanBackendSource().rpcs.bbai_merge_sites || []).length === 0) {
-    suspicions.push('bbai_merge_sites has no live runtime caller in backend JS. Treat it as an optional operator/admin merge tool, not a required V2 request-path RPC.');
+    suspicions.push('bbai_merge_sites has no live runtime caller in backend JS. Treat it as a deprecated compatibility RPC, not a required V2 request-path RPC.');
   }
 
   if (tableHealth.debug_logs?.classification === 'DEAD') {
@@ -801,9 +830,11 @@ async function buildTableHealthSummary(supabase, scan, triggerCheck, sinceIso) {
     };
 
     summary.classification = classifyTable(table, summary, scan, triggerCheck);
-    summary.appears_legacy = summary.classification === 'LEGACY';
+    summary.note = buildTableNote(table, summary.classification);
+    summary.appears_legacy = ['LEGACY', 'MERGE_ONLY_LEGACY'].includes(summary.classification);
     summary.appears_dead = summary.classification === 'DEAD';
     summary.expected_empty = summary.classification === 'EXPECTED_EMPTY';
+    summary.merge_only_legacy = summary.classification === 'MERGE_ONLY_LEGACY';
     tableHealth[table] = summary;
   }
 
@@ -858,8 +889,13 @@ async function buildDataIntegrityDiagnostics(supabase, { days = 7, runtimeIdenti
       bbai_finalize_site_generation: Boolean(v2Schema.functions?.bbai_finalize_site_generation?.available),
       bbai_apply_site_billing_event: Boolean(v2Schema.functions?.bbai_apply_site_billing_event?.available)
     },
-    optional_admin_rpcs: {
-      bbai_merge_sites: Boolean(v2Schema.optional_functions?.bbai_merge_sites?.available)
+    deprecated_rpcs: {
+      bbai_merge_sites: {
+        present: Boolean(v2Schema.deprecated_functions?.bbai_merge_sites?.available),
+        classification: v2Schema.deprecated_functions?.bbai_merge_sites?.classification || 'DEPRECATED_RPC',
+        note: v2Schema.deprecated_functions?.bbai_merge_sites?.note || 'present for backward compatibility; no runtime callers',
+        required_for_v2_health: false
+      }
     },
     has_trigger_trg_update_quota_summary: Boolean(triggerCheck.exists),
     trigger_checks: {

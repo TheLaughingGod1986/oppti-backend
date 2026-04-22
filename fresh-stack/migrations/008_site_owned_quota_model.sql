@@ -1192,6 +1192,7 @@ BEGIN
   SET site_id = p_target_site_id
   WHERE site_id = p_source_site_id;
 
+  -- Legacy merge-only update; subscriptions is not part of the runtime billing system.
   UPDATE public.subscriptions
   SET site_id = p_target_site_id, updated_at = NOW()
   WHERE site_id = p_source_site_id;
@@ -1211,6 +1212,8 @@ BEGIN
     updated_at = NOW()
   WHERE id = p_source_site_id;
 
+  -- Merge-history table; retained for audit purposes only.
+  -- Not used by runtime application logic.
   INSERT INTO public.site_merges (
     source_site_id,
     target_site_id,

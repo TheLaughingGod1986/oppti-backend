@@ -141,6 +141,7 @@ describe('fresh-stack server runtime visibility', () => {
       recent_activity: expect.any(Object),
       classification: expect.objectContaining({
         active: expect.any(Array),
+        merge_only_legacy: expect.any(Array),
         legacy: expect.any(Array),
         dead: expect.any(Array),
         expected_empty: expect.any(Array)

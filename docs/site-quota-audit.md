@@ -46,7 +46,7 @@ This change set introduces an additive site-owned quota model in `008_site_owned
 | `generation_requests` | `id` | `idempotency_key`, `request_fingerprint` | Atomic reservation/finalization state for generation debit. |
 | `usage_events` | `id` | `idempotency_key` | Immutable site-owned quota ledger and audit trail. |
 | `site_audit_logs` | `id` | none | Operational trail for joins, merges, suspicious matches, grants, resets. |
-| `site_merges` | `id` | none | Records admin-driven site merges. |
+| `site_merges` | `id` | none | Historical record for deprecated admin merge tooling; not used by runtime request paths. |
 
 ## Current business logic flows and abuse findings
 

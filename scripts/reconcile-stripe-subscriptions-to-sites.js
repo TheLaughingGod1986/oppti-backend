@@ -7,6 +7,8 @@ const {
   normalizePlan
 } = require('./_site-quota-utils');
 
+// Legacy migration helper only. Runtime billing resolves from licenses and
+// site_subscriptions, not from the legacy subscriptions table.
 async function findCanonicalSiteForSubscription(supabase, subscription, sitesByLicenseKey) {
   if (subscription.site_id) {
     return subscription.site_id;
@@ -93,6 +95,7 @@ async function main() {
       .upsert(payload, { onConflict: 'stripe_subscription_id' });
     if (upsertError) throw upsertError;
 
+    // Legacy helper update only; runtime billing no longer uses subscriptions.
     const { error: legacyUpdateError } = await supabase
       .from('subscriptions')
       .update({ site_id: siteId })

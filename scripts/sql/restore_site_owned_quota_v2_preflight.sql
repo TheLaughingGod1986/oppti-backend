@@ -41,7 +41,8 @@ BEGIN
 END;
 $$;
 
--- 1. Expected V2 relations and helper legacy relations.
+-- 1. Runtime-required V2 relations plus merge-only legacy helpers retained for
+-- compatibility visibility.
 SELECT
   object_name,
   object_type,
@@ -56,14 +57,15 @@ FROM (
     ('generation_requests', 'v2_table'),
     ('usage_events', 'v2_table'),
     ('site_audit_logs', 'v2_table'),
-    ('site_merges', 'v2_table'),
+    ('site_merges', 'merge_only_legacy_table'),
     ('subscriptions', 'legacy_helper_table')
 ) AS expected(object_name, object_type)
 ORDER BY object_type, object_name;
 
--- 2. Expected RPC functions from migration 008.
+-- 2. Runtime-required V2 RPC functions plus deprecated merge compatibility RPCs.
 SELECT
   expected.function_name,
+  expected.function_type,
   proc.oid IS NOT NULL AS exists_in_public,
   CASE
     WHEN proc.oid IS NOT NULL THEN pg_get_function_identity_arguments(proc.oid)
@@ -71,11 +73,11 @@ SELECT
   END AS identity_arguments
 FROM (
   VALUES
-    ('bbai_reserve_site_generation'),
-    ('bbai_finalize_site_generation'),
-    ('bbai_apply_site_billing_event'),
-    ('bbai_merge_sites')
-) AS expected(function_name)
+    ('bbai_reserve_site_generation', 'runtime_required_rpc'),
+    ('bbai_finalize_site_generation', 'runtime_required_rpc'),
+    ('bbai_apply_site_billing_event', 'runtime_required_rpc'),
+    ('bbai_merge_sites', 'deprecated_merge_rpc')
+) AS expected(function_name, function_type)
 LEFT JOIN LATERAL (
   SELECT p.oid
   FROM pg_proc p
@@ -85,9 +87,10 @@ LEFT JOIN LATERAL (
   ORDER BY p.oid
   LIMIT 1
 ) AS proc ON TRUE
-ORDER BY expected.function_name;
+ORDER BY expected.function_type, expected.function_name;
 
--- 3. Row Level Security state for V2 tables.
+-- 3. Row Level Security state for runtime-required V2 tables plus merge-only
+-- legacy visibility.
 SELECT
   expected.table_name,
   cls.relrowsecurity AS rls_enabled,

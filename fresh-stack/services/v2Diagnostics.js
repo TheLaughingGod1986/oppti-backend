@@ -31,7 +31,7 @@ const REQUIRED_V2_FUNCTIONS = [
 // Manual site merges are not part of the live request-path contract.
 // Keep probing them for operator visibility, but do not let their absence
 // force the backend into V2 fallback mode.
-const OPTIONAL_ADMIN_FUNCTIONS = [
+const DEPRECATED_V2_FUNCTIONS = [
   {
     name: 'bbai_merge_sites',
     args: {
@@ -42,6 +42,15 @@ const OPTIONAL_ADMIN_FUNCTIONS = [
     }
   }
 ];
+
+function buildDeprecatedFunctionMetadata(status) {
+  return {
+    ...status,
+    classification: 'DEPRECATED_RPC',
+    note: 'present for backward compatibility; no runtime callers',
+    required_for_v2_health: false
+  };
+}
 
 const REQUIRED_V2_TABLES = [
   'plans',
@@ -126,10 +135,10 @@ async function inspectV2Schema(supabase) {
       available: false,
       fallback_mode: true,
       missing_functions: REQUIRED_V2_FUNCTIONS.map((probe) => probe.name),
-      missing_optional_functions: OPTIONAL_ADMIN_FUNCTIONS.map((probe) => probe.name),
+      missing_deprecated_functions: DEPRECATED_V2_FUNCTIONS.map((probe) => probe.name),
       missing_tables: [...REQUIRED_V2_TABLES],
       functions: {},
-      optional_functions: {},
+      deprecated_functions: {},
       tables: {},
       error: {
         code: 'SUPABASE_UNAVAILABLE',
@@ -143,9 +152,10 @@ async function inspectV2Schema(supabase) {
     functions[probe.name] = await probeV2Function(supabase, probe);
   }
 
-  const optional_functions = {};
-  for (const probe of OPTIONAL_ADMIN_FUNCTIONS) {
-    optional_functions[probe.name] = await probeV2Function(supabase, probe);
+  const deprecated_functions = {};
+  for (const probe of DEPRECATED_V2_FUNCTIONS) {
+    const status = await probeV2Function(supabase, probe);
+    deprecated_functions[probe.name] = buildDeprecatedFunctionMetadata(status);
   }
 
   const tables = {};
@@ -159,7 +169,7 @@ async function inspectV2Schema(supabase) {
   const missing_tables = Object.entries(tables)
     .filter(([, status]) => !status.available)
     .map(([name]) => name);
-  const missing_optional_functions = Object.entries(optional_functions)
+  const missing_deprecated_functions = Object.entries(deprecated_functions)
     .filter(([, status]) => !status.available)
     .map(([name]) => name);
 
@@ -168,10 +178,10 @@ async function inspectV2Schema(supabase) {
     available: missing_functions.length === 0 && missing_tables.length === 0,
     fallback_mode: missing_functions.length > 0 || missing_tables.length > 0,
     missing_functions,
-    missing_optional_functions,
+    missing_deprecated_functions,
     missing_tables,
     functions,
-    optional_functions,
+    deprecated_functions,
     tables
   };
 }

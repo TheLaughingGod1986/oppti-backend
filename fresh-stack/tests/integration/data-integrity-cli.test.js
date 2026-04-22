@@ -30,7 +30,8 @@ const diagnosticsPayload = {
   },
   classification: {
     active: ['licenses', 'sites'],
-    legacy: ['subscriptions'],
+    merge_only_legacy: ['site_merges', 'subscriptions'],
+    legacy: [],
     dead: ['debug_logs'],
     expected_empty: ['dashboard_sessions']
   },

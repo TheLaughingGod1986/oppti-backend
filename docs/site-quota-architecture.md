@@ -155,7 +155,8 @@ Operator trail for joins, duplicates, merges, suspicious attempts, grants, reset
 
 ### `site_merges`
 
-Admin record of duplicate site consolidation.
+Historical record of duplicate site consolidation emitted by deprecated merge
+tooling. Not used by runtime request paths.
 
 ## Relationship summary
 

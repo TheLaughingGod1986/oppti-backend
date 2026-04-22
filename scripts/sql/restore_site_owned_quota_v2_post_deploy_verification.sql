@@ -19,27 +19,31 @@ BEGIN
 END;
 $$;
 
--- 1. V2 relations must now exist.
+-- 1. Runtime-required V2 relations must now exist; merge-only legacy objects
+-- are reported separately for compatibility visibility.
 SELECT
   object_name,
+  object_type,
   to_regclass(format('public.%I', object_name)) IS NOT NULL AS exists_in_public
 FROM (
   VALUES
-    ('plans'),
-    ('site_memberships'),
-    ('site_subscriptions'),
-    ('site_quotas'),
-    ('site_trials'),
-    ('generation_requests'),
-    ('usage_events'),
-    ('site_audit_logs'),
-    ('site_merges')
-) AS expected(object_name)
-ORDER BY object_name;
+    ('plans', 'runtime_required_table'),
+    ('site_memberships', 'runtime_required_table'),
+    ('site_subscriptions', 'runtime_required_table'),
+    ('site_quotas', 'runtime_required_table'),
+    ('site_trials', 'runtime_required_table'),
+    ('generation_requests', 'runtime_required_table'),
+    ('usage_events', 'runtime_required_table'),
+    ('site_audit_logs', 'runtime_required_table'),
+    ('site_merges', 'merge_only_legacy_table')
+) AS expected(object_name, object_type)
+ORDER BY object_type, object_name;
 
--- 2. V2 RPC functions must now exist.
+-- 2. Runtime-required V2 RPC functions must now exist; deprecated merge RPCs
+-- are reported separately and do not affect runtime health.
 SELECT
   expected.function_name,
+  expected.function_type,
   proc.oid IS NOT NULL AS exists_in_public,
   CASE
     WHEN proc.oid IS NOT NULL THEN pg_get_function_identity_arguments(proc.oid)
@@ -47,11 +51,11 @@ SELECT
   END AS identity_arguments
 FROM (
   VALUES
-    ('bbai_reserve_site_generation'),
-    ('bbai_finalize_site_generation'),
-    ('bbai_apply_site_billing_event'),
-    ('bbai_merge_sites')
-) AS expected(function_name)
+    ('bbai_reserve_site_generation', 'runtime_required_rpc'),
+    ('bbai_finalize_site_generation', 'runtime_required_rpc'),
+    ('bbai_apply_site_billing_event', 'runtime_required_rpc'),
+    ('bbai_merge_sites', 'deprecated_merge_rpc')
+) AS expected(function_name, function_type)
 LEFT JOIN LATERAL (
   SELECT p.oid
   FROM pg_proc p
@@ -61,7 +65,7 @@ LEFT JOIN LATERAL (
   ORDER BY p.oid
   LIMIT 1
 ) AS proc ON TRUE
-ORDER BY expected.function_name;
+ORDER BY expected.function_type, expected.function_name;
 
 -- 3. 009 anonymous trial observability columns must exist and site_trials
 -- should carry the default limit expected by the live backend.
@@ -110,7 +114,8 @@ WHERE nsp.nspname = 'public'
 -- missing-function error for bbai_reserve_site_generation.
 SELECT public.bbai_reserve_site_generation(NULL::uuid) AS reserve_null_site_probe;
 
--- 6. RLS remains intentionally untouched by this rollout; verify current state.
+-- 6. RLS remains intentionally untouched by this rollout; verify current state
+-- for runtime-required tables plus merge-only legacy visibility.
 SELECT
   expected.table_name,
   cls.relrowsecurity AS rls_enabled,

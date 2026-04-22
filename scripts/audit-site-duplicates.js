@@ -6,6 +6,8 @@ const {
   summarizeGroups
 } = require('./_site-quota-utils');
 
+// Operator audit helper. Legacy subscriptions are inspected only to measure
+// remaining cleanup work, not because runtime billing depends on them.
 function pushGroup(map, key, row) {
   if (!key) return;
   if (!map[key]) map[key] = [];

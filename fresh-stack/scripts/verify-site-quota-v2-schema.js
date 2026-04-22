@@ -19,9 +19,9 @@ const REQUIRED_TABLES = [
   'site_audit_logs'
 ];
 
-// Site merges remain an operator-only compatibility surface. Keep reporting
-// them for visibility, but do not fail live V2 verification if they are absent.
-const OPTIONAL_ADMIN_TABLES = [
+// Merge-only legacy objects remain for compatibility and operator visibility,
+// but do not fail live V2 verification if they are absent.
+const DEPRECATED_TABLES = [
   'site_merges'
 ];
 
@@ -31,7 +31,7 @@ const REQUIRED_FUNCTIONS = {
   bbai_apply_site_billing_event: 'p_site_id uuid, p_stripe_event_id text, p_plan_id text, p_purchase_type text, p_billing_interval text, p_stripe_customer_id text, p_stripe_subscription_id text, p_subscription_status text, p_current_period_start timestamp with time zone, p_current_period_end timestamp with time zone, p_metadata jsonb'
 };
 
-const OPTIONAL_ADMIN_FUNCTIONS = {
+const DEPRECATED_FUNCTIONS = {
   bbai_merge_sites: 'p_source_site_id uuid, p_target_site_id uuid, p_actor_user_id uuid, p_reason text'
 };
 
@@ -253,9 +253,9 @@ async function main() {
 
   try {
     const tables = await queryTableAvailability(client, REQUIRED_TABLES);
-    const optionalAdminTables = await queryTableAvailability(client, OPTIONAL_ADMIN_TABLES);
+    const deprecatedTables = await queryTableAvailability(client, DEPRECATED_TABLES);
     const functions = await queryFunctionAvailability(client, REQUIRED_FUNCTIONS);
-    const optionalAdminFunctions = await queryFunctionAvailability(client, OPTIONAL_ADMIN_FUNCTIONS);
+    const deprecatedFunctions = await queryFunctionAvailability(client, DEPRECATED_FUNCTIONS);
     const trialUsageColumns = await queryColumnAvailability(client, 'trial_usage', REQUIRED_TRIAL_USAGE_COLUMNS);
     const siteV2Columns = await queryColumnAvailability(client, 'sites', REQUIRED_SITE_V2_COLUMNS);
     const trigger = await queryTriggerAvailability(client);
@@ -271,8 +271,8 @@ async function main() {
       host: pgConfig.PGHOST,
       tables,
       functions,
-      optional_admin_tables: optionalAdminTables,
-      optional_admin_functions: optionalAdminFunctions,
+      deprecated_tables: deprecatedTables,
+      deprecated_functions: deprecatedFunctions,
       trial_usage_columns: trialUsageColumns,
       site_v2_columns: siteV2Columns,
       site_trials_total_trial_credits_default: siteTrialsDefaultValue,
@@ -281,11 +281,11 @@ async function main() {
     };
 
     summary.missing = buildMissing(summary);
-    summary.optional_missing = {
-      tables: Object.entries(summary.optional_admin_tables)
+    summary.deprecated_missing = {
+      tables: Object.entries(summary.deprecated_tables)
         .filter(([, present]) => !present)
         .map(([name]) => name),
-      functions: Object.entries(summary.optional_admin_functions)
+      functions: Object.entries(summary.deprecated_functions)
         .filter(([, status]) => !(status.present && status.identity_matches && status.return_type_matches))
         .map(([name]) => name)
     };

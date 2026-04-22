@@ -21,7 +21,7 @@ describe('verify-site-quota-v2-schema', () => {
     });
   });
 
-  it('does not fail required verification when only the optional merge admin objects are absent', () => {
+  it('does not fail required verification when only deprecated merge compatibility objects are absent', () => {
     const summary = {
       tables: {
         plans: true,
@@ -38,10 +38,10 @@ describe('verify-site-quota-v2-schema', () => {
         bbai_finalize_site_generation: { present: true, identity_matches: true, return_type_matches: true },
         bbai_apply_site_billing_event: { present: true, identity_matches: true, return_type_matches: true }
       },
-      optional_admin_tables: {
+      deprecated_tables: {
         site_merges: false
       },
-      optional_admin_functions: {
+      deprecated_functions: {
         bbai_merge_sites: { present: false, identity_matches: false, return_type_matches: false }
       },
       trial_usage_columns: {
