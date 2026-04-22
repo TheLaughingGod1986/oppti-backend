@@ -738,8 +738,17 @@ function buildSuspicions({
     suspicions.push('subscriptions is still read by billing routes, but no live backend write path to subscriptions exists.');
   }
 
+  if ((scanBackendSource().rpcs.bbai_merge_sites || []).length === 0) {
+    suspicions.push('bbai_merge_sites has no live runtime caller in backend JS. Treat it as an optional operator/admin merge tool, not a required V2 request-path RPC.');
+  }
+
   if (tableHealth.debug_logs?.classification === 'DEAD') {
-    suspicions.push('debug_logs has no write path in the backend. Dashboard troubleshooting data will stay empty until a writer is added.');
+    const hasDebugLogReads = (scanBackendSource().tables.debug_logs?.reads || []).length > 0;
+    suspicions.push(
+      hasDebugLogReads
+        ? 'debug_logs has no write path in the backend. Dashboard troubleshooting data will stay empty until a writer is added.'
+        : 'debug_logs has no live runtime producer or consumer. The table is retained only for compatibility and admin cleanup.'
+    );
   }
 
   if (tableHealth.dashboard_sessions?.classification === 'EXPECTED_EMPTY'
@@ -847,8 +856,10 @@ async function buildDataIntegrityDiagnostics(supabase, { days = 7, runtimeIdenti
     has_v2_rpcs: {
       bbai_reserve_site_generation: Boolean(v2Schema.functions?.bbai_reserve_site_generation?.available),
       bbai_finalize_site_generation: Boolean(v2Schema.functions?.bbai_finalize_site_generation?.available),
-      bbai_apply_site_billing_event: Boolean(v2Schema.functions?.bbai_apply_site_billing_event?.available),
-      bbai_merge_sites: Boolean(v2Schema.functions?.bbai_merge_sites?.available)
+      bbai_apply_site_billing_event: Boolean(v2Schema.functions?.bbai_apply_site_billing_event?.available)
+    },
+    optional_admin_rpcs: {
+      bbai_merge_sites: Boolean(v2Schema.optional_functions?.bbai_merge_sites?.available)
     },
     has_trigger_trg_update_quota_summary: Boolean(triggerCheck.exists),
     trigger_checks: {

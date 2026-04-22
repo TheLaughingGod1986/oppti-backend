@@ -25,7 +25,13 @@ const REQUIRED_V2_FUNCTIONS = [
       p_purchase_type: 'diagnostic',
       p_metadata: {}
     }
-  },
+  }
+];
+
+// Manual site merges are not part of the live request-path contract.
+// Keep probing them for operator visibility, but do not let their absence
+// force the backend into V2 fallback mode.
+const OPTIONAL_ADMIN_FUNCTIONS = [
   {
     name: 'bbai_merge_sites',
     args: {
@@ -120,8 +126,10 @@ async function inspectV2Schema(supabase) {
       available: false,
       fallback_mode: true,
       missing_functions: REQUIRED_V2_FUNCTIONS.map((probe) => probe.name),
+      missing_optional_functions: OPTIONAL_ADMIN_FUNCTIONS.map((probe) => probe.name),
       missing_tables: [...REQUIRED_V2_TABLES],
       functions: {},
+      optional_functions: {},
       tables: {},
       error: {
         code: 'SUPABASE_UNAVAILABLE',
@@ -135,6 +143,11 @@ async function inspectV2Schema(supabase) {
     functions[probe.name] = await probeV2Function(supabase, probe);
   }
 
+  const optional_functions = {};
+  for (const probe of OPTIONAL_ADMIN_FUNCTIONS) {
+    optional_functions[probe.name] = await probeV2Function(supabase, probe);
+  }
+
   const tables = {};
   for (const table of REQUIRED_V2_TABLES) {
     tables[table] = await probeV2Table(supabase, table);
@@ -146,14 +159,19 @@ async function inspectV2Schema(supabase) {
   const missing_tables = Object.entries(tables)
     .filter(([, status]) => !status.available)
     .map(([name]) => name);
+  const missing_optional_functions = Object.entries(optional_functions)
+    .filter(([, status]) => !status.available)
+    .map(([name]) => name);
 
   return {
     checked_at,
     available: missing_functions.length === 0 && missing_tables.length === 0,
     fallback_mode: missing_functions.length > 0 || missing_tables.length > 0,
     missing_functions,
+    missing_optional_functions,
     missing_tables,
     functions,
+    optional_functions,
     tables
   };
 }

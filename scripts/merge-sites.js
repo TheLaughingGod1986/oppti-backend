@@ -6,6 +6,8 @@ const {
   hasFlag
 } = require('./_site-quota-utils');
 
+// Operator-only helper for manual duplicate-site resolution. Live backend
+// request paths do not invoke bbai_merge_sites directly.
 async function main() {
   const supabase = createSupabase();
   const sourceSiteId = getArgValue('--source');

@@ -16,14 +16,22 @@ const REQUIRED_TABLES = [
   'site_trials',
   'generation_requests',
   'usage_events',
-  'site_audit_logs',
+  'site_audit_logs'
+];
+
+// Site merges remain an operator-only compatibility surface. Keep reporting
+// them for visibility, but do not fail live V2 verification if they are absent.
+const OPTIONAL_ADMIN_TABLES = [
   'site_merges'
 ];
 
 const REQUIRED_FUNCTIONS = {
   bbai_reserve_site_generation: 'p_site_id uuid, p_user_id uuid, p_credits integer, p_idempotency_key text, p_request_fingerprint text, p_request_metadata jsonb, p_quota_mode text, p_trial_credits integer',
   bbai_finalize_site_generation: 'p_generation_request_id uuid, p_success boolean, p_final_metadata jsonb',
-  bbai_apply_site_billing_event: 'p_site_id uuid, p_stripe_event_id text, p_plan_id text, p_purchase_type text, p_billing_interval text, p_stripe_customer_id text, p_stripe_subscription_id text, p_subscription_status text, p_current_period_start timestamp with time zone, p_current_period_end timestamp with time zone, p_metadata jsonb',
+  bbai_apply_site_billing_event: 'p_site_id uuid, p_stripe_event_id text, p_plan_id text, p_purchase_type text, p_billing_interval text, p_stripe_customer_id text, p_stripe_subscription_id text, p_subscription_status text, p_current_period_start timestamp with time zone, p_current_period_end timestamp with time zone, p_metadata jsonb'
+};
+
+const OPTIONAL_ADMIN_FUNCTIONS = {
   bbai_merge_sites: 'p_source_site_id uuid, p_target_site_id uuid, p_actor_user_id uuid, p_reason text'
 };
 
@@ -88,7 +96,7 @@ function getLinkedPgConfig() {
   return parseSupabaseDryRunConnection(stdout);
 }
 
-async function queryTableAvailability(client) {
+async function queryTableAvailability(client, tableNames) {
   const { rows } = await client.query(
     `
       SELECT c.relname AS table_name
@@ -99,16 +107,16 @@ async function queryTableAvailability(client) {
         AND c.relkind IN ('r', 'p')
         AND c.relname = ANY($1::text[])
     `,
-    [REQUIRED_TABLES]
+    [tableNames]
   );
 
   const present = new Set(rows.map((row) => row.table_name));
   return Object.fromEntries(
-    REQUIRED_TABLES.map((table) => [table, present.has(table)])
+    tableNames.map((table) => [table, present.has(table)])
   );
 }
 
-async function queryFunctionAvailability(client) {
+async function queryFunctionAvailability(client, functionDefinitions) {
   const { rows } = await client.query(
     `
       SELECT
@@ -121,13 +129,13 @@ async function queryFunctionAvailability(client) {
       WHERE n.nspname = 'public'
         AND p.proname = ANY($1::text[])
     `,
-    [Object.keys(REQUIRED_FUNCTIONS)]
+    [Object.keys(functionDefinitions)]
   );
 
   const rowMap = new Map(rows.map((row) => [row.function_name, row]));
 
   return Object.fromEntries(
-    Object.entries(REQUIRED_FUNCTIONS).map(([functionName, expectedIdentity]) => {
+    Object.entries(functionDefinitions).map(([functionName, expectedIdentity]) => {
       const row = rowMap.get(functionName);
       return [
         functionName,
@@ -244,8 +252,10 @@ async function main() {
   await client.connect();
 
   try {
-    const tables = await queryTableAvailability(client);
-    const functions = await queryFunctionAvailability(client);
+    const tables = await queryTableAvailability(client, REQUIRED_TABLES);
+    const optionalAdminTables = await queryTableAvailability(client, OPTIONAL_ADMIN_TABLES);
+    const functions = await queryFunctionAvailability(client, REQUIRED_FUNCTIONS);
+    const optionalAdminFunctions = await queryFunctionAvailability(client, OPTIONAL_ADMIN_FUNCTIONS);
     const trialUsageColumns = await queryColumnAvailability(client, 'trial_usage', REQUIRED_TRIAL_USAGE_COLUMNS);
     const siteV2Columns = await queryColumnAvailability(client, 'sites', REQUIRED_SITE_V2_COLUMNS);
     const trigger = await queryTriggerAvailability(client);
@@ -261,6 +271,8 @@ async function main() {
       host: pgConfig.PGHOST,
       tables,
       functions,
+      optional_admin_tables: optionalAdminTables,
+      optional_admin_functions: optionalAdminFunctions,
       trial_usage_columns: trialUsageColumns,
       site_v2_columns: siteV2Columns,
       site_trials_total_trial_credits_default: siteTrialsDefaultValue,
@@ -269,6 +281,14 @@ async function main() {
     };
 
     summary.missing = buildMissing(summary);
+    summary.optional_missing = {
+      tables: Object.entries(summary.optional_admin_tables)
+        .filter(([, present]) => !present)
+        .map(([name]) => name),
+      functions: Object.entries(summary.optional_admin_functions)
+        .filter(([, status]) => !(status.present && status.identity_matches && status.return_type_matches))
+        .map(([name]) => name)
+    };
     summary.ok = Object.values(summary.missing).every((bucket) => bucket.length === 0);
 
     const text = JSON.stringify(summary, null, args.pretty ? 2 : 0);
@@ -291,5 +311,6 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildMissing,
   parseSupabaseDryRunConnection
 };

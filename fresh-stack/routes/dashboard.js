@@ -217,6 +217,9 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
   });
 
   // GET /dashboard/logs
+  // Deprecated: structured application logs and admin diagnostics are now the
+  // real observability surface. Keep the session check so old clients receive
+  // an explicit deprecation response instead of a misleading empty log feed.
   router.get('/logs', async (req, res) => {
     const token = req.header('Authorization')?.replace(/^Bearer\s+/i, '');
     const session = await supabase
@@ -227,14 +230,23 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
     if (session.error || !session.data) return res.status(401).json({ error: 'INVALID_SESSION' });
 
     const licenseKey = session.data.license_key;
-    const { data, error } = await supabase
-      .from('debug_logs')
-      .select('*')
-      .eq('license_key', licenseKey)
-      .order('created_at', { ascending: false })
-      .limit(100);
-    if (error) return res.status(500).json({ error: 'SERVER_ERROR', message: error.message });
-    return res.json({ logs: data || [] });
+    logger.info('[dashboard] logs_route_deprecated', {
+      request_id: req.id || null,
+      license_key_prefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null
+    });
+
+    return res.status(410).json({
+      success: false,
+      error: 'DASHBOARD_LOGS_DEPRECATED',
+      message: 'Dashboard database logs are no longer available. Use admin diagnostics and structured application logs instead.',
+      deprecated: true,
+      logs: [],
+      data: {
+        logs: [],
+        source: 'diagnostics_and_app_logs',
+        deprecated: true
+      }
+    });
   });
 
   // GET /dashboard/usage/export - simple CSV of usage logs

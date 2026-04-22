@@ -115,6 +115,8 @@ describe('GET /admin/diagnostics/pipeline', () => {
       'bbai_reserve_site_generation',
       'bbai_finalize_site_generation'
     ]));
+    expect(response.body.diagnostics.v2_schema.missing_functions).not.toContain('bbai_merge_sites');
+    expect(response.body.diagnostics.v2_schema.missing_optional_functions).toContain('bbai_merge_sites');
     expect(response.body.diagnostics.counts_last_7d.sites).toEqual(expect.objectContaining({
       available: true,
       count: 4
@@ -154,6 +156,9 @@ describe('GET /admin/diagnostics/pipeline', () => {
     }));
     expect(response.body.diagnostics.schema.has_v2_tables.site_subscriptions).toBe(false);
     expect(response.body.diagnostics.schema.has_trigger_trg_update_quota_summary).toBe(true);
+    expect(response.body.diagnostics.schema.has_v2_rpcs.bbai_apply_site_billing_event).toBe(false);
+    expect(response.body.diagnostics.schema.has_v2_rpcs.bbai_merge_sites).toBeUndefined();
+    expect(response.body.diagnostics.schema.optional_admin_rpcs.bbai_merge_sites).toBe(false);
     expect(response.body.diagnostics.recent_activity).toEqual(expect.objectContaining({
       licenses_last_7d: 0,
       sites_last_7d: 4,
@@ -171,6 +176,9 @@ describe('GET /admin/diagnostics/pipeline', () => {
       last_7d_count: 4
     }));
     expect(response.body.diagnostics.table_health.debug_logs.classification).toBe('DEAD');
+    expect(response.body.diagnostics.suspicions).toContain(
+      'bbai_merge_sites has no live runtime caller in backend JS. Treat it as an optional operator/admin merge tool, not a required V2 request-path RPC.'
+    );
     expect(Array.isArray(response.body.diagnostics.suspicions)).toBe(true);
   });
 });
