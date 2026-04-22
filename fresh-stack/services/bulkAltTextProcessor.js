@@ -8,6 +8,7 @@ const {
   finalizeGenerationQuotaReservation,
   reserveGenerationQuota
 } = require('./quota');
+const { upsertGeneratedImageAltState } = require('./imageAltState');
 const { recordUsage } = require('./usage');
 
 function nowIso() {
@@ -264,6 +265,25 @@ async function processLicensedBulkItem({
       endpoint: 'api/jobs/bulk',
       status: 'success'
     });
+
+    if (effectiveSite?.id) {
+      await upsertGeneratedImageAltState(supabase, {
+        siteId: effectiveSite.id,
+        image: normalized,
+        context: itemContext,
+        altText: generationResult.altText,
+        requestId: null,
+        generationRequestId: reservation.reservation?.generation_request_id || null
+      });
+    } else {
+      logger.warn('[image-state] ledger_write_skipped', {
+        site_id: null,
+        site_hash: effectiveSite?.site_hash || siteKey || null,
+        batch_job_id: jobId,
+        item_index: itemIndex,
+        error: 'SITE_ID_UNAVAILABLE_AFTER_GENERATION'
+      });
+    }
 
     logBulkGenerationTrace({
       reservation,

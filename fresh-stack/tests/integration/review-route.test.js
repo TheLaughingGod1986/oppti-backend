@@ -6,7 +6,30 @@ jest.mock('../../lib/openai', () => ({
   reviewAltText: jest.fn()
 }));
 
+jest.mock('../../services/imageAltState', () => ({
+  resolveImageAltStateSiteContext: jest.fn().mockResolvedValue({
+    site: {
+      id: 'site_1',
+      site_hash: 'site-hash-1'
+    },
+    siteIdentity: {
+      siteHash: 'site-hash-1',
+      siteUrl: 'https://example.com'
+    },
+    error: null
+  }),
+  markImageAltStateApproved: jest.fn().mockResolvedValue({
+    data: {
+      id: 'image_state_1',
+      image_ref: 'attachment:123',
+      current_state: 'APPROVED'
+    },
+    error: null
+  })
+}));
+
 const { reviewAltText } = require('../../lib/openai');
+const imageAltStateService = require('../../services/imageAltState');
 const { createReviewRouter } = require('../../routes/review');
 
 function createChainableMock(resolveData = null, resolveError = null) {
@@ -37,7 +60,7 @@ function createApp(supabase) {
   const app = express();
   app.use(express.json());
   app.use(authMiddleware({ supabase }));
-  app.use('/api/review', createReviewRouter());
+  app.use('/api/review', createReviewRouter({ supabase }));
   return app;
 }
 
@@ -133,5 +156,38 @@ describe('POST /api/review', () => {
       tokens: null
     });
     expect(reviewAltText).not.toHaveBeenCalled();
+  });
+
+  test('POST /api/review/approve marks an image state approved', async () => {
+    const app = createApp(createSupabaseMock({
+      id: 'license_123',
+      license_key: 'key-123',
+      plan: 'pro',
+      status: 'active'
+    }));
+
+    const res = await request(app)
+      .post('/api/review/approve')
+      .set('X-License-Key', 'key-123')
+      .set('X-Site-Key', 'site-hash-1')
+      .send({
+        attachment_id: 123,
+        alt_text: 'Approved alt text'
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.state).toEqual(expect.objectContaining({
+      current_state: 'APPROVED',
+      image_ref: 'attachment:123'
+    }));
+    expect(imageAltStateService.resolveImageAltStateSiteContext).toHaveBeenCalled();
+    expect(imageAltStateService.markImageAltStateApproved).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      siteId: 'site_1',
+      altText: 'Approved alt text',
+      body: expect.objectContaining({
+        attachment_id: 123
+      })
+    }));
   });
 });

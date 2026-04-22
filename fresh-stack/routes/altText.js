@@ -17,6 +17,7 @@ const {
   getQuotaStatus,
   reserveGenerationQuota
 } = require('../services/quota');
+const { upsertGeneratedImageAltState } = require('../services/imageAltState');
 const { recordUsage } = require('../services/usage');
 const { findOrCreateTrialSite } = require('../services/site');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
@@ -1010,6 +1011,24 @@ function createAltTextRouter({
         site_hash: effectiveSite?.site_hash || siteKey || null,
         request_id: req.id || null,
         mode: req.trialMode ? 'trial' : 'site'
+      });
+    }
+
+    if (effectiveSite?.id) {
+      await upsertGeneratedImageAltState(supabase, {
+        siteId: effectiveSite.id,
+        image: normalized,
+        context,
+        altText,
+        requestId: req.id || null,
+        generationRequestId: reservation.reservation?.generation_request_id || null
+      });
+    } else {
+      logger.warn('[image-state] ledger_write_skipped', {
+        site_id: null,
+        site_hash: effectiveSite?.site_hash || siteKey || null,
+        request_id: req.id || null,
+        error: 'SITE_ID_UNAVAILABLE_AFTER_GENERATION'
       });
     }
 

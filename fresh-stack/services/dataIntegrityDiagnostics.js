@@ -108,7 +108,7 @@ const CLASSIFICATION_HINTS = {
   quota_summaries: 'ACTIVE',
   dashboard_sessions: 'EXPECTED_EMPTY',
   debug_logs: 'DEAD',
-  subscriptions: 'LEGACY',
+  subscriptions: 'DEAD',
   site_subscriptions: 'ACTIVE',
   site_trials: 'ACTIVE',
   generation_requests: 'ACTIVE',
@@ -537,7 +537,10 @@ function classifyTable(table, summary, scan, triggerCheck) {
   }
 
   if (table === 'subscriptions') {
-    return hasDirectWrites ? 'ACTIVE' : 'LEGACY';
+    if (hasDirectWrites) {
+      return 'ACTIVE';
+    }
+    return hasReads ? 'LEGACY' : 'DEAD';
   }
 
   if (table === 'v_license_quota_current') {

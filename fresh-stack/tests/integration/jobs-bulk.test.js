@@ -23,7 +23,7 @@ jest.mock('../../services/quota', () => ({
   reserveGenerationQuota: jest.fn().mockResolvedValue({
     error: null,
     reservation: { generation_request_id: null, quota_source: 'site' },
-    site: { site_hash: 'bulk-site', license_key: 'test-bulk-license' }
+    site: { id: 'site_1', site_hash: 'bulk-site', license_key: 'test-bulk-license' }
   }),
   finalizeGenerationQuotaReservation: jest.fn().mockResolvedValue({})
 }));
@@ -47,9 +47,41 @@ jest.mock('../../services/usage', () => ({
   recordUsage: jest.fn().mockResolvedValue({ error: null })
 }));
 
+jest.mock('../../services/imageAltState', () => ({
+  LEDGER_SYNC_SCOPES: {
+    FULL_SITE: 'full_site',
+    PARTIAL: 'partial'
+  },
+  resolveImageAltStateSyncTarget: jest.fn().mockResolvedValue({
+    site: {
+      id: 'site_1',
+      site_hash: 'bulk-site'
+    },
+    matchedBy: 'site_hash',
+    error: null
+  }),
+  syncImageAltStates: jest.fn().mockResolvedValue({
+    count: 5,
+    inserted: 5,
+    updated: 0,
+    unchanged: 0,
+    missing_rows_created: 5,
+    coverage: {
+      status: 'PARTIAL_LEDGER',
+      snapshot_fallback_active: false
+    },
+    errors: []
+  }),
+  upsertGeneratedImageAltState: jest.fn().mockResolvedValue({
+    data: { id: 'image_state_1', current_state: 'NEEDS_REVIEW' },
+    error: null
+  })
+}));
+
 const { createQueue } = require('../../lib/queue');
 const { createBulkAltTextProcessor } = require('../../services/bulkAltTextProcessor');
 const { createJobsRouter } = require('../../routes/jobs');
+const imageAltStateService = require('../../services/imageAltState');
 
 function flushImmediate() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -150,6 +182,18 @@ describe('POST /api/jobs bulk pipeline', () => {
     expect(job.items.every((it) => it.status === 'completed')).toBe(true);
     expect(job.results).toHaveLength(5);
     expect(quota.enforceQuota).toHaveBeenCalled();
+    expect(imageAltStateService.upsertGeneratedImageAltState).toHaveBeenCalledTimes(5);
+    expect(imageAltStateService.resolveImageAltStateSyncTarget).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      siteHash: 'bulk-site',
+      licenseKey: 'test-bulk-license'
+    }));
+    expect(imageAltStateService.syncImageAltStates).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      siteId: 'site_1',
+      siteHash: 'bulk-site',
+      images,
+      scope: 'partial',
+      allowDowngrade: false
+    }));
   });
 
   test('isolates a single failing image in a mixed batch', async () => {
@@ -225,5 +269,38 @@ describe('POST /api/jobs bulk pipeline', () => {
       });
 
     expect(res.status).toBe(401);
+  });
+
+  test('uses explicit full-site scope when the product flow declares complete inventory', async () => {
+    const images = [
+      {
+        id: 'a',
+        image: { url: 'https://example.com/a.jpg', width: 10, height: 10, filename: 'a.jpg' }
+      },
+      {
+        id: 'b',
+        image: { url: 'https://example.com/b.jpg', width: 10, height: 10, filename: 'b.jpg' }
+      }
+    ];
+
+    await request(app)
+      .post('/api/jobs')
+      .set('X-License-Key', 'test-bulk-license')
+      .set('X-Site-Key', 'bulk-site')
+      .send({
+        images,
+        context: {
+          inventory_scope: 'full_site'
+        }
+      });
+
+    await flushImmediate();
+    await flushImmediate();
+
+    expect(imageAltStateService.syncImageAltStates).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      siteId: 'site_1',
+      images,
+      scope: 'full_site'
+    }));
   });
 });

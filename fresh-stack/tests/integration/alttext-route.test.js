@@ -4,6 +4,7 @@ const { authMiddleware } = require('../../middleware/auth');
 const { generateAltText } = require('../../lib/openai');
 const quotaService = require('../../services/quota');
 const usageService = require('../../services/usage');
+const imageAltStateService = require('../../services/imageAltState');
 
 jest.mock('../../lib/openai', () => ({
   generateAltText: jest.fn().mockResolvedValue({
@@ -24,6 +25,11 @@ jest.mock('../../services/quota', () => ({
     error: null,
     reservation: {
       generation_request_id: 'generation_request_123'
+    },
+    site: {
+      id: 'site_1',
+      site_hash: 'site-key-1',
+      license_key: 'key-123'
     }
   }),
   finalizeGenerationQuotaReservation: jest.fn().mockResolvedValue({ error: null }),
@@ -37,6 +43,13 @@ jest.mock('../../services/quota', () => ({
 
 jest.mock('../../services/usage', () => ({
   recordUsage: jest.fn().mockResolvedValue({ error: null })
+}));
+
+jest.mock('../../services/imageAltState', () => ({
+  upsertGeneratedImageAltState: jest.fn().mockResolvedValue({
+    data: { id: 'image_state_1', current_state: 'NEEDS_REVIEW' },
+    error: null
+  })
 }));
 
 const { createAltTextRouter } = require('../../routes/altText');
@@ -223,6 +236,48 @@ describe('POST /api/alt-text', () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.altText).toBe('mock alt');
+  });
+
+  test('persists image state ledger on successful generation', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use('/api/alt-text', createAltTextRouter({
+      supabase: createSupabaseMock({
+        id: 'lic-1',
+        license_key: 'key-123',
+        plan: 'pro',
+        status: 'active'
+      }),
+      redis: null,
+      resultCache: new Map(),
+      checkRateLimit: async () => true,
+      getSiteFromHeaders: async () => ({ quota: 50, used: 0, remaining: 50 })
+    }));
+
+    const res = await request(app).post('/api/alt-text').send({
+      image: {
+        attachment_id: 321,
+        url: 'https://example.com/img.jpg',
+        width: 1,
+        height: 1
+      },
+      context: {
+        pageTitle: 'Media library'
+      }
+    });
+
+    expect(res.status).toBe(200);
+    expect(imageAltStateService.upsertGeneratedImageAltState).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      siteId: 'site_1',
+      altText: 'mock alt',
+      generationRequestId: 'generation_request_123',
+      image: expect.objectContaining({
+        url: 'https://example.com/img.jpg'
+      }),
+      context: expect.objectContaining({
+        pageTitle: 'Media library'
+      })
+    }));
   });
 
   test('uses logged-in quota when trial headers are stale', async () => {

@@ -13,6 +13,8 @@ const { getBillingPlansJson, buildPlansList } = require('../services/billingPlan
 
 const ACCOUNT_SELECT = 'id, email, license_key, stripe_customer_id, stripe_subscription_id, plan, billing_cycle';
 const SITE_SELECT = 'id, site_hash, license_key, site_url, site_name, status';
+const SITE_SUBSCRIPTION_SELECT = 'id, site_id, plan_id, stripe_customer_id, stripe_subscription_id, status, billing_interval, current_period_start, current_period_end, cancel_at_period_end';
+const ACTIVE_BILLING_STATUSES = ['active', 'trialing', 'past_due'];
 const ZERO_DECIMAL_CURRENCIES = new Set([
   'bif', 'clp', 'djf', 'gnf', 'jpy', 'kmf', 'krw', 'mga', 'pyg',
   'rwf', 'ugx', 'vnd', 'vuv', 'xaf', 'xof', 'xpf'
@@ -565,6 +567,141 @@ async function findSiteByStripeCustomerId(supabase, stripeCustomerId) {
   }
 
   return null;
+}
+
+function buildBillingInfoFromLicense(license) {
+  let nextBillingDate = null;
+  if (license?.billing_anchor_date) {
+    const anchor = new Date(license.billing_anchor_date);
+    if (!Number.isNaN(anchor.getTime())) {
+      const next = new Date(anchor);
+      next.setUTCMonth(next.getUTCMonth() + 1);
+      nextBillingDate = next.toISOString();
+    }
+  }
+
+  return {
+    plan: normalizePlanValue(license?.plan) || 'free',
+    status: license?.status || 'active',
+    billingCycle: license?.billing_cycle || 'monthly',
+    nextBillingDate,
+    subscriptionId: license?.stripe_subscription_id || null,
+    cancelAtPeriodEnd: false,
+    customerId: license?.stripe_customer_id || null
+  };
+}
+
+function buildBillingInfoFromSiteSubscription(subscription, fallbackBilling) {
+  return {
+    plan: normalizePlanValue(subscription?.plan_id) || fallbackBilling.plan,
+    status: subscription?.status || fallbackBilling.status,
+    billingCycle: resolveBillingPeriodFromInterval(subscription?.billing_interval) || fallbackBilling.billingCycle,
+    nextBillingDate: subscription?.current_period_end || fallbackBilling.nextBillingDate,
+    subscriptionId: subscription?.stripe_subscription_id || fallbackBilling.subscriptionId,
+    cancelAtPeriodEnd: Boolean(subscription?.cancel_at_period_end),
+    customerId: subscription?.stripe_customer_id || fallbackBilling.customerId
+  };
+}
+
+async function selectLatestSiteSubscription(query, context = {}) {
+  if (!query) {
+    return null;
+  }
+
+  const { data, error } = await query
+    .in('status', ACTIVE_BILLING_STATUSES)
+    .order('current_period_end', { ascending: false, nullsFirst: false })
+    .limit(1);
+
+  if (error) {
+    logger.warn('[billing] site subscription lookup failed', {
+      ...context,
+      error: error.message
+    });
+    return null;
+  }
+
+  return Array.isArray(data) && data.length ? data[0] : null;
+}
+
+async function selectBillingSiteSubscriptionForLicense(supabase, license) {
+  if (!supabase || !license) {
+    return { subscription: null, resolutionPath: 'license' };
+  }
+
+  if (license.stripe_subscription_id) {
+    const subscription = await selectLatestSiteSubscription(
+      supabase
+        .from('site_subscriptions')
+        .select(SITE_SUBSCRIPTION_SELECT)
+        .eq('stripe_subscription_id', license.stripe_subscription_id),
+      {
+        stripe_subscription_id: license.stripe_subscription_id,
+        lookup: 'stripe_subscription_id'
+      }
+    );
+
+    if (subscription) {
+      return { subscription, resolutionPath: 'stripe_subscription_id' };
+    }
+  }
+
+  if (license.stripe_customer_id) {
+    const subscription = await selectLatestSiteSubscription(
+      supabase
+        .from('site_subscriptions')
+        .select(SITE_SUBSCRIPTION_SELECT)
+        .eq('stripe_customer_id', license.stripe_customer_id),
+      {
+        stripe_customer_id: license.stripe_customer_id,
+        lookup: 'stripe_customer_id'
+      }
+    );
+
+    if (subscription) {
+      return { subscription, resolutionPath: 'stripe_customer_id' };
+    }
+  }
+
+  if (license.license_key) {
+    const { data: sites, error } = await supabase
+      .from('sites')
+      .select('id')
+      .eq('license_key', license.license_key);
+
+    if (error) {
+      logger.warn('[billing] site lookup by license key failed', {
+        license_key: license.license_key,
+        lookup: 'license_sites',
+        error: error.message
+      });
+      return { subscription: null, resolutionPath: 'license' };
+    }
+
+    const siteIds = Array.isArray(sites)
+      ? sites.map((site) => site?.id).filter(Boolean)
+      : [];
+
+    if (siteIds.length) {
+      const subscription = await selectLatestSiteSubscription(
+        supabase
+          .from('site_subscriptions')
+          .select(SITE_SUBSCRIPTION_SELECT)
+          .in('site_id', siteIds),
+        {
+          license_key: license.license_key,
+          lookup: 'license_sites',
+          site_ids: siteIds
+        }
+      );
+
+      if (subscription) {
+        return { subscription, resolutionPath: 'license_sites' };
+      }
+    }
+  }
+
+  return { subscription: null, resolutionPath: 'license' };
 }
 
 async function persistStripeMappings(supabase, account, { stripeCustomerId, stripeSubscriptionId }) {
@@ -1609,56 +1746,29 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       return res.status(401).json({ success: false, error: 'Authentication required', data: { error: 'Authentication required' } });
     }
     try {
-      let plan = 'free';
-      let status = 'free';
-      let billingCycle = null;
-      let nextBillingDate = null;
-      let subscriptionId = null;
-      let cancelAtPeriodEnd = false;
-      let customerId = null;
       let billingInfoSource = 'licenses';
+      let billingInfoResolutionPath = 'license';
+      let billing = buildBillingInfoFromLicense(license);
 
-      if (license) {
-        plan = license.plan || 'free';
-        status = license.status || 'active';
-        customerId = license.stripe_customer_id || null;
-        subscriptionId = license.stripe_subscription_id || null;
-        billingCycle = license.billing_cycle || 'monthly';
-        if (license.billing_anchor_date) {
-          const anchor = new Date(license.billing_anchor_date);
-          const next = new Date(anchor);
-          next.setUTCMonth(next.getUTCMonth() + 1);
-          nextBillingDate = next.toISOString();
-        }
-      }
-
-      if (supabase && subscriptionId) {
-        const { data: sub } = await supabase.from('subscriptions').select('plan, status, current_period_end, cancel_at_period_end').eq('stripe_subscription_id', subscriptionId).maybeSingle();
-        if (sub) {
-          plan = sub.plan || plan;
-          status = sub.status || status;
-          nextBillingDate = sub.current_period_end || nextBillingDate;
-          cancelAtPeriodEnd = sub.cancel_at_period_end || false;
-          billingInfoSource = 'legacy_subscriptions';
+      // Billing reads should use the live account table plus V2 site billing state.
+      // Do not reintroduce public.subscriptions here as a silent fallback.
+      if (supabase && license) {
+        const resolved = await selectBillingSiteSubscriptionForLicense(supabase, license);
+        if (resolved.subscription) {
+          billing = buildBillingInfoFromSiteSubscription(resolved.subscription, billing);
+          billingInfoSource = 'site_subscriptions';
+          billingInfoResolutionPath = resolved.resolutionPath;
         }
       }
 
       logger.info('[billing] info_source_resolved', {
         source: billingInfoSource,
+        resolution_path: billingInfoResolutionPath,
         account_id: license?.id || null,
         license_key: license?.license_key || null,
-        stripe_subscription_id: subscriptionId || null
+        stripe_subscription_id: billing.subscriptionId || null
       });
 
-      const billing = {
-        plan,
-        status,
-        billingCycle,
-        nextBillingDate,
-        subscriptionId,
-        cancelAtPeriodEnd,
-        customerId
-      };
       return res.json({ success: true, data: { billing } });
     } catch (err) {
       logger.error('[billing] info error', err.message);

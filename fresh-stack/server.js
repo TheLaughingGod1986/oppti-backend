@@ -234,7 +234,7 @@ function createApp({
     getSiteFromHeaders
   }));
 
-  const reviewRouter = createReviewRouter();
+  const reviewRouter = createReviewRouter({ supabase: supabaseClient });
   app.use('/api/review', reviewRouter);
 
   const queueHolder = { q: null };
@@ -281,7 +281,10 @@ function createApp({
   }));
 
   app.use('/billing', createBillingRouter({ supabase: supabaseClient, getStripe, priceIds }));
-  app.use('/dashboard', createDashboardRouter({ supabase: supabaseClient }));
+  app.use('/dashboard', createDashboardRouter({
+    supabase: supabaseClient,
+    getJobRecord: queue.getJobRecord
+  }));
 
   app.use((req, res) => {
     if (res.headersSent) return;
