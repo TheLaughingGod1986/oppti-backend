@@ -12,6 +12,7 @@ jest.mock('../../lib/posthog', () => ({
 
 const { verifyWebhookSignature } = require('../../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../../lib/posthog');
+const logger = require('../../lib/logger');
 const { createBillingWebhookHandler } = require('../../routes/billing');
 
 function normalizeAccount(account = {}) {
@@ -43,18 +44,26 @@ function normalizeSiteSubscription(subscription = {}) {
   };
 }
 
-function createSupabaseMock({ accounts = [], sites = [], siteSubscriptions = [] } = {}) {
+function createSupabaseMock({
+  accounts = [],
+  sites = [],
+  siteSubscriptions = [],
+  enableBillingRpc = false,
+  failBillingRpc = false
+} = {}) {
   const updates = [];
   const accountRows = accounts.map((account) => normalizeAccount(account));
   const siteRows = sites.map((site) => normalizeSite(site));
   const siteSubscriptionRows = siteSubscriptions.map((subscription) => normalizeSiteSubscription(subscription));
+  const billingEventIds = new Set();
 
   const findAccount = (column, value) => accountRows.find((row) => row[column] === value) || null;
   const findSite = (column, value) => siteRows.find((row) => row[column] === value) || null;
   const filterSiteSubscriptions = (column, value) => siteSubscriptionRows.filter((row) => row[column] === value);
 
-  return {
+  const supabase = {
     updates,
+    siteSubscriptions: siteSubscriptionRows,
     from(table) {
       if (table === 'licenses') {
         return {
@@ -192,6 +201,72 @@ function createSupabaseMock({ accounts = [], sites = [], siteSubscriptions = [] 
       throw new Error(`Unexpected table: ${table}`);
     }
   };
+
+  if (enableBillingRpc || failBillingRpc) {
+    supabase.rpc = jest.fn().mockImplementation(async (name, payload) => {
+      if (name !== 'bbai_apply_site_billing_event') {
+        return { data: null, error: { code: '42883', message: 'unknown function' } };
+      }
+
+      if (failBillingRpc) {
+        return {
+          data: null,
+          error: {
+            code: 'PGRST500',
+            message: 'site billing rpc failed'
+          }
+        };
+      }
+
+      const eventId = payload.p_stripe_event_id;
+      if (billingEventIds.has(eventId)) {
+        return {
+          data: { ok: true, duplicate: true, event_id: eventId },
+          error: null
+        };
+      }
+      billingEventIds.add(eventId);
+
+      let subscription = siteSubscriptionRows.find((row) => (
+        payload.p_stripe_subscription_id
+        && row.stripe_subscription_id === payload.p_stripe_subscription_id
+      ));
+
+      if (!subscription) {
+        subscription = normalizeSiteSubscription({
+          id: `site_sub_${siteSubscriptionRows.length + 1}`,
+          site_id: payload.p_site_id,
+          stripe_subscription_id: payload.p_stripe_subscription_id || null
+        });
+        siteSubscriptionRows.push(subscription);
+      }
+
+      Object.assign(subscription, {
+        site_id: payload.p_site_id,
+        plan_id: payload.p_plan_id,
+        stripe_customer_id: payload.p_stripe_customer_id || null,
+        stripe_subscription_id: payload.p_stripe_subscription_id || null,
+        status: payload.p_subscription_status || 'active',
+        billing_interval: payload.p_billing_interval || 'month',
+        current_period_start: payload.p_current_period_start || subscription.current_period_start || null,
+        current_period_end: payload.p_current_period_end || subscription.current_period_end || null,
+        cancel_at_period_end: false
+      });
+
+      return {
+        data: {
+          ok: true,
+          duplicate: false,
+          event_id: eventId,
+          plan_id: payload.p_plan_id,
+          site_subscription_id: subscription.id
+        },
+        error: null
+      };
+    });
+  }
+
+  return supabase;
 }
 
 function createApp({ supabase = null, stripeClient = null, webhookSecret = 'test-webhook-secret', priceIds } = {}) {
@@ -833,6 +908,167 @@ describe('POST /billing/webhook', () => {
         $insert_id: 'evt_invoice_attribution'
       })
     });
+  });
+
+  test('reconciles site subscriptions through V2 billing and reuses the row on repeat events', async () => {
+    const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => {});
+    const supabase = createSupabaseMock({
+      enableBillingRpc: true,
+      accounts: [
+        {
+          id: 'account_site_billing',
+          email: 'site-billing@example.com',
+          license_key: 'lic_site_billing',
+          stripe_customer_id: 'cus_site_billing',
+          plan: 'free'
+        }
+      ],
+      sites: [
+        {
+          id: 'site_billing',
+          site_hash: 'site_hash_billing',
+          license_key: 'lic_site_billing'
+        }
+      ]
+    });
+
+    verifyWebhookSignature.mockImplementation(({ payload }) => {
+      const { id } = JSON.parse(payload.toString());
+      const isUpdate = id === 'evt_site_billing_update';
+      return {
+        id,
+        type: 'invoice.payment_succeeded',
+        data: {
+          object: {
+            id: `in_${id}`,
+            amount_paid: isUpdate ? 5999 : 1499,
+            currency: 'usd',
+            customer: 'cus_site_billing',
+            subscription: 'sub_site_billing',
+            billing_reason: isUpdate ? 'subscription_update' : 'subscription_create',
+            livemode: false,
+            metadata: {
+              license_key: 'lic_site_billing'
+            },
+            lines: {
+              data: [{
+                price: {
+                  id: isUpdate ? 'price_agency' : 'price_pro',
+                  product: isUpdate ? 'prod_agency' : 'prod_pro',
+                  recurring: { interval: 'month' }
+                }
+              }]
+            }
+          }
+        }
+      };
+    });
+
+    const app = createApp({ supabase });
+    await sendWebhook(app, 'evt_site_billing_create');
+    await sendWebhook(app, 'evt_site_billing_update');
+
+    expect(supabase.rpc).toHaveBeenCalledTimes(2);
+    expect(supabase.siteSubscriptions).toHaveLength(1);
+    expect(supabase.siteSubscriptions[0]).toEqual(expect.objectContaining({
+      site_id: 'site_billing',
+      plan_id: 'agency',
+      stripe_customer_id: 'cus_site_billing',
+      stripe_subscription_id: 'sub_site_billing',
+      status: 'active',
+      billing_interval: 'month'
+    }));
+    expect(infoSpy).toHaveBeenCalledWith('[billing] canonical billing site resolved from license', expect.objectContaining({
+      site_id: 'site_billing',
+      license_key: 'lic_site_billing'
+    }));
+    expect(infoSpy).toHaveBeenCalledWith('[billing] site entitlement reconciled', expect.objectContaining({
+      stripeEventId: 'evt_site_billing_create',
+      siteId: 'site_billing',
+      siteSubscriptionId: 'site_sub_1'
+    }));
+    expect(infoSpy).toHaveBeenCalledWith('[billing] webhook_write_trace', expect.objectContaining({
+      stripe_event_id: 'evt_site_billing_update',
+      billing_info_source: 'site_subscriptions',
+      site_subscription_rpc_executed: true,
+      subscriptions_written: true
+    }));
+
+    infoSpy.mockRestore();
+  });
+
+  test('falls back to legacy license billing when V2 site billing reconciliation fails', async () => {
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+    const supabase = createSupabaseMock({
+      enableBillingRpc: true,
+      failBillingRpc: true,
+      accounts: [
+        {
+          id: 'account_billing_fallback',
+          email: 'billing-fallback@example.com',
+          license_key: 'lic_billing_fallback',
+          stripe_customer_id: 'cus_billing_fallback',
+          plan: 'free'
+        }
+      ],
+      sites: [
+        {
+          id: 'site_billing_fallback',
+          site_hash: 'site_hash_billing_fallback',
+          license_key: 'lic_billing_fallback'
+        }
+      ]
+    });
+
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_billing_fallback',
+      type: 'invoice.payment_succeeded',
+      data: {
+        object: {
+          id: 'in_billing_fallback',
+          amount_paid: 1499,
+          currency: 'usd',
+          customer: 'cus_billing_fallback',
+          subscription: 'sub_billing_fallback',
+          billing_reason: 'subscription_create',
+          livemode: false,
+          metadata: {
+            license_key: 'lic_billing_fallback'
+          },
+          lines: {
+            data: [{
+              price: {
+                id: 'price_pro',
+                product: 'prod_pro',
+                recurring: { interval: 'month' }
+              }
+            }]
+          }
+        }
+      }
+    });
+
+    const app = createApp({ supabase });
+    const res = await sendWebhook(app, 'evt_billing_fallback');
+
+    expect(res.status).toBe(200);
+    expect(supabase.siteSubscriptions).toHaveLength(0);
+    expect(supabase.updates).toEqual([
+      {
+        table: 'licenses',
+        column: 'id',
+        value: 'account_billing_fallback',
+        payload: { stripe_subscription_id: 'sub_billing_fallback' }
+      }
+    ]);
+    expect(warnSpy).toHaveBeenCalledWith('[billing] site entitlement V2 failed; using legacy billing fallback', expect.objectContaining({
+      stripeEventId: 'evt_billing_fallback',
+      siteId: 'site_billing_fallback',
+      plan: 'pro',
+      error: 'site billing rpc failed'
+    }));
+
+    warnSpy.mockRestore();
   });
 
   test('still emits a fallback payment_succeeded event when checkout enrichment fails', async () => {

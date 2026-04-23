@@ -76,6 +76,7 @@ function createUsageRouter({ supabase }) {
       siteUrl,
       siteFingerprint,
       installUuid: siteKey,
+      quotaMode: 'trial',
       requestId: req.id || null
     });
 
@@ -144,6 +145,7 @@ function createUsageRouter({ supabase }) {
       siteUrl,
       siteFingerprint,
       installUuid: siteKey,
+      quotaMode: req.trialMode ? 'trial' : 'site',
       requestId: req.id || null
     });
 

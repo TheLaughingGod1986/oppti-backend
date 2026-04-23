@@ -171,6 +171,7 @@ async function getQuotaStatus(supabase, {
   installUuid,
   account,
   requestId,
+  quotaMode = 'site',
   siteIdentity: prebuiltIdentity
 } = {}) {
   const hasSiteSignals = Boolean(siteHash || siteUrl || siteFingerprint || installUuid || prebuiltIdentity);
@@ -178,13 +179,21 @@ async function getQuotaStatus(supabase, {
     return getLegacyQuotaStatus(supabase, { licenseKey, siteHash });
   }
 
+  const hasAuthenticatedSiteContext = Boolean(
+    account?.id
+    || account?.license_key
+    || licenseKey
+  );
+  const isTrialQuotaMode = quotaMode === 'trial';
+
   // Use the caller-provided siteIdentity if available (preserves allowDevelopment
   // flag set at the route level), otherwise build a fresh one.
   const identity = prebuiltIdentity || buildSiteIdentity({
     siteHash,
     siteUrl,
     siteFingerprint,
-    installUuid
+    installUuid,
+    allowDevelopment: Boolean(isTrialQuotaMode || hasAuthenticatedSiteContext)
   });
   if (identity?.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
     return getLegacyQuotaStatus(supabase, { licenseKey, siteHash: siteHash || identity.siteHash });
@@ -194,11 +203,35 @@ async function getQuotaStatus(supabase, {
     account,
     licenseKey,
     siteIdentity: identity,
-    createIfMissing: false,
+    createIfMissing: hasAuthenticatedSiteContext || isTrialQuotaMode,
+    quotaMode,
     requestId
   });
 
   if (!siteStatus.error) {
+    return siteStatus;
+  }
+
+  if (hasAuthenticatedSiteContext) {
+    logger.error('[site] authenticated_site_healing_failed', {
+      request_id: requestId || null,
+      account_id: account?.id || null,
+      license_key_prefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null,
+      site_hash: siteHash || identity?.siteHash || null,
+      site_url: siteUrl || identity?.siteUrl || null,
+      site_fingerprint_present: Boolean(siteFingerprint || identity?.siteFingerprint),
+      error: siteStatus.error,
+      message: siteStatus.message || null
+    });
+  }
+
+  if (isTrialQuotaMode) {
+    logV2Fallback('Trial quota status V2 path failed; using legacy trial fallback', {
+      v2_error_code: siteStatus.error,
+      v2_error_message: siteStatus.message || null,
+      site_hash: siteHash || identity?.siteHash || null,
+      request_id: requestId || null
+    });
     return siteStatus;
   }
 

@@ -76,6 +76,10 @@ function createSupabaseMock({
         state.rows = state.rows.filter((row) => row[column] === value);
         return chain;
       },
+      in(column, values) {
+        state.rows = state.rows.filter((row) => Array.isArray(values) && values.includes(row[column]));
+        return chain;
+      },
       order(column, options = {}) {
         const ascending = options.ascending !== false;
         state.rows = state.rows.slice().sort((left, right) => {
@@ -336,6 +340,7 @@ function createApp(supabase, { includeLicenseRoutes = false } = {}) {
   app.use('/auth', createAuthRouter({ supabase }));
   if (includeLicenseRoutes) {
     app.use('/api/license', createLicenseRouter({ supabase }));
+    app.use('/api/licenses', createLicenseRouter({ supabase }));
   }
   return app;
 }
@@ -471,6 +476,82 @@ describe('site-aware auth linking', () => {
     }));
     expect(res.body.site.id).not.toBe('site_existing_localhost');
     expect(supabase._state.sites).toHaveLength(2);
+  });
+
+  test('login with site context heals linkage and returns the current canonical site immediately', async () => {
+    const supabase = createSupabaseMock();
+    const app = createApp(supabase, { includeLicenseRoutes: true });
+
+    const register = await request(app)
+      .post('/auth/register')
+      .send({
+        email: 'login-heal@example.com',
+        password: 'Password123!'
+      });
+
+    expect(register.status).toBe(200);
+    expect(register.body.site).toBeNull();
+
+    const login = await request(app)
+      .post('/auth/login')
+      .send({
+        email: 'login-heal@example.com',
+        password: 'Password123!',
+        site_id: 'wp-login-heal',
+        install_uuid: 'wp-login-heal',
+        site_url: 'https://heal.example.com/wp-admin/',
+        site_fingerprint: 'fingerprint-login-heal'
+      });
+
+    expect(login.status).toBe(200);
+    expect(login.body.site).toEqual(expect.objectContaining({
+      id: expect.any(String),
+      site_hash: 'wp-login-heal'
+    }));
+    expect(supabase._state.siteMemberships).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        site_id: login.body.site.id,
+        user_id: register.body.user.id
+      })
+    ]));
+  });
+
+  test('authenticated /api/licenses/sites self-heals from X-Site headers and returns the linked site', async () => {
+    const supabase = createSupabaseMock();
+    const app = createApp(supabase, { includeLicenseRoutes: true });
+
+    const register = await request(app)
+      .post('/auth/register')
+      .send({
+        email: 'license-sites-heal@example.com',
+        password: 'Password123!'
+      });
+
+    expect(register.status).toBe(200);
+    expect(register.body.site).toBeNull();
+
+    const sitesRes = await request(app)
+      .get('/api/licenses/sites')
+      .set('X-License-Key', register.body.user.license_key)
+      .set('X-Site-Key', 'wp-license-heal')
+      .set('X-Install-UUID', 'wp-license-heal')
+      .set('X-Site-URL', 'https://license-heal.example.com/wp-admin/')
+      .set('X-Site-Fingerprint', 'fingerprint-license-heal');
+
+    expect(sitesRes.status).toBe(200);
+    expect(sitesRes.body.sites).toHaveLength(1);
+    expect(sitesRes.body.sites[0]).toEqual(expect.objectContaining({
+      id: expect.any(String),
+      site_hash: 'wp-license-heal'
+    }));
+
+    const siteId = sitesRes.body.sites[0].id;
+    expect(supabase._state.siteMemberships).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        site_id: siteId,
+        user_id: register.body.user.id
+      })
+    ]));
   });
 
   test('register/login still link and return a site when only the legacy sites schema is available', async () => {

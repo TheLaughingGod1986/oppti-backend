@@ -519,6 +519,25 @@ async function findSiteById(supabase, siteId) {
   return data || null;
 }
 
+async function findSitesByLicenseKey(supabase, licenseKey) {
+  if (!supabase || !licenseKey) return [];
+
+  const { data, error } = await supabase
+    .from('sites')
+    .select(SITE_SELECT)
+    .eq('license_key', licenseKey);
+
+  if (error) {
+    logger.warn('[billing] site lookup by license key failed', {
+      licenseKey,
+      error: error.message
+    });
+    return [];
+  }
+
+  return Array.isArray(data) ? data.filter((site) => site?.id) : [];
+}
+
 async function findSiteByStripeSubscriptionId(supabase, stripeSubscriptionId) {
   if (!supabase || !stripeSubscriptionId) return null;
 
@@ -802,6 +821,8 @@ async function resolveIdentityContext({
   const licenseKey = extractMetadataValue(metadata, ['license_key', 'licenseKey']);
   const siteId = extractMetadataValue(metadata, ['site_id', 'siteId']);
   const siteHash = extractMetadataValue(metadata, ['site_hash', 'siteHash']);
+  const siteUrl = extractMetadataValue(metadata, ['site_url', 'siteUrl']);
+  const siteFingerprint = extractMetadataValue(metadata, ['site_fingerprint', 'siteFingerprint', 'fingerprint']);
 
   let account = null;
   let site = null;
@@ -898,6 +919,66 @@ async function resolveIdentityContext({
     account = await findAccountByEmail(supabase, email);
     if (account) {
       resolutionSource = 'email';
+    }
+  }
+
+  if (!site && siteHash) {
+    const resolved = await resolveCanonicalSite(supabase, buildSiteIdentity({
+      siteHash,
+      installUuid: siteHash,
+      siteUrl,
+      siteFingerprint,
+      allowDevelopment: true
+    }), {
+      createIfMissing: true,
+      legacyLicenseKey: licenseKey || account?.license_key || null,
+      account
+    });
+
+    if (resolved?.site) {
+      site = resolved.site;
+      resolutionSource = resolutionSource === 'unresolved' ? 'site_hash' : resolutionSource;
+      logger.info('[billing] canonical billing site resolved', {
+        site_id: site.id,
+        site_hash: site.site_hash || siteHash || null,
+        matched_by: resolved.matchedBy || null,
+        created: Boolean(resolved.created),
+        license_key: licenseKey || account?.license_key || null
+      });
+    } else if (resolved?.error) {
+      logger.error('[billing] canonical billing site resolution failed', {
+        site_hash: siteHash,
+        site_url: siteUrl || null,
+        license_key: licenseKey || account?.license_key || null,
+        error: resolved.error,
+        site_write_error: resolved.diagnostics?.site_write_error || null
+      });
+    }
+  }
+
+  if (!site) {
+    const siteLicenseKey = licenseKey || account?.license_key || null;
+    const licenseSites = await findSitesByLicenseKey(supabase, siteLicenseKey);
+    if (licenseSites.length === 1) {
+      site = licenseSites[0];
+      resolutionSource = resolutionSource === 'unresolved' ? 'license_sites' : resolutionSource;
+      logger.info('[billing] canonical billing site resolved from license', {
+        site_id: site.id,
+        site_hash: site.site_hash || null,
+        license_key: siteLicenseKey
+      });
+    } else if (licenseSites.length > 1) {
+      logger.warn('[billing] billing site resolution ambiguous for license', {
+        license_key: siteLicenseKey,
+        candidate_site_ids: licenseSites.map((candidate) => candidate.id)
+      });
+    }
+  }
+
+  if (!account && site?.license_key) {
+    account = await findAccountByLicenseKey(supabase, site.license_key);
+    if (account && resolutionSource === 'unresolved') {
+      resolutionSource = 'site_hash';
     }
   }
 
@@ -1416,12 +1497,24 @@ async function reconcileSiteEntitlement({
   trace.site_subscription_rpc_error = reconciliation?.error
     ? reconciliation.error.message
     : null;
+  trace.subscriptions_written = Boolean(reconciliation?.data?.site_subscription_id);
   trace.billing_info_source = reconciliation?.skipped
     ? 'licenses'
     : 'site_subscriptions';
 
+  if (reconciliation?.skipped) {
+    logger.warn('[billing] site entitlement V2 skipped; using legacy billing fallback', {
+      stripeEventId,
+      siteId: site.id,
+      plan: eventProperties.plan,
+      purchaseType: eventProperties.purchase_type
+    });
+    return trace;
+  }
+
   if (reconciliation?.error) {
-    logger.warn('[billing] site entitlement reconciliation failed', {
+    trace.billing_info_source = 'licenses';
+    logger.warn('[billing] site entitlement V2 failed; using legacy billing fallback', {
       stripeEventId,
       siteId: site.id,
       plan: eventProperties.plan,
@@ -1452,7 +1545,8 @@ async function reconcileSiteEntitlement({
     stripeEventId,
     siteId: site.id,
     plan: eventProperties.plan,
-    purchaseType: eventProperties.purchase_type
+    purchaseType: eventProperties.purchase_type,
+    siteSubscriptionId: reconciliation?.data?.site_subscription_id || null
   });
 
   return trace;
@@ -1951,10 +2045,23 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         siteUrl: req.header('X-Site-URL') || null,
         siteFingerprint: req.header('X-Site-Fingerprint') || null
       }), {
-        createIfMissing: false,
+        createIfMissing: true,
         legacyLicenseKey: req.license?.license_key || null,
-        account: req.user || req.license || null
+        account: req.user || req.license || null,
+        requestId: req.id || null
       });
+
+      if (resolved.error) {
+        logger.error('[site] billing_subscription_site_healing_failed', {
+          request_id: req.id || null,
+          account_id: req.user?.id || req.license?.id || null,
+          site_hash: siteKey || null,
+          site_url: req.header('X-Site-URL') || null,
+          error: resolved.error,
+          site_write_error: resolved.diagnostics?.site_write_error || null,
+          membership_error: resolved.diagnostics?.membership?.error || null
+        });
+      }
 
       const fallbackSite = !resolved.site && siteKey
         ? await findSiteByHash(supabase, siteKey)

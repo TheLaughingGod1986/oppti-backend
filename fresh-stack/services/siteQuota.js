@@ -91,6 +91,11 @@ function isUniqueViolation(error) {
   return Boolean(error && error.code === '23505');
 }
 
+function normalizeTrialCredits(trialCredits = getAnonymousTrialLimit()) {
+  const parsed = Number(trialCredits || getAnonymousTrialLimit());
+  return Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : getAnonymousTrialLimit();
+}
+
 function isMissingSitesV2Schema(error) {
   return isMissingSchemaError(error);
 }
@@ -341,6 +346,49 @@ function truncateMatchValue(value) {
   if (value === null || value === undefined) return null;
   const normalized = String(value);
   return normalized.length > 255 ? `${normalized.slice(0, 255)}...` : normalized;
+}
+
+function logCanonicalSiteResolutionAttempt({
+  identity,
+  createIfMissing,
+  account,
+  requestId
+} = {}) {
+  logger.info('[site] canonical_site_resolution_attempted', {
+    request_id: requestId || null,
+    account_id: account?.id || null,
+    create_if_missing: Boolean(createIfMissing),
+    site_hash: identity?.siteHash || identity?.syntheticSiteHash || null,
+    install_uuid: identity?.wpInstallUuid || null,
+    site_url: identity?.siteUrl || identity?.normalizedSiteUrl || null,
+    canonical_domain: identity?.canonicalDomain || null,
+    site_fingerprint_present: Boolean(identity?.siteFingerprint)
+  });
+}
+
+function logCanonicalSiteResolutionFailed({
+  identity,
+  createIfMissing,
+  account,
+  requestId,
+  errorCode,
+  matchedBy = null
+} = {}) {
+  const level = errorCode === 'INVALID_SITE_IDENTITY' || errorCode === 'DEVELOPMENT_SITE_NOT_ALLOWED'
+    ? 'warn'
+    : 'error';
+  logger[level]('[site] canonical_site_resolution_failed', {
+    request_id: requestId || null,
+    account_id: account?.id || null,
+    create_if_missing: Boolean(createIfMissing),
+    error: errorCode || 'UNKNOWN_SITE_RESOLUTION_ERROR',
+    matched_by: matchedBy || null,
+    site_hash: identity?.siteHash || identity?.syntheticSiteHash || null,
+    install_uuid: identity?.wpInstallUuid || null,
+    site_url: identity?.siteUrl || identity?.normalizedSiteUrl || null,
+    canonical_domain: identity?.canonicalDomain || null,
+    site_fingerprint_present: Boolean(identity?.siteFingerprint)
+  });
 }
 
 async function findSiteMatch(supabase, column, value, {
@@ -978,7 +1026,21 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
     ? rawIdentity
     : buildSiteIdentity(rawIdentity);
 
+  logCanonicalSiteResolutionAttempt({
+    identity,
+    createIfMissing,
+    account,
+    requestId
+  });
+
   if (!identity.isValid) {
+    logCanonicalSiteResolutionFailed({
+      identity,
+      createIfMissing,
+      account,
+      requestId,
+      errorCode: identity.error || 'INVALID_SITE_IDENTITY'
+    });
     return {
       site: null,
       identity,
@@ -992,6 +1054,13 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
   }
 
   if (identity.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
+    logCanonicalSiteResolutionFailed({
+      identity,
+      createIfMissing,
+      account,
+      requestId,
+      errorCode: identity.error
+    });
     return {
       site: null,
       identity,
@@ -1076,6 +1145,13 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
         }
       });
 
+      logCanonicalSiteResolutionFailed({
+        identity,
+        createIfMissing,
+        account,
+        requestId,
+        errorCode: 'AMBIGUOUS_SITE_MATCH'
+      });
       return {
         site: null,
         identity,
@@ -1124,6 +1200,13 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
   }
 
   if (!createIfMissing) {
+    logCanonicalSiteResolutionFailed({
+      identity,
+      createIfMissing,
+      account,
+      requestId,
+      errorCode: 'SITE_NOT_FOUND'
+    });
     return {
       site: null,
       identity,
@@ -1141,13 +1224,30 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
         requestId
       });
       if (preInsertMatch.site) {
+        const preInsertResolvedSite = await followMergedSite(supabase, preInsertMatch.site);
+        const preInsertReconciledSite = await reconcileResolvedSite(supabase, preInsertResolvedSite, identity, {
+          legacyLicenseKey,
+          account,
+          diagnostics
+        });
+
+        if (account?.id && preInsertReconciledSite?.id) {
+          await ensureSiteMembership(supabase, {
+            siteId: preInsertReconciledSite.id,
+            userId: account.id,
+            role: preInsertReconciledSite.owner_user_id === account.id ? 'owner' : 'member',
+            invitedByUserId: account.id,
+            diagnostics
+          });
+        }
+
         logger.info('[siteQuota] Site creation short-circuited to existing site', {
-          site_id: preInsertMatch.site.id,
-          site_hash: preInsertMatch.site.site_hash,
-          site_url: preInsertMatch.site.site_url || identity.siteUrl || null
+          site_id: preInsertReconciledSite?.id || preInsertMatch.site.id,
+          site_hash: preInsertReconciledSite?.site_hash || preInsertMatch.site.site_hash,
+          site_url: preInsertReconciledSite?.site_url || preInsertMatch.site.site_url || identity.siteUrl || null
         });
         return {
-          site: preInsertMatch.site,
+          site: preInsertReconciledSite || preInsertMatch.site,
           identity,
           matchedBy: 'site_hash_preinsert',
           created: false,
@@ -1183,6 +1283,16 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
       });
     }
 
+    if (!createdSite) {
+      logCanonicalSiteResolutionFailed({
+        identity,
+        createIfMissing,
+        account,
+        requestId,
+        errorCode: 'SITE_CREATE_FAILED'
+      });
+    }
+
     return {
       site: createdSite,
       identity,
@@ -1203,6 +1313,13 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
       error: serializeSupabaseError(error)
     };
     if (isMissingSchemaError(error)) {
+      logCanonicalSiteResolutionFailed({
+        identity,
+        createIfMissing,
+        account,
+        requestId,
+        errorCode: 'SITE_QUOTA_V2_UNAVAILABLE'
+      });
       return {
         site: null,
         identity,
@@ -1212,6 +1329,13 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
         diagnostics: finalizeSiteDiagnostics(diagnostics)
       };
     }
+    logCanonicalSiteResolutionFailed({
+      identity,
+      createIfMissing,
+      account,
+      requestId,
+      errorCode: 'SITE_CREATE_FAILED'
+    });
     return {
       site: null,
       identity,
@@ -1276,12 +1400,79 @@ async function selectCurrentSiteQuota(supabase, siteId, { quotaPeriodStart, quot
   return data || null;
 }
 
+async function ensureCurrentSiteQuota(supabase, siteId, {
+  quotaPeriodStart,
+  quotaPeriodEnd,
+  monthlyIncludedCredits
+} = {}) {
+  if (!supabase || !siteId || !quotaPeriodStart || !quotaPeriodEnd) return null;
+
+  const existing = await selectCurrentSiteQuota(supabase, siteId, { quotaPeriodStart, quotaPeriodEnd });
+  if (existing) return existing;
+
+  const now = new Date().toISOString();
+  const parsedIncludedCredits = Number(monthlyIncludedCredits || 0);
+  const includedCredits = Number.isFinite(parsedIncludedCredits)
+    ? Math.max(0, parsedIncludedCredits)
+    : 0;
+  const payload = {
+    site_id: siteId,
+    quota_period_start: quotaPeriodStart,
+    quota_period_end: quotaPeriodEnd,
+    monthly_included_credits: includedCredits,
+    purchased_credits_balance: 0,
+    bonus_credits_balance: 0,
+    used_credits: 0,
+    remaining_credits: includedCredits,
+    reset_source: 'quota_read_healing',
+    created_at: now,
+    updated_at: now
+  };
+
+  const { data, error } = await supabase
+    .from('site_quotas')
+    .insert(payload)
+    .select('id, site_id, quota_period_start, quota_period_end, monthly_included_credits, purchased_credits_balance, bonus_credits_balance, used_credits, remaining_credits, reset_source')
+    .single();
+
+  if (error && isUniqueViolation(error)) {
+    logger.info('[siteQuota] site quota init reused existing row after unique race', {
+      site_id: siteId,
+      quota_period_start: quotaPeriodStart,
+      quota_period_end: quotaPeriodEnd
+    });
+    return selectCurrentSiteQuota(supabase, siteId, { quotaPeriodStart, quotaPeriodEnd });
+  }
+
+  if (error) {
+    logger.error('[siteQuota] site quota init failed', {
+      site_id: siteId,
+      quota_period_start: quotaPeriodStart,
+      quota_period_end: quotaPeriodEnd,
+      monthly_included_credits: includedCredits,
+      error: serializeSupabaseError(error)
+    });
+    return null;
+  }
+
+  logger.info('[siteQuota] site quota initialized', {
+    site_id: siteId,
+    quota_period_start: quotaPeriodStart,
+    quota_period_end: quotaPeriodEnd,
+    monthly_included_credits: includedCredits
+  });
+
+  return data || payload;
+}
+
 async function selectLatestTrial(supabase, siteId) {
   if (!supabase || !siteId) return null;
   const { data, error } = await supabase
     .from('site_trials')
-    .select('id, site_id, trial_type, total_trial_credits, used_trial_credits, status, started_at, exhausted_at')
+    .select('id, site_id, trial_type, total_trial_credits, used_trial_credits, status, started_at, exhausted_at, created_at')
     .eq('site_id', siteId)
+    .eq('trial_type', 'initial')
+    .order('status', { ascending: true })
     .order('created_at', { ascending: false })
     .limit(1);
 
@@ -1294,6 +1485,107 @@ async function selectLatestTrial(supabase, siteId) {
   }
 
   return Array.isArray(data) && data.length ? data[0] : null;
+}
+
+async function ensureInitialSiteTrial(supabase, siteId, {
+  trialCredits = getAnonymousTrialLimit(),
+  requestId = null
+} = {}) {
+  if (!supabase || !siteId) {
+    return {
+      data: null,
+      created: false,
+      error: 'SITE_NOT_FOUND',
+      status: 404,
+      message: 'Site id required for trial initialization'
+    };
+  }
+
+  const existing = await selectLatestTrial(supabase, siteId);
+  if (existing) {
+    logger.info('[siteQuota] site trial reused', {
+      site_id: siteId,
+      request_id: requestId || null,
+      trial_id: existing.id || null,
+      status: existing.status || null,
+      used_trial_credits: existing.used_trial_credits ?? null,
+      total_trial_credits: existing.total_trial_credits ?? null
+    });
+    return {
+      data: existing,
+      created: false,
+      error: null
+    };
+  }
+
+  const normalizedTrialCredits = normalizeTrialCredits(trialCredits);
+  const now = new Date().toISOString();
+  const payload = {
+    site_id: siteId,
+    trial_type: 'initial',
+    total_trial_credits: normalizedTrialCredits,
+    used_trial_credits: 0,
+    status: 'active',
+    started_at: now,
+    created_at: now,
+    updated_at: now
+  };
+
+  const { data, error } = await supabase
+    .from('site_trials')
+    .insert(payload)
+    .select('id, site_id, trial_type, total_trial_credits, used_trial_credits, status, started_at, exhausted_at, created_at')
+    .single();
+
+  if (error && isUniqueViolation(error)) {
+    const racedTrial = await selectLatestTrial(supabase, siteId);
+    if (racedTrial) {
+      logger.info('[siteQuota] site trial init reused existing row after unique race', {
+        site_id: siteId,
+        request_id: requestId || null,
+        trial_id: racedTrial.id || null
+      });
+      return {
+        data: racedTrial,
+        created: false,
+        error: null
+      };
+    }
+  }
+
+  if (error) {
+    const errorCode = isMissingSchemaError(error)
+      ? 'SITE_QUOTA_V2_UNAVAILABLE'
+      : 'SITE_TRIAL_INIT_FAILED';
+    logger.error('[siteQuota] site trial init failed', {
+      site_id: siteId,
+      request_id: requestId || null,
+      trial_credits: normalizedTrialCredits,
+      error_code: errorCode,
+      error: serializeSupabaseError(error)
+    });
+    return {
+      data: null,
+      created: false,
+      error: errorCode,
+      status: 500,
+      message: error.message || 'Site trial initialization failed',
+      rawError: error
+    };
+  }
+
+  logger.info('[siteQuota] site trial initialized', {
+    site_id: siteId,
+    request_id: requestId || null,
+    trial_id: data?.id || null,
+    trial_credits: normalizedTrialCredits
+  });
+
+  return {
+    data: data || payload,
+    created: true,
+    error: null
+  };
 }
 
 function resolveQuotaWindowFromSubscription(subscription, now = new Date()) {
@@ -1318,6 +1610,7 @@ async function getSiteQuotaStatus(supabase, {
   licenseKey = null,
   siteIdentity,
   createIfMissing = false,
+  quotaMode = 'site',
   requestId = null
 } = {}) {
   const resolved = await resolveCanonicalSite(supabase, siteIdentity, {
@@ -1343,13 +1636,34 @@ async function getSiteQuotaStatus(supabase, {
   const effectivePlanId = subscription?.plan_id || legacyAccount?.plan || 'free';
   const plan = await selectPlan(supabase, effectivePlanId);
   const quotaWindow = resolveQuotaWindowFromSubscription(subscription);
-  const siteQuota = await selectCurrentSiteQuota(supabase, site.id, quotaWindow);
-  const trial = await selectLatestTrial(supabase, site.id);
+  const monthlyIncludedCredits = plan?.monthly_included_credits ?? getLimits(effectivePlanId).credits;
+  const siteQuota = await ensureCurrentSiteQuota(supabase, site.id, {
+    ...quotaWindow,
+    monthlyIncludedCredits
+  });
+  let trial = null;
+  if (quotaMode === 'trial') {
+    const trialInit = await ensureInitialSiteTrial(supabase, site.id, {
+      trialCredits: getAnonymousTrialLimit(),
+      requestId
+    });
+    if (trialInit.error) {
+      return {
+        error: trialInit.error,
+        status: trialInit.status || 500,
+        message: trialInit.message || 'Site trial unavailable',
+        site
+      };
+    }
+    trial = trialInit.data;
+  } else {
+    trial = await selectLatestTrial(supabase, site.id);
+  }
   const totalLimit = siteQuota
     ? Number(siteQuota.monthly_included_credits || 0)
       + Number(siteQuota.purchased_credits_balance || 0)
       + Number(siteQuota.bonus_credits_balance || 0)
-    : (plan?.monthly_included_credits ?? getLimits(effectivePlanId).credits);
+    : monthlyIncludedCredits;
   const creditsUsed = siteQuota?.used_credits || 0;
   const creditsRemaining = siteQuota?.remaining_credits ?? Math.max(totalLimit - creditsUsed, 0);
 
@@ -1371,9 +1685,11 @@ async function getSiteQuotaStatus(supabase, {
       site_hash: site.site_hash,
       quota_period_start: quotaWindow.quotaPeriodStart,
       quota_period_end: quotaWindow.quotaPeriodEnd,
-      monthly_included_credits: siteQuota?.monthly_included_credits ?? plan?.monthly_included_credits ?? getLimits(effectivePlanId).credits,
+      monthly_included_credits: siteQuota?.monthly_included_credits ?? monthlyIncludedCredits,
       purchased_credits_balance: siteQuota?.purchased_credits_balance ?? 0,
-      bonus_credits_balance: siteQuota?.bonus_credits_balance ?? 0
+      bonus_credits_balance: siteQuota?.bonus_credits_balance ?? 0,
+      used_credits: siteQuota?.used_credits ?? creditsUsed,
+      remaining_credits: siteQuota?.remaining_credits ?? creditsRemaining
     },
     trial: trial
       ? {
@@ -1418,6 +1734,22 @@ async function reserveSiteCredits(supabase, {
     };
   }
 
+  const trialCredits = getAnonymousTrialLimit();
+  if (quotaMode === 'trial') {
+    const trialInit = await ensureInitialSiteTrial(supabase, resolved.site.id, {
+      trialCredits,
+      requestId
+    });
+    if (trialInit.error) {
+      return {
+        error: trialInit.error,
+        status: trialInit.status || 500,
+        message: trialInit.message || 'Site trial initialization failed',
+        site: resolved.site
+      };
+    }
+  }
+
   const rpcPayload = {
     p_site_id: resolved.site.id,
     p_user_id: account?.id || null,
@@ -1426,7 +1758,7 @@ async function reserveSiteCredits(supabase, {
     p_request_fingerprint: requestFingerprint || null,
     p_request_metadata: requestMetadata || {},
     p_quota_mode: quotaMode === 'trial' ? 'trial' : 'site',
-    p_trial_credits: getAnonymousTrialLimit()
+    p_trial_credits: trialCredits
   };
 
   const { data, error } = await supabase.rpc('bbai_reserve_site_generation', rpcPayload);
@@ -1725,6 +2057,7 @@ module.exports = {
   fetchAccountByLicenseKey,
   getSiteQuotaStatus,
   hashRequestFingerprint,
+  ensureInitialSiteTrial,
   isMissingSchemaError,
   recordSiteAudit,
   reconcileBillingEntitlement,

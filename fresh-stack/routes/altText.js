@@ -470,6 +470,7 @@ function createAltTextRouter({
             account: req.user || req.license || null,
             licenseKey,
             siteIdentity,
+            quotaMode: req.trialMode ? 'trial' : 'site',
             requestId: req.id || null
           });
           if (req.trialMode) {
@@ -591,6 +592,7 @@ function createAltTextRouter({
         account: req.user || req.license || null,
         licenseKey,
         siteIdentity,
+        quotaMode: 'trial',
         requestId: req.id || null
       });
       trialAtRequestStart =
@@ -687,6 +689,7 @@ function createAltTextRouter({
             account: req.user || req.license || null,
             licenseKey,
             siteIdentity,
+            quotaMode: 'trial',
             requestId: req.id || null
           });
           trialInfo = await getAnonymousTrialStatus(supabase, {
@@ -908,39 +911,51 @@ function createAltTextRouter({
 
     // Record usage/credits
     let usageResult = { error: null };
+    let trialUsageResult = null;
     const effectiveSite = reservation.site || null;
     const effectiveLicenseKey = effectiveSite?.license_key || licenseKey || null;
 
     if (req.trialMode) {
-      // Trial mode: insert into trial_usage table (no foreign key constraints).
-      const trialPayload = {
-        site_hash: siteIdentity.siteHash || req.trialSiteHash,
-        site_fingerprint: siteIdentity.siteFingerprint || req.header('X-Site-Fingerprint') || null,
-        site_url: siteIdentity.siteUrl || req.header('X-Site-URL') || null,
-        anon_id: anonymousContext.anonId || null,
-        anonymous_risk_key: anonymousContext.riskKey || null,
-        ip_hash: anonymousContext.ipHash || null,
-        prompt_tokens: usage?.prompt_tokens || null,
-        completion_tokens: usage?.completion_tokens || null,
-        total_tokens: usage?.total_tokens || null,
-        model_used: meta?.modelUsed || null,
-        generation_time_ms: meta?.generation_time_ms || null,
-        image_filename: normalized.filename || null
-      };
-      logger.info('[altText] Recording anonymous trial usage', {
-        site_hash: trialPayload.site_hash,
-        anon_id: anonymousContext.anonId || null,
-        risk_key: anonymousContext.riskKey || null
-      });
-      const { error } = await recordLegacyTrialUsage(supabase, trialPayload);
-      if (error) {
-        logger.error('[altText] Failed to record anonymous trial usage', {
+      if (reservation.reservation?.quota_source === 'legacy_trial') {
+        const trialPayload = {
+          site_hash: siteIdentity.siteHash || req.trialSiteHash,
+          site_fingerprint: siteIdentity.siteFingerprint || req.header('X-Site-Fingerprint') || null,
+          site_url: siteIdentity.siteUrl || req.header('X-Site-URL') || null,
+          anon_id: anonymousContext.anonId || null,
+          anonymous_risk_key: anonymousContext.riskKey || null,
+          ip_hash: anonymousContext.ipHash || null,
+          prompt_tokens: usage?.prompt_tokens || null,
+          completion_tokens: usage?.completion_tokens || null,
+          total_tokens: usage?.total_tokens || null,
+          model_used: meta?.modelUsed || null,
+          generation_time_ms: meta?.generation_time_ms || null,
+          image_filename: normalized.filename || null
+        };
+        logger.warn('[altText] Recording anonymous trial usage via legacy fallback', {
           site_hash: trialPayload.site_hash,
           anon_id: anonymousContext.anonId || null,
-          error: serializeSupabaseError(error)
+          risk_key: anonymousContext.riskKey || null,
+          quota_source: reservation.reservation?.quota_source || null
+        });
+        const { error } = await recordLegacyTrialUsage(supabase, trialPayload);
+        if (error) {
+          logger.error('[altText] Failed to record anonymous trial usage', {
+            site_hash: trialPayload.site_hash,
+            anon_id: anonymousContext.anonId || null,
+            error: serializeSupabaseError(error)
+          });
+        }
+        usageResult = { error };
+        trialUsageResult = usageResult;
+      } else {
+        logger.info('[altText] Anonymous trial usage recorded by V2 site_trials', {
+          site_hash: effectiveSite?.site_hash || siteIdentity.siteHash || req.trialSiteHash,
+          site_id: effectiveSite?.id || reservation.site?.id || null,
+          anon_id: anonymousContext.anonId || null,
+          quota_source: reservation.reservation?.quota_source || null,
+          generation_request_id: reservation.reservation?.generation_request_id || null
         });
       }
-      usageResult = { error };
     } else {
       // Normal flow: record in usage_logs with license tracking.
       let licenseId = null;
@@ -1039,7 +1054,7 @@ function createAltTextRouter({
       effectiveLicenseKey,
       userInfo,
       usageWrite: req.trialMode ? null : usageResult,
-      trialWrite: req.trialMode ? usageResult : null,
+      trialWrite: req.trialMode ? trialUsageResult : null,
       finalizeResult,
       finalResultState: 'succeeded'
     });
@@ -1056,6 +1071,7 @@ function createAltTextRouter({
       account: req.user || req.license || null,
       licenseKey: effectiveLicenseKey,
       siteIdentity,
+      quotaMode: req.trialMode ? 'trial' : 'site',
       requestId: req.id || null
     });
 

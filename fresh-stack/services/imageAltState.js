@@ -369,12 +369,30 @@ async function resolveImageAltStateSiteContext(supabase, req, { createIfMissing 
     };
   }
 
+  const shouldCreateIfMissing = Boolean(
+    createIfMissing
+    || (account && siteIdentity?.isValid)
+    || (licenseKey && siteIdentity?.isValid)
+  );
   const resolved = await resolveCanonicalSite(supabase, siteIdentity, {
-    createIfMissing,
+    createIfMissing: shouldCreateIfMissing,
     legacyLicenseKey: licenseKey,
     account,
     requestId: req?.id || null
   });
+
+  if (resolved.error) {
+    logger.error('[site] image_state_site_healing_failed', {
+      request_id: req?.id || null,
+      account_id: account?.id || null,
+      create_if_missing: shouldCreateIfMissing,
+      site_hash: siteIdentity.siteHash || null,
+      site_url: siteIdentity.siteUrl || null,
+      error: resolved.error,
+      site_write_error: resolved.diagnostics?.site_write_error || null,
+      membership_error: resolved.diagnostics?.membership?.error || null
+    });
+  }
 
   return {
     ...resolved,
@@ -475,8 +493,9 @@ async function resolveImageAltStateSyncTarget(supabase, {
   }
 
   if (siteIdentity?.isValid && siteIdentity?.error !== 'INVALID_SITE_IDENTITY') {
+    const shouldCreateIfMissing = Boolean(account?.id || account?.license_key || licenseKey);
     const resolved = await resolveCanonicalSite(supabase, siteIdentity, {
-      createIfMissing: false,
+      createIfMissing: shouldCreateIfMissing,
       legacyLicenseKey: licenseKey,
       account,
       requestId: null
@@ -488,6 +507,18 @@ async function resolveImageAltStateSyncTarget(supabase, {
         siteIdentity,
         error: null
       };
+    }
+
+    if (resolved?.error) {
+      logger.error('[site] image_state_sync_target_healing_failed', {
+        account_id: account?.id || null,
+        create_if_missing: shouldCreateIfMissing,
+        site_hash: siteIdentity.siteHash || null,
+        site_url: siteIdentity.siteUrl || null,
+        error: resolved.error,
+        site_write_error: resolved.diagnostics?.site_write_error || null,
+        membership_error: resolved.diagnostics?.membership?.error || null
+      });
     }
 
     if (resolved?.error && resolved.error !== 'SITE_NOT_FOUND') {

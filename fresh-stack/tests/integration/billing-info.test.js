@@ -359,6 +359,14 @@ describe('billing truth-source cleanup', () => {
       site_hash: 'site_hash_paid',
       stripe_subscription_id: 'sub_paid'
     }));
+    expect(resolveCanonicalSite).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        createIfMissing: true,
+        legacyLicenseKey: 'lic_paid'
+      })
+    );
   });
 
   test('GET /billing/subscription falls back to licenses for free state when no active site subscription exists', async () => {
