@@ -7,6 +7,7 @@ jest.mock('../../services/quota', () => ({
 
 const { getQuotaStatus } = require('../../services/quota');
 const { createDashboardRouter } = require('../../routes/dashboard');
+const { resolveDashboardState } = require('../../services/dashboardStateTruth');
 
 function buildQuery(rows, error = null) {
   const state = { rows: Array.isArray(rows) ? rows.slice() : [] };
@@ -57,7 +58,9 @@ function buildQuery(rows, error = null) {
 
 function createSupabaseMock({
   imageAltStates = [],
+  imageAltStatesError = null,
   auditLogs = [],
+  auditLogsError = null,
   generationRequests = []
 } = {}) {
   return {
@@ -65,7 +68,7 @@ function createSupabaseMock({
       if (table === 'image_alt_states') {
         return {
           select(columns, options = {}) {
-            return buildQuery(imageAltStates).select(columns, options);
+            return buildQuery(imageAltStates, imageAltStatesError).select(columns, options);
           }
         };
       }
@@ -73,7 +76,7 @@ function createSupabaseMock({
       if (table === 'site_audit_logs') {
         return {
           select() {
-            return buildQuery(auditLogs);
+            return buildQuery(auditLogs, auditLogsError);
           }
         };
       }
@@ -431,7 +434,7 @@ describe('GET /dashboard/state-truth', () => {
     expect(res.body.resolution.job_source).toBe('generation_requests');
   });
 
-  test('returns ERROR instead of guessing ALL_CLEAR when no authoritative count source exists', async () => {
+  test('returns MISSING_ALT instead of ERROR when no authoritative count source exists', async () => {
     mockQuotaStatus();
     const app = createApp({
       supabase: createSupabaseMock()
@@ -440,7 +443,92 @@ describe('GET /dashboard/state-truth', () => {
     const res = await request(app).get('/dashboard/state-truth').set('X-Site-Key', 'site-hash-1');
 
     expect(res.status).toBe(200);
-    expect(res.body.state).toBe('ERROR');
+    expect(res.body.state).toBe('MISSING_ALT');
+    expect(res.body.counts).toEqual({
+      missing: 0,
+      to_review: 0,
+      optimized: 0,
+      total_attention: 0
+    });
+    expect(res.body.resolution.state_source).toBe('counts.unavailable_assumed_missing');
     expect(res.body.resolution.count_source).toBe('site_audit_logs:none');
+  });
+
+  test('returns MISSING_ALT when image_alt_states is unavailable but quota and site are valid', async () => {
+    mockQuotaStatus();
+    const app = createApp({
+      supabase: null
+    });
+
+    const res = await request(app).get('/dashboard/state-truth').set('X-Site-Key', 'site-hash-1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.state).not.toBe('ERROR');
+    expect(res.body.state).toBe('MISSING_ALT');
+    expect(res.body.site.linked).toBe(true);
+    expect(res.body.credits).toEqual({
+      limit: 50,
+      used: 10,
+      remaining: 40,
+      exhausted: false,
+      source: 'license'
+    });
+    expect(res.body.job.status).toBe('IDLE');
+    expect(res.body.resolution.count_source).toBe('image_alt_states_unavailable');
+  });
+
+  test('treats null counts as safe fallback data when quota and job are healthy', () => {
+    const resolved = resolveDashboardState({
+      counts: null,
+      job: { status: 'IDLE', active: false, stale: false },
+      credits: { exhausted: false }
+    });
+
+    expect(resolved).toEqual({
+      state: 'MISSING_ALT',
+      source: 'counts.unavailable_assumed_missing'
+    });
+  });
+
+  test('returns ERROR for explicit generation request failures', async () => {
+    mockQuotaStatus();
+    const app = createApp({
+      supabase: createSupabaseMock({
+        imageAltStates: buildImageAltStates({ approved: 4 }),
+        generationRequests: [
+          {
+            id: 'gen-failed',
+            site_id: 'site-1',
+            status: 'failed',
+            created_at: new Date().toISOString(),
+            finalized_at: new Date().toISOString()
+          }
+        ]
+      })
+    });
+
+    const res = await request(app).get('/dashboard/state-truth').set('X-Site-Key', 'site-hash-1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe('ERROR');
+    expect(res.body.job.status).toBe('FAILED');
+    expect(res.body.resolution.state_source).toBe('job.failed');
+    expect(res.body.resolution.count_source).toBe('image_alt_states');
+  });
+
+  test('returns ERROR for backend count query failures', async () => {
+    mockQuotaStatus();
+    const app = createApp({
+      supabase: createSupabaseMock({
+        imageAltStatesError: new Error('image_alt_states count failed')
+      })
+    });
+
+    const res = await request(app).get('/dashboard/state-truth').set('X-Site-Key', 'site-hash-1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe('ERROR');
+    expect(res.body.resolution.state_source).toBe('counts.error');
+    expect(res.body.resolution.count_source).toBe('image_alt_states_error');
   });
 });

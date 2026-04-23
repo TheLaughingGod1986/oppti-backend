@@ -378,28 +378,48 @@ function buildCredits(status = {}) {
   };
 }
 
-function resolveDashboardState({ counts, job, credits }) {
-  if (credits.exhausted) {
+function isCountBackendFailure(counts = {}) {
+  return counts?.source === 'image_alt_states_error';
+}
+
+function isExplicitGenerationFailure(job = {}) {
+  return job?.status === 'FAILED' && job?.stale !== true;
+}
+
+function resolveDashboardState({ counts, job, credits } = {}) {
+  const safeCounts = counts || buildZeroCounts();
+  const safeJob = job || buildIdleJob();
+  const safeCredits = credits || {};
+
+  if (safeCredits.exhausted) {
     return { state: 'QUOTA_EXHAUSTED', source: 'credits.exhausted' };
   }
 
-  if (job.active && job.status === 'QUEUED') {
+  if (isExplicitGenerationFailure(safeJob)) {
+    return { state: 'ERROR', source: 'job.failed' };
+  }
+
+  if (safeJob.active && safeJob.status === 'QUEUED') {
     return { state: 'QUEUED', source: 'job.queued' };
   }
 
-  if (job.active && job.status === 'PROCESSING') {
+  if (safeJob.active && safeJob.status === 'PROCESSING') {
     return { state: 'PROCESSING', source: 'job.processing' };
   }
 
-  if (!counts.available) {
-    return { state: 'ERROR', source: 'counts.unavailable' };
+  if (isCountBackendFailure(safeCounts)) {
+    return { state: 'ERROR', source: 'counts.error' };
   }
 
-  if (Number(counts.to_review) > 0) {
+  if (!safeCounts.available) {
+    return { state: 'MISSING_ALT', source: 'counts.unavailable_assumed_missing' };
+  }
+
+  if (Number(safeCounts.to_review) > 0) {
     return { state: 'NEEDS_REVIEW', source: 'counts.to_review' };
   }
 
-  if (Number(counts.missing) > 0) {
+  if (Number(safeCounts.missing) > 0) {
     return { state: 'MISSING_ALT', source: 'counts.missing' };
   }
 
