@@ -12,12 +12,38 @@ function logV2Fallback(message, details = {}) {
   logger.warn(`[V2_FALLBACK] ${message}`, details);
 }
 
+function maskLicenseKeyForAudit(licenseKey) {
+  if (!licenseKey) return null;
+  const normalized = String(licenseKey);
+  return normalized.length > 8 ? `${normalized.substring(0, 8)}...` : normalized;
+}
+
+function toAuditIsoString(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
+}
+
+function toAuditNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function logCreditsAudit(message, details = {}, level = 'info') {
+  logger[level](`[bbai-credits] ${message}`, details);
+}
+
 /**
  * Calculate reset date and quota status for a license.
  * IMPORTANT: If siteHash is provided, looks up the site's actual license to ensure
  * all WordPress users on the same site share the same quota.
  */
-async function getLegacyQuotaStatus(supabase, { licenseKey, siteHash }) {
+async function getLegacyQuotaStatus(supabase, {
+  licenseKey,
+  siteHash,
+  requestId = null,
+  accountId = null
+} = {}) {
   const now = new Date();
 
   // If siteHash provided, look up the site's actual license for credit sharing
@@ -59,19 +85,45 @@ async function getLegacyQuotaStatus(supabase, { licenseKey, siteHash }) {
   const periodEnd = new Date(periodStart);
   periodEnd.setMonth(periodEnd.getMonth() + 1);
 
+  const auditContext = {
+    request_id: requestId || null,
+    account_id: accountId || null,
+    license_key_prefix: maskLicenseKeyForAudit(license.license_key),
+    site_hash: siteHash || null,
+    period_start: toAuditIsoString(periodStart),
+    period_end: toAuditIsoString(periodEnd)
+  };
+
+  logCreditsAudit('period_selected', {
+    ...auditContext,
+    source_path: 'legacy',
+    lookup_key: siteHash ? 'site_hash' : 'license_key'
+  });
+
   // Prefer quota_summaries if present
-  const { data: summary } = await supabase
+  const { data: summary, error: summaryError } = await supabase
     .from('quota_summaries')
     .select('*')
     .eq('license_key', license.license_key)
     .eq('period_start', periodStart.toISOString())
     .maybeSingle();
 
+  logCreditsAudit('rows_found', {
+    ...auditContext,
+    source_candidate: 'quota_summaries',
+    lookup_key: 'license_key+period_start',
+    rows_found: summary ? 1 : 0,
+    credits_used_candidate: toAuditNumber(summary?.total_credits_used, 0),
+    error: summaryError ? serializeSupabaseError(summaryError) : null
+  }, summaryError ? 'warn' : 'info');
+
   const totalLimit = limits.credits;
 
   // If no summary exists, count usage directly from usage_logs
   let creditsUsed = summary?.total_credits_used || 0;
   let siteUsageFromLogs = {};
+  let selectedSource = summary ? 'quota_summaries' : 'fallback/default path';
+  let fallbackReason = summary ? null : 'quota_summary_missing';
 
   if (!summary || summary.total_credits_used === 0) {
     // Fallback: aggregate from usage_logs for this billing period
@@ -92,6 +144,11 @@ async function getLegacyQuotaStatus(supabase, { licenseKey, siteHash }) {
 
     const { data: usageLogs, error: usageError } = await usageQuery;
 
+    const usageRowsFound = Array.isArray(usageLogs) ? usageLogs.length : 0;
+    const usageCredits = Array.isArray(usageLogs)
+      ? usageLogs.reduce((sum, log) => sum + toAuditNumber(log?.credits_used, 1), 0)
+      : 0;
+
     const quotaLogData = {
       siteHash: siteHash || 'none',
       license_key: license.license_key.substring(0, 8) + '...',
@@ -106,6 +163,15 @@ async function getLegacyQuotaStatus(supabase, { licenseKey, siteHash }) {
       logger.info('[Quota] Fallback usage query', quotaLogData);
     }
 
+    logCreditsAudit('rows_found', {
+      ...auditContext,
+      source_candidate: 'usage_logs',
+      lookup_key: siteHash ? 'site_hash' : 'license_key',
+      rows_found: usageRowsFound,
+      credits_used_candidate: usageCredits,
+      error: usageError ? serializeSupabaseError(usageError) : null
+    }, usageError ? 'warn' : 'info');
+
     if (usageLogs && usageLogs.length > 0) {
       creditsUsed = usageLogs.reduce((sum, log) => sum + (log.credits_used || 1), 0);
       // Build site usage map
@@ -119,6 +185,18 @@ async function getLegacyQuotaStatus(supabase, { licenseKey, siteHash }) {
         credits_used: creditsUsed,
         log_count: usageLogs.length
       });
+      selectedSource = 'usage_logs';
+      fallbackReason = !summary
+        ? 'quota_summary_missing'
+        : 'quota_summary_zero';
+    } else if (usageError) {
+      selectedSource = 'fallback/default path';
+      fallbackReason = `usage_logs_query_failed:${usageError.code || usageError.message || 'unknown'}`;
+    } else {
+      selectedSource = 'fallback/default path';
+      fallbackReason = !summary
+        ? 'quota_summary_missing_and_usage_logs_empty'
+        : 'quota_summary_zero_and_usage_logs_empty';
     }
   }
 
@@ -150,6 +228,15 @@ async function getLegacyQuotaStatus(supabase, { licenseKey, siteHash }) {
   const warningThreshold = 0.9;
   const isNearLimit = creditsUsed / effectiveTotalLimit >= warningThreshold;
 
+  logCreditsAudit('source_selected', {
+    ...auditContext,
+    source_selected: selectedSource,
+    used: toAuditNumber(creditsUsed, 0),
+    limit: toAuditNumber(effectiveTotalLimit, 0),
+    remaining: toAuditNumber(creditsRemaining, 0),
+    fallback_reason: fallbackReason
+  });
+
   return {
     plan_type: license.plan,
     license_status: license.status,
@@ -175,8 +262,26 @@ async function getQuotaStatus(supabase, {
   siteIdentity: prebuiltIdentity
 } = {}) {
   const hasSiteSignals = Boolean(siteHash || siteUrl || siteFingerprint || installUuid || prebuiltIdentity);
+
+  logCreditsAudit('input_identity', {
+    request_id: requestId || null,
+    account_id: account?.id || null,
+    license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
+    site_hash: siteHash || prebuiltIdentity?.siteHash || null,
+    site_url: siteUrl || prebuiltIdentity?.siteUrl || null,
+    site_fingerprint_present: Boolean(siteFingerprint || prebuiltIdentity?.siteFingerprint),
+    install_uuid: installUuid || prebuiltIdentity?.wpInstallUuid || null,
+    quota_mode: quotaMode,
+    has_site_signals: hasSiteSignals
+  });
+
   if (!hasSiteSignals) {
-    return getLegacyQuotaStatus(supabase, { licenseKey, siteHash });
+    return getLegacyQuotaStatus(supabase, {
+      licenseKey,
+      siteHash,
+      requestId,
+      accountId: account?.id || null
+    });
   }
 
   const hasAuthenticatedSiteContext = Boolean(
@@ -196,7 +301,20 @@ async function getQuotaStatus(supabase, {
     allowDevelopment: Boolean(isTrialQuotaMode || hasAuthenticatedSiteContext)
   });
   if (identity?.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
-    return getLegacyQuotaStatus(supabase, { licenseKey, siteHash: siteHash || identity.siteHash });
+    logCreditsAudit('fallback_reason', {
+      request_id: requestId || null,
+      account_id: account?.id || null,
+      license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
+      site_hash: siteHash || identity.siteHash || null,
+      source_selected: 'fallback/default path',
+      fallback_reason: 'development_site_not_allowed'
+    }, 'warn');
+    return getLegacyQuotaStatus(supabase, {
+      licenseKey,
+      siteHash: siteHash || identity.siteHash,
+      requestId,
+      accountId: account?.id || null
+    });
   }
 
   const siteStatus = await getSiteQuotaStatus(supabase, {
@@ -245,7 +363,20 @@ async function getQuotaStatus(supabase, {
     site_hash: siteHash || identity?.siteHash || null,
     license_key_prefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null
   });
-  return getLegacyQuotaStatus(supabase, { licenseKey, siteHash: siteHash || identity?.siteHash });
+  logCreditsAudit('fallback_reason', {
+    request_id: requestId || null,
+    account_id: account?.id || null,
+    license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
+    site_hash: siteHash || identity?.siteHash || null,
+    source_selected: 'fallback/default path',
+    fallback_reason: `site_quota_v2:${siteStatus.error}`
+  }, 'warn');
+  return getLegacyQuotaStatus(supabase, {
+    licenseKey,
+    siteHash: siteHash || identity?.siteHash,
+    requestId,
+    accountId: account?.id || null
+  });
 }
 
 /**

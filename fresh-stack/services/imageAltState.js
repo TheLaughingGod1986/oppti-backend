@@ -74,6 +74,16 @@ function buildDashboardCountsFromLedgerCounts(counts = {}) {
   };
 }
 
+function summarizeSyncImagesForLog(images = [], limit = 3) {
+  return (Array.isArray(images) ? images : [])
+    .slice(0, Math.max(1, limit))
+    .map((item) => ({
+      attachment_id: item?.attachment_id || item?.attachmentId || item?.image_id || item?.imageId || null,
+      current_state: item?.current_state || item?.currentState || null,
+      image_url: item?.image_url || item?.imageUrl || item?.image?.url || null
+    }));
+}
+
 function buildLedgerCoverage({
   counts = {},
   scope = LEDGER_SYNC_SCOPES.PARTIAL,
@@ -773,6 +783,16 @@ async function syncImageAltStates(supabase, {
     return { count: 0, errors: [{ error: 'SITE_ID_REQUIRED' }] };
   }
 
+  logger.info('[image-state] sync_started', {
+    site_id: siteId,
+    site_hash: siteHash || null,
+    scope,
+    request_id: requestId || null,
+    requested_rows: Array.isArray(images) ? images.length : 0,
+    allow_downgrade: Boolean(allowDowngrade),
+    sample_images: summarizeSyncImagesForLog(images)
+  });
+
   const { data: existingRows, error: existingError } = await listImageAltStatesForSite(supabase, siteId);
   if (existingError) {
     logger.error('[image-state] sync_failed', {
@@ -831,6 +851,18 @@ async function syncImageAltStates(supabase, {
       payload,
       forceState
     });
+  });
+
+  logger.info('[image-state] sync_normalized', {
+    site_id: siteId,
+    site_hash: siteHash || null,
+    request_id: requestId || null,
+    existing_row_count: existingRows.length,
+    requested_rows: Array.isArray(images) ? images.length : 0,
+    unique_images: normalizedRows.size,
+    duplicate_input_rows: duplicateInputRows,
+    error_count: errors.length,
+    sample_image_refs: Array.from(normalizedRows.keys()).slice(0, 5)
   });
 
   if (!normalizedRows.size) {
@@ -895,6 +927,21 @@ async function syncImageAltStates(supabase, {
   }
 
   if (rowsToWrite.length > 0) {
+    logger.info('[image-state] ledger_batch_write_started', {
+      table: 'image_alt_states',
+      site_id: siteId,
+      site_hash: siteHash || null,
+      row_count: rowsToWrite.length,
+      inserted_estimate: inserted,
+      updated_estimate: updated,
+      request_id: requestId || null,
+      sample_rows: rowsToWrite.slice(0, 5).map((row) => ({
+        image_ref: row.image_ref,
+        attachment_id: row.attachment_id || null,
+        current_state: row.current_state
+      }))
+    });
+
     const { error } = await supabase
       .from('image_alt_states')
       .upsert(rowsToWrite, { onConflict: 'site_id,image_ref' });

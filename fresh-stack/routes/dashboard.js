@@ -11,36 +11,58 @@ const {
   syncImageAltStates
 } = require('../services/imageAltState');
 
+const imageStateSyncItemSchema = z.object({
+  attachment_id: z.union([z.string(), z.number()]).optional(),
+  attachmentId: z.union([z.string(), z.number()]).optional(),
+  image_id: z.union([z.string(), z.number()]).optional(),
+  imageId: z.union([z.string(), z.number()]).optional(),
+  media_id: z.union([z.string(), z.number()]).optional(),
+  mediaId: z.union([z.string(), z.number()]).optional(),
+  image_url: z.string().optional(),
+  imageUrl: z.string().optional(),
+  filename: z.string().optional(),
+  fileName: z.string().optional(),
+  alt_text: z.string().optional(),
+  altText: z.string().optional(),
+  current_state: z.string().optional(),
+  currentState: z.string().optional(),
+  force_state: z.boolean().optional(),
+  forceState: z.boolean().optional(),
+  image: z.object({}).passthrough().optional(),
+  context: z.object({}).passthrough().optional(),
+  metadata: z.object({}).passthrough().optional(),
+  last_generated_at: z.string().optional(),
+  lastGeneratedAt: z.string().optional(),
+  last_reviewed_at: z.string().optional(),
+  lastReviewedAt: z.string().optional()
+});
+
 const imageStateSyncSchema = z.object({
   scope: z.enum(['full_site', 'partial']).optional(),
   allow_downgrade: z.boolean().optional(),
   allowDowngrade: z.boolean().optional(),
-  images: z.array(z.object({
-    attachment_id: z.union([z.string(), z.number()]).optional(),
-    attachmentId: z.union([z.string(), z.number()]).optional(),
-    image_id: z.union([z.string(), z.number()]).optional(),
-    imageId: z.union([z.string(), z.number()]).optional(),
-    media_id: z.union([z.string(), z.number()]).optional(),
-    mediaId: z.union([z.string(), z.number()]).optional(),
-    image_url: z.string().optional(),
-    imageUrl: z.string().optional(),
-    filename: z.string().optional(),
-    fileName: z.string().optional(),
-    alt_text: z.string().optional(),
-    altText: z.string().optional(),
-    current_state: z.string().optional(),
-    currentState: z.string().optional(),
-    force_state: z.boolean().optional(),
-    forceState: z.boolean().optional(),
-    image: z.object({}).passthrough().optional(),
-    context: z.object({}).passthrough().optional(),
-    metadata: z.object({}).passthrough().optional(),
-    last_generated_at: z.string().optional(),
-    lastGeneratedAt: z.string().optional(),
-    last_reviewed_at: z.string().optional(),
-    lastReviewedAt: z.string().optional()
-  })).min(1).max(500)
+  images: z.array(imageStateSyncItemSchema).min(1).max(500).optional(),
+  items: z.array(imageStateSyncItemSchema).min(1).max(500).optional()
+}).superRefine((value, ctx) => {
+  if ((!Array.isArray(value.images) || value.images.length === 0) && (!Array.isArray(value.items) || value.items.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['images'],
+      message: 'images array is required'
+    });
+  }
 });
+
+function summarizeSyncItemsForLog(items = [], limit = 3) {
+  return (Array.isArray(items) ? items : [])
+    .slice(0, Math.max(1, limit))
+    .map((item) => ({
+      attachment_id: item?.attachment_id || item?.attachmentId || item?.image_id || item?.imageId || null,
+      current_state: item?.current_state || item?.currentState || null,
+      image_url: item?.image_url || item?.imageUrl || item?.image?.url || null,
+      filename: item?.filename || item?.fileName || item?.image?.filename || null
+    }));
+}
 
 function createDashboardRouter({ supabase, getJobRecord = null }) {
   const router = express.Router();
@@ -78,11 +100,31 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
       });
     }
 
+    const images = Array.isArray(parsed.data.images) && parsed.data.images.length > 0
+      ? parsed.data.images
+      : (Array.isArray(parsed.data.items) ? parsed.data.items : []);
+
+    logger.info('[dashboard] image_state_sync_received', {
+      request_id: req.id || null,
+      image_count: images.length,
+      scope: parsed.data.scope || 'full_site',
+      payload_shape: Array.isArray(parsed.data.images) && parsed.data.images.length > 0 ? 'images' : 'items',
+      request_site_hash: req.header('X-Site-Key') || req.header('X-Site-Hash') || req.body?.site_hash || req.body?.site_id || null,
+      request_site_url: req.header('X-Site-URL') || req.body?.site_url || null,
+      sample_items: summarizeSyncItemsForLog(images)
+    });
+
     const resolved = await resolveImageAltStateSiteContext(supabase, req, {
       createIfMissing: true
     });
 
     if (resolved.error || !resolved.site?.id) {
+      logger.warn('[dashboard] image_state_sync_site_resolution_failed', {
+        request_id: req.id || null,
+        error: resolved.error || 'SITE_NOT_FOUND',
+        request_site_hash: req.header('X-Site-Key') || req.header('X-Site-Hash') || req.body?.site_hash || req.body?.site_id || null,
+        request_site_url: req.header('X-Site-URL') || req.body?.site_url || null
+      });
       return res.status(resolved.error === 'INVALID_SITE_IDENTITY' ? 400 : 404).json({
         success: false,
         error: resolved.error || 'SITE_NOT_FOUND',
@@ -92,10 +134,18 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
       });
     }
 
+    logger.info('[dashboard] image_state_sync_site_resolved', {
+      request_id: req.id || null,
+      site_id: resolved.site.id,
+      site_hash: resolved.site.site_hash || null,
+      matched_by: resolved.matchedBy || null,
+      created: Boolean(resolved.created)
+    });
+
     const result = await syncImageAltStates(supabase, {
       siteId: resolved.site.id,
       siteHash: resolved.site.site_hash || null,
-      images: parsed.data.images,
+      images,
       requestId: req.id || null,
       scope: parsed.data.scope || 'full_site',
       allowDowngrade: Boolean(parsed.data.allow_downgrade || parsed.data.allowDowngrade)
@@ -105,7 +155,7 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
       request_id: req.id || null,
       site_id: resolved.site.id,
       site_hash: resolved.site.site_hash || null,
-      updated_count: result.count,
+      changed_count: result.count,
       inserted: Number(result.inserted || 0),
       updated: Number(result.updated || 0),
       unchanged: Number(result.unchanged || 0),
@@ -118,7 +168,7 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
       data: {
         site_id: resolved.site.id,
         site_hash: resolved.site.site_hash || null,
-        updated: result.count,
+        updated: Number(result.updated || 0),
         inserted: Number(result.inserted || 0),
         changed: result.count,
         unchanged: Number(result.unchanged || 0),

@@ -21,6 +21,30 @@ function createQuery(rows, { countMode = false, error = null } = {}) {
       state.rows = state.rows.filter((row) => Array.isArray(values) && values.includes(row?.[column]));
       return chain;
     },
+    gte(column, value) {
+      const threshold = Date.parse(value);
+      state.rows = state.rows.filter((row) => {
+        const rowValue = row?.[column];
+        const rowTimestamp = Date.parse(rowValue);
+        if (!Number.isNaN(threshold) && !Number.isNaN(rowTimestamp)) {
+          return rowTimestamp >= threshold;
+        }
+        return rowValue >= value;
+      });
+      return chain;
+    },
+    lt(column, value) {
+      const threshold = Date.parse(value);
+      state.rows = state.rows.filter((row) => {
+        const rowValue = row?.[column];
+        const rowTimestamp = Date.parse(rowValue);
+        if (!Number.isNaN(threshold) && !Number.isNaN(rowTimestamp)) {
+          return rowTimestamp < threshold;
+        }
+        return rowValue < value;
+      });
+      return chain;
+    },
     order(column, options = {}) {
       const ascending = options?.ascending !== false;
       state.rows = state.rows.slice().sort((left, right) => {
@@ -328,6 +352,78 @@ function buildRequest(account, headers = {}) {
   };
 }
 
+function getCurrentQuotaWindow() {
+  const start = new Date(Date.UTC(
+    new Date().getUTCFullYear(),
+    new Date().getUTCMonth(),
+    1,
+    0,
+    0,
+    0
+  ));
+  const end = new Date(start);
+  end.setUTCMonth(end.getUTCMonth() + 1);
+  return {
+    quotaPeriodStart: start.toISOString(),
+    quotaPeriodEnd: end.toISOString()
+  };
+}
+
+function seedLinkedSiteWithStaleQuotaAndUsage(supabase, account, {
+  creditsUsed = [1]
+} = {}) {
+  const { quotaPeriodStart, quotaPeriodEnd } = getCurrentQuotaWindow();
+  const site = {
+    id: 'site_existing',
+    license_key: account.license_key,
+    site_hash: 'site-legacy-credits',
+    wp_install_uuid: 'site-legacy-credits',
+    site_url: 'https://legacy-credits.example.com/wp-admin/',
+    normalized_site_url: 'legacy-credits.example.com',
+    canonical_domain: 'legacy-credits.example.com',
+    site_fingerprint: 'fp-legacy-credits',
+    status: 'active',
+    owner_user_id: account.id,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    last_seen_at: new Date().toISOString(),
+    first_seen_at: new Date().toISOString()
+  };
+
+  supabase._state.sites.push(site);
+  supabase._state.siteQuotas.push({
+    id: 'site_quota_existing',
+    site_id: site.id,
+    quota_period_start: quotaPeriodStart,
+    quota_period_end: quotaPeriodEnd,
+    monthly_included_credits: 50,
+    purchased_credits_balance: 0,
+    bonus_credits_balance: 0,
+    used_credits: 0,
+    remaining_credits: 50,
+    reset_source: 'quota_read_healing',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  });
+
+  creditsUsed.forEach((creditCount, index) => {
+    const createdAt = new Date(Date.parse(quotaPeriodStart) + ((index + 1) * 60 * 1000)).toISOString();
+    supabase._state.usageLogs.push({
+      id: `usage_${index + 1}`,
+      license_key: account.license_key,
+      site_hash: site.site_hash,
+      credits_used: creditCount,
+      created_at: createdAt
+    });
+  });
+
+  return {
+    site,
+    quotaPeriodStart,
+    quotaPeriodEnd
+  };
+}
+
 describe('authenticated site healing on read paths', () => {
   test('quota status self-heals missing canonical site and returns a non-null site', async () => {
     const supabase = createSupabaseMock();
@@ -424,6 +520,73 @@ describe('authenticated site healing on read paths', () => {
     expect(result.site).toEqual(expect.objectContaining({
       site_id: expect.any(String),
       site_hash: 'site-dashboard-heal',
+      linked: true
+    }));
+  });
+
+  test('quota status prefers legacy usage logs when site_quotas is a stale zero row', async () => {
+    const supabase = createSupabaseMock();
+    const account = supabase._state.licenses[0];
+    seedLinkedSiteWithStaleQuotaAndUsage(supabase, account, {
+      creditsUsed: [2, 3]
+    });
+
+    const result = await getQuotaStatus(supabase, {
+      account,
+      licenseKey: account.license_key,
+      siteHash: 'site-legacy-credits',
+      installUuid: 'site-legacy-credits',
+      siteUrl: 'https://legacy-credits.example.com/wp-admin/',
+      siteFingerprint: 'fp-legacy-credits',
+      requestId: 'req-legacy-usage-heal'
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.total_limit).toBe(50);
+    expect(result.credits_used).toBe(5);
+    expect(result.credits_remaining).toBe(45);
+    expect(result.site_quota).toEqual(expect.objectContaining({
+      site_id: 'site_existing',
+      used_credits: 5,
+      remaining_credits: 45
+    }));
+    expect(supabase._state.siteQuotas[0]).toEqual(expect.objectContaining({
+      used_credits: 0,
+      remaining_credits: 50
+    }));
+  });
+
+  test('dashboard truth returns healed credit usage instead of stale site quota defaults', async () => {
+    const supabase = createSupabaseMock();
+    const account = supabase._state.licenses[0];
+    seedLinkedSiteWithStaleQuotaAndUsage(supabase, account, {
+      creditsUsed: [4, 1]
+    });
+    const req = buildRequest(account, {
+      'X-License-Key': account.license_key,
+      'X-Site-Key': 'site-legacy-credits',
+      'X-Install-UUID': 'site-legacy-credits',
+      'X-Site-URL': 'https://legacy-credits.example.com/wp-admin/',
+      'X-Site-Fingerprint': 'fp-legacy-credits'
+    });
+
+    const result = await buildDashboardStateTruth({
+      supabase,
+      req,
+      getJobRecord: async () => null
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.credits).toEqual(expect.objectContaining({
+      limit: 50,
+      used: 5,
+      remaining: 45,
+      source: 'license'
+    }));
+    expect(result.resolution.credit_source).toBe('getQuotaStatus');
+    expect(result.site).toEqual(expect.objectContaining({
+      site_id: 'site_existing',
+      site_hash: 'site-legacy-credits',
       linked: true
     }));
   });

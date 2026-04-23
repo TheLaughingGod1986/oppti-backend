@@ -348,6 +348,192 @@ function truncateMatchValue(value) {
   return normalized.length > 255 ? `${normalized.slice(0, 255)}...` : normalized;
 }
 
+function maskLicenseKeyForCreditAudit(licenseKey) {
+  if (!licenseKey) return null;
+  const normalized = String(licenseKey);
+  return normalized.length > 8 ? `${normalized.substring(0, 8)}...` : normalized;
+}
+
+function toCreditAuditIsoString(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
+}
+
+function toCreditAuditNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function logCreditsAudit(message, details = {}, level = 'info') {
+  logger[level](`[bbai-credits] ${message}`, details);
+}
+
+async function selectEffectiveSiteQuotaRead(supabase, {
+  site = null,
+  siteQuota = null,
+  account = null,
+  licenseKey = null,
+  quotaPeriodStart = null,
+  quotaPeriodEnd = null,
+  totalLimit = 0,
+  requestId = null
+} = {}) {
+  const auditContext = {
+    request_id: requestId || null,
+    account_id: account?.id || null,
+    license_key_prefix: maskLicenseKeyForCreditAudit(licenseKey || account?.license_key || site?.license_key || null),
+    site_id: site?.id || null,
+    site_hash: site?.site_hash || null,
+    period_start: toCreditAuditIsoString(quotaPeriodStart),
+    period_end: toCreditAuditIsoString(quotaPeriodEnd)
+  };
+  const currentUsed = toCreditAuditNumber(siteQuota?.used_credits, 0);
+  const currentRemaining = siteQuota?.remaining_credits ?? Math.max(toCreditAuditNumber(totalLimit, 0) - currentUsed, 0);
+
+  logCreditsAudit('period_selected', {
+    ...auditContext,
+    source_path: 'site_quota_v2'
+  });
+
+  logCreditsAudit('rows_found', {
+    ...auditContext,
+    source_candidate: 'site_quotas',
+    lookup_key: 'site_id+quota_period_start+quota_period_end',
+    rows_found: siteQuota ? 1 : 0,
+    credits_used_candidate: currentUsed,
+    credits_remaining_candidate: toCreditAuditNumber(currentRemaining, 0)
+  });
+
+  let summaryRow = null;
+  let summaryCandidate = 0;
+  if (auditContext.license_key_prefix && auditContext.period_start) {
+    const { data, error } = await supabase
+      .from('quota_summaries')
+      .select('period_start, period_end, total_credits_used, site_usage')
+      .eq('license_key', licenseKey)
+      .eq('period_start', auditContext.period_start)
+      .maybeSingle();
+
+    summaryRow = data || null;
+    summaryCandidate = data
+      ? (
+          site?.site_hash
+            ? toCreditAuditNumber(data?.site_usage?.[site.site_hash], 0)
+            : toCreditAuditNumber(data?.total_credits_used, 0)
+        )
+      : 0;
+
+    logCreditsAudit('rows_found', {
+      ...auditContext,
+      source_candidate: 'quota_summaries',
+      lookup_key: 'license_key+period_start',
+      rows_found: data ? 1 : 0,
+      credits_used_candidate: summaryCandidate,
+      error: error ? serializeSupabaseError(error) : null
+    }, error ? 'warn' : 'info');
+  } else {
+    logCreditsAudit('rows_found', {
+      ...auditContext,
+      source_candidate: 'quota_summaries',
+      lookup_key: 'license_key+period_start',
+      rows_found: 0,
+      credits_used_candidate: 0,
+      fallback_reason: licenseKey ? 'missing_period_start' : 'missing_license_key'
+    });
+  }
+
+  let usageRows = 0;
+  let usageCandidate = 0;
+  let usageSourceKey = 'site_hash';
+  if (auditContext.period_start && auditContext.period_end && (site?.site_hash || licenseKey)) {
+    let usageQuery = supabase
+      .from('usage_logs')
+      .select('credits_used, created_at, license_key, site_hash')
+      .gte('created_at', auditContext.period_start)
+      .lt('created_at', auditContext.period_end);
+
+    if (site?.site_hash) {
+      usageQuery = usageQuery.eq('site_hash', site.site_hash);
+      usageSourceKey = 'site_hash';
+    } else {
+      usageQuery = usageQuery.eq('license_key', licenseKey);
+      usageSourceKey = 'license_key';
+    }
+
+    const { data, error } = await usageQuery;
+    usageRows = Array.isArray(data) ? data.length : 0;
+    usageCandidate = Array.isArray(data)
+      ? data.reduce((sum, row) => sum + toCreditAuditNumber(row?.credits_used, 1), 0)
+      : 0;
+
+    logCreditsAudit('rows_found', {
+      ...auditContext,
+      source_candidate: 'usage_logs',
+      lookup_key: usageSourceKey,
+      rows_found: usageRows,
+      credits_used_candidate: usageCandidate,
+      error: error ? serializeSupabaseError(error) : null
+    }, error ? 'warn' : 'info');
+  } else {
+    logCreditsAudit('rows_found', {
+      ...auditContext,
+      source_candidate: 'usage_logs',
+      lookup_key: site?.site_hash ? 'site_hash' : 'license_key',
+      rows_found: 0,
+      credits_used_candidate: 0,
+      fallback_reason: auditContext.period_start && auditContext.period_end
+        ? 'missing_site_hash_and_license_key'
+        : 'missing_period_bounds'
+    });
+  }
+
+  let selectedSource = 'site_quotas';
+  let selectedUsed = currentUsed;
+  let fallbackReason = null;
+  let selectedRowsFound = siteQuota ? 1 : 0;
+
+  if (usageCandidate > selectedUsed) {
+    selectedSource = 'usage_logs';
+    selectedUsed = usageCandidate;
+    selectedRowsFound = usageRows;
+    fallbackReason = 'legacy_usage_exceeds_site_quota';
+  } else if (summaryCandidate > selectedUsed) {
+    selectedSource = 'quota_summaries';
+    selectedUsed = summaryCandidate;
+    selectedRowsFound = summaryRow ? 1 : 0;
+    fallbackReason = 'legacy_summary_exceeds_site_quota';
+  } else if (!siteQuota) {
+    selectedSource = usageRows > 0 ? 'usage_logs' : (summaryRow ? 'quota_summaries' : 'fallback/default path');
+    selectedUsed = Math.max(usageCandidate, summaryCandidate, 0);
+    selectedRowsFound = selectedSource === 'usage_logs'
+      ? usageRows
+      : (summaryRow ? 1 : 0);
+    fallbackReason = usageRows > 0
+      ? 'site_quota_missing'
+      : (summaryRow ? 'site_quota_missing' : 'site_quota_missing_and_legacy_empty');
+  } else if (currentUsed === 0 && usageRows === 0 && summaryCandidate === 0) {
+    fallbackReason = 'no_nonzero_usage_rows_found';
+  }
+
+  const selectedRemaining = Math.max(toCreditAuditNumber(totalLimit, 0) - selectedUsed, 0);
+
+  logCreditsAudit('source_selected', {
+    ...auditContext,
+    source_selected: selectedSource,
+    rows_found: selectedRowsFound,
+    used: selectedUsed,
+    limit: toCreditAuditNumber(totalLimit, 0),
+    remaining: selectedRemaining,
+    fallback_reason: fallbackReason
+  });
+
+  return {
+    used: selectedUsed,
+    remaining: selectedRemaining
+  };
+}
+
 function logCanonicalSiteResolutionAttempt({
   identity,
   createIfMissing,
@@ -1664,8 +1850,23 @@ async function getSiteQuotaStatus(supabase, {
       + Number(siteQuota.purchased_credits_balance || 0)
       + Number(siteQuota.bonus_credits_balance || 0)
     : monthlyIncludedCredits;
-  const creditsUsed = siteQuota?.used_credits || 0;
-  const creditsRemaining = siteQuota?.remaining_credits ?? Math.max(totalLimit - creditsUsed, 0);
+  const effectiveRead = quotaMode === 'trial'
+    ? {
+        used: Number(siteQuota?.used_credits || 0),
+        remaining: siteQuota?.remaining_credits ?? Math.max(totalLimit - Number(siteQuota?.used_credits || 0), 0)
+      }
+    : await selectEffectiveSiteQuotaRead(supabase, {
+        site,
+        siteQuota,
+        account: legacyAccount || account || null,
+        licenseKey: licenseKey || site.license_key || legacyAccount?.license_key || null,
+        quotaPeriodStart: quotaWindow.quotaPeriodStart,
+        quotaPeriodEnd: quotaWindow.quotaPeriodEnd,
+        totalLimit,
+        requestId
+      });
+  const creditsUsed = effectiveRead.used;
+  const creditsRemaining = effectiveRead.remaining;
 
   return {
     error: null,
@@ -1688,8 +1889,8 @@ async function getSiteQuotaStatus(supabase, {
       monthly_included_credits: siteQuota?.monthly_included_credits ?? monthlyIncludedCredits,
       purchased_credits_balance: siteQuota?.purchased_credits_balance ?? 0,
       bonus_credits_balance: siteQuota?.bonus_credits_balance ?? 0,
-      used_credits: siteQuota?.used_credits ?? creditsUsed,
-      remaining_credits: siteQuota?.remaining_credits ?? creditsRemaining
+      used_credits: creditsUsed,
+      remaining_credits: creditsRemaining
     },
     trial: trial
       ? {

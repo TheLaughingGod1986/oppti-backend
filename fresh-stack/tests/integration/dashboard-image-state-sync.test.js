@@ -92,7 +92,7 @@ describe('POST /dashboard/image-states/sync', () => {
       data: {
         site_id: 'site_1',
         site_hash: 'site-hash-1',
-        updated: 3,
+        updated: 0,
         inserted: 3,
         changed: 3,
         unchanged: 0,
@@ -137,6 +137,32 @@ describe('POST /dashboard/image-states/sync', () => {
         siteId: 'site_1',
         siteHash: 'site-hash-1',
         images,
+        requestId: 'req-dashboard-sync',
+        scope: 'full_site',
+        allowDowngrade: false
+      })
+    );
+  });
+
+  test('accepts legacy items payloads from bootstrap sync clients', async () => {
+    const app = createApp();
+    const items = [
+      { attachment_id: 201, current_state: 'MISSING', image_url: 'https://example.com/a.jpg' },
+      { attachment_id: 202, current_state: 'APPROVED', image_url: 'https://example.com/b.jpg' }
+    ];
+
+    await request(app)
+      .post('/dashboard/image-states/sync')
+      .set('X-License-Key', 'key-123')
+      .set('X-Site-Key', 'site-hash-1')
+      .send({ items });
+
+    expect(imageAltStateService.syncImageAltStates).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        siteId: 'site_1',
+        siteHash: 'site-hash-1',
+        images: items,
         requestId: 'req-dashboard-sync',
         scope: 'full_site',
         allowDowngrade: false
