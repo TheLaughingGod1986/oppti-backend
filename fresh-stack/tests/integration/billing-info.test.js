@@ -198,7 +198,7 @@ describe('billing truth-source cleanup', () => {
       source: 'licenses',
       resolution_path: 'license',
       account_id: 'acct_free',
-      license_key: 'lic_free',
+      licenseKeyPrefix: '[redacted]',
       stripe_subscription_id: null
     }));
   });
@@ -247,7 +247,7 @@ describe('billing truth-source cleanup', () => {
       source: 'site_subscriptions',
       resolution_path: 'stripe_subscription_id',
       account_id: 'acct_paid',
-      license_key: 'lic_paid',
+      licenseKeyPrefix: '[redacted]',
       stripe_subscription_id: 'sub_123'
     }));
   });
@@ -297,7 +297,7 @@ describe('billing truth-source cleanup', () => {
       source: 'site_subscriptions',
       resolution_path: 'license_sites',
       account_id: 'acct_linked',
-      license_key: 'lic_linked',
+      licenseKeyPrefix: 'lic_link...',
       stripe_subscription_id: 'sub_linked'
     }));
   });

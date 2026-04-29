@@ -110,6 +110,12 @@ function sanitizeStripeMetadataValue(value, { maxLength = STRIPE_METADATA_MAX_LE
   return sanitized.slice(0, maxLength);
 }
 
+function maskSecret(value) {
+  if (!value) return null;
+  const stringValue = String(value);
+  return stringValue.length <= 8 ? '[redacted]' : `${stringValue.slice(0, 8)}...`;
+}
+
 function mergeStripeMetadata(...metadataSources) {
   return metadataSources.reduce((merged, metadata) => {
     if (!metadata || typeof metadata !== 'object') {
@@ -430,7 +436,7 @@ async function findAccountByLicenseKey(supabase, licenseKey) {
 
   if (error) {
     logger.warn('[billing] account lookup by license key failed', {
-      licenseKey,
+      licenseKeyPrefix: maskSecret(licenseKey),
       error: error.message
     });
     return null;
@@ -529,7 +535,7 @@ async function findSitesByLicenseKey(supabase, licenseKey) {
 
   if (error) {
     logger.warn('[billing] site lookup by license key failed', {
-      licenseKey,
+      licenseKeyPrefix: maskSecret(licenseKey),
       error: error.message
     });
     return [];
@@ -690,7 +696,7 @@ async function selectBillingSiteSubscriptionForLicense(supabase, license) {
 
     if (error) {
       logger.warn('[billing] site lookup by license key failed', {
-        license_key: license.license_key,
+        licenseKeyPrefix: maskSecret(license.license_key),
         lookup: 'license_sites',
         error: error.message
       });
@@ -708,7 +714,7 @@ async function selectBillingSiteSubscriptionForLicense(supabase, license) {
           .select(SITE_SUBSCRIPTION_SELECT)
           .in('site_id', siteIds),
         {
-          license_key: license.license_key,
+          licenseKeyPrefix: maskSecret(license.license_key),
           lookup: 'license_sites',
           site_ids: siteIds
         }
@@ -851,7 +857,9 @@ async function resolveIdentityContext({
     if (account) {
       resolutionSource = 'license_key';
     } else {
-      logger.warn('[billing] account not found for metadata license key', { licenseKey });
+      logger.warn('[billing] account not found for metadata license key', {
+        licenseKeyPrefix: maskSecret(licenseKey)
+      });
     }
   }
 
@@ -943,13 +951,13 @@ async function resolveIdentityContext({
         site_hash: site.site_hash || siteHash || null,
         matched_by: resolved.matchedBy || null,
         created: Boolean(resolved.created),
-        license_key: licenseKey || account?.license_key || null
+        licenseKeyPrefix: maskSecret(licenseKey || account?.license_key || null)
       });
     } else if (resolved?.error) {
       logger.error('[billing] canonical billing site resolution failed', {
         site_hash: siteHash,
         site_url: siteUrl || null,
-        license_key: licenseKey || account?.license_key || null,
+        licenseKeyPrefix: maskSecret(licenseKey || account?.license_key || null),
         error: resolved.error,
         site_write_error: resolved.diagnostics?.site_write_error || null
       });
@@ -965,11 +973,11 @@ async function resolveIdentityContext({
       logger.info('[billing] canonical billing site resolved from license', {
         site_id: site.id,
         site_hash: site.site_hash || null,
-        license_key: siteLicenseKey
+        licenseKeyPrefix: maskSecret(siteLicenseKey)
       });
     } else if (licenseSites.length > 1) {
       logger.warn('[billing] billing site resolution ambiguous for license', {
-        license_key: siteLicenseKey,
+        licenseKeyPrefix: maskSecret(siteLicenseKey),
         candidate_site_ids: licenseSites.map((candidate) => candidate.id)
       });
     }
@@ -989,7 +997,7 @@ async function resolveIdentityContext({
     });
   } else if (licenseKey || siteHash || email || stripeCustomerId || stripeSubscriptionId) {
     logger.warn('[billing] account not resolved for payment event', {
-      licenseKey,
+      licenseKeyPrefix: maskSecret(licenseKey),
       siteHash,
       email: email || null,
       stripeCustomerId: stripeCustomerId || null,
@@ -1574,7 +1582,7 @@ async function emitPaymentSucceeded({
     distinctIdSource,
     identityPath: eventProperties.identity_path || resolveIdentityPath({ resolutionSource: null, distinctIdSource }),
     accountId: account?.id || null,
-    licenseKey: eventProperties.license_key || null,
+    licenseKeyPrefix: maskSecret(eventProperties.license_key || null),
     siteId: eventProperties.site_id || null,
     siteHash: eventProperties.site_hash || null,
     stripeCustomerId: eventProperties.stripe_customer_id || null,
@@ -1693,7 +1701,8 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               ...billingTrace,
               ...entitlementTrace,
               account_id: payload.account?.id || null,
-              license_key: payload.eventProperties.license_key || null,
+              license_key_present: Boolean(payload.eventProperties.license_key),
+              license_key_prefix: maskSecret(payload.eventProperties.license_key || null),
               site_id: payload.site?.id || null,
               site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
             };
@@ -1723,7 +1732,8 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               ...billingTrace,
               ...entitlementTrace,
               account_id: payload.account?.id || null,
-              license_key: payload.eventProperties.license_key || null,
+              license_key_present: Boolean(payload.eventProperties.license_key),
+              license_key_prefix: maskSecret(payload.eventProperties.license_key || null),
               site_id: payload.site?.id || null,
               site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
             };
@@ -1757,7 +1767,8 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               ...billingTrace,
               ...entitlementTrace,
               account_id: payload.account?.id || null,
-              license_key: payload.eventProperties.license_key || null,
+              license_key_present: Boolean(payload.eventProperties.license_key),
+              license_key_prefix: maskSecret(payload.eventProperties.license_key || null),
               site_id: payload.site?.id || null,
               site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
             };
@@ -1859,7 +1870,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         source: billingInfoSource,
         resolution_path: billingInfoResolutionPath,
         account_id: license?.id || null,
-        license_key: license?.license_key || null,
+        licenseKeyPrefix: maskSecret(license?.license_key || null),
         stripe_subscription_id: billing.subscriptionId || null
       });
 

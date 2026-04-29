@@ -51,30 +51,45 @@ async function generateAltText({ image, context }) {
     ? `data:${image.mime_type};base64,${image.base64}`
     : image.url;
 
-  // Enhanced logging for debugging image processing
   const logger = require('./logger');
-  logger.info('[OpenAI] Image processing details', {
-    hasBase64: !!image.base64,
-    hasUrl: !!image.url,
-    imageSource: image.base64 ? 'base64' : (image.url ? 'url' : 'none'),
-    base64Preview: image.base64 ? image.base64.substring(0, 100) + '...' : null,
-    base64Length: image.base64 ? image.base64.length : 0,
-    imageUrl: image.url || null,
-    imageUrlPreview: image.url ? image.url.substring(0, 100) + '...' : null,
-    dimensions: image.width && image.height ? `${image.width}x${image.height}` : 'unknown',
-    mimeType: image.mime_type || 'unknown',
-    filename: image.filename || 'unknown',
-    dataUrlPreview: imageUrl ? imageUrl.substring(0, 150) + '...' : null,
-    dataUrlLength: imageUrl ? imageUrl.length : 0,
-    dataUrlStartsWith: imageUrl ? imageUrl.substring(0, 30) : null
-  });
-  
-  // CRITICAL: Verify we're using the correct image source
-  if (image.base64 && image.url) {
-    logger.warn('[OpenAI] WARNING: Both base64 and URL provided - base64 will be used, URL ignored', {
-      base64Length: image.base64.length,
-      url: image.url
+  const tsStart = Date.now();
+  const isProdLogging = process.env.NODE_ENV === 'production';
+
+  if (!isProdLogging) {
+    logger.info('[OpenAI] Image processing details', {
+      hasBase64: !!image.base64,
+      hasUrl: !!image.url,
+      imageSource: image.base64 ? 'base64' : (image.url ? 'url' : 'none'),
+      base64Preview: image.base64 ? image.base64.substring(0, 100) + '...' : null,
+      base64Length: image.base64 ? image.base64.length : 0,
+      imageUrl: image.url || null,
+      imageUrlPreview: image.url ? image.url.substring(0, 100) + '...' : null,
+      dimensions: image.width && image.height ? `${image.width}x${image.height}` : 'unknown',
+      mimeType: image.mime_type || 'unknown',
+      filename: image.filename || 'unknown',
+      dataUrlPreview: imageUrl ? imageUrl.substring(0, 150) + '...' : null,
+      dataUrlLength: imageUrl ? imageUrl.length : 0,
+      dataUrlStartsWith: imageUrl ? imageUrl.substring(0, 30) : null
     });
+  } else {
+    logger.info('[OpenAI] alt_text_request_started', {
+      model: modelUsed,
+      status: 'started'
+    });
+  }
+
+  if (image.base64 && image.url) {
+    if (!isProdLogging) {
+      logger.warn('[OpenAI] WARNING: Both base64 and URL provided - base64 will be used, URL ignored', {
+        base64Length: image.base64.length,
+        url: image.url
+      });
+    } else {
+      logger.warn('[OpenAI] Both base64 and URL provided - base64 will be used, URL ignored', {
+        model: modelUsed,
+        status: 'input_normalized'
+      });
+    }
   }
   
   if (!image.base64 && !image.url) {
@@ -89,12 +104,14 @@ async function generateAltText({ image, context }) {
     throw configError;
   }
   
-  // Log API key status (first few chars only for security)
-  logger.debug('[OpenAI] Using API key', { 
-    keyPrefix: apiKey.substring(0, 10) + '...',
-    keyLength: apiKey.length,
-    model: preferredModel
-  });
+  if (!isProdLogging) {
+    // Log API key shape only outside production, and never the full key.
+    logger.debug('[OpenAI] Using API key', {
+      keyPrefix: apiKey.substring(0, 10) + '...',
+      keyLength: apiKey.length,
+      model: preferredModel
+    });
+  }
 
   try {
     let response;
@@ -161,27 +178,54 @@ async function generateAltText({ image, context }) {
 
     const choice = response.data?.choices?.[0];
     const altText = choice?.message?.content?.trim();
+    const latencyMs = Date.now() - tsStart;
+    const usage = response.data?.usage || null;
 
-    // Log the full response for debugging
-    logger.info('[OpenAI] Raw AI response received', {
-      model: modelUsed,
-      fullResponse: JSON.stringify(response.data),
-      choiceContent: choice?.message?.content,
-      usage: response.data?.usage,
-      imageSourceUsed: image.base64 ? 'base64' : (image.url ? 'url' : 'none')
-    });
-
-    if (altText) {
-      logger.info('[OpenAI] Alt text generated', { 
+    if (!isProdLogging) {
+      logger.info('[OpenAI] Raw AI response received', {
         model: modelUsed,
-        altTextLength: altText.length,
-        altTextPreview: altText.substring(0, 50) + (altText.length > 50 ? '...' : '')
+        fullResponse: JSON.stringify(response.data),
+        choiceContent: choice?.message?.content,
+        usage,
+        imageSourceUsed: image.base64 ? 'base64' : (image.url ? 'url' : 'none')
       });
     } else {
-      logger.error('[OpenAI] Empty alt text response', { 
+      logger.info('[OpenAI] alt_text_completed', {
         model: modelUsed,
-        response: JSON.stringify(response.data).substring(0, 200)
+        latencyMs,
+        promptTokens: usage?.prompt_tokens ?? null,
+        completionTokens: usage?.completion_tokens ?? null,
+        totalTokens: usage?.total_tokens ?? null,
+        outputLength: typeof choice?.message?.content === 'string' ? choice.message.content.length : 0,
+        status: 'completed'
       });
+    }
+
+    if (altText) {
+      if (!isProdLogging) {
+        logger.info('[OpenAI] Alt text generated', {
+          model: modelUsed,
+          altTextLength: altText.length,
+          altTextPreview: altText.substring(0, 50) + (altText.length > 50 ? '...' : '')
+        });
+      } else {
+        logger.info('[OpenAI] alt_text_output_metrics', {
+          model: modelUsed,
+          outputLength: altText.length,
+          status: 'completed'
+        });
+      }
+    } else {
+      logger.error('[OpenAI] Empty alt text response', isProdLogging
+        ? {
+          model: modelUsed,
+          latencyMs,
+          status: response.data?.error?.code || response.status || 'empty_output'
+        }
+        : {
+          model: modelUsed,
+          responsePreview: JSON.stringify(response.data).substring(0, 200)
+        });
     }
 
     return {
@@ -197,20 +241,30 @@ async function generateAltText({ image, context }) {
     const isRateLimit = httpStatus === 429;
     const isServerError = httpStatus >= 500;
 
-    logger.error('[OpenAI] Alt text generation failed', {
-      error: message,
-      code: errorCode,
-      status: httpStatus,
-      model: modelUsed,
-      hasApiKey: !!apiKey,
-      apiKeyPrefix: apiKey ? apiKey.substring(0, 10) + '...' : 'missing',
-      isApiKeyError,
-      isRateLimit,
-      isServerError
-    });
+    const failMeta = isProdLogging
+      ? {
+        code: errorCode,
+        status: httpStatus,
+        model: modelUsed,
+        isApiKeyError,
+        isRateLimit,
+        isServerError
+      }
+      : {
+        error: message,
+        code: errorCode,
+        status: httpStatus,
+        model: modelUsed,
+        hasApiKey: !!apiKey,
+        apiKeyPrefix: apiKey ? apiKey.substring(0, 10) + '...' : 'missing',
+        isApiKeyError,
+        isRateLimit,
+        isServerError
+      };
+    logger.error('[OpenAI] Alt text generation failed', failMeta);
 
     if (isApiKeyError) {
-      logger.error('[OpenAI] CRITICAL: Invalid or missing OpenAI API key. Please check your .env.local file and ensure OPENAI_API_KEY is set correctly.');
+      logger.error('[OpenAI] CRITICAL: OpenAI rejected or missing API key (credentials error). Verify OPENAI_API_KEY / ALTTEXT_OPENAI_API_KEY in environment.');
     }
 
     // Throw a structured error so callers can decide how to handle it.
@@ -380,6 +434,8 @@ async function reviewAltText({ altText, image = null, context = {}, service = 'a
   const model = process.env.OPENAI_REVIEW_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
   const prompt = buildReviewPrompt(altText, image, context);
   const logger = require('./logger');
+  const isProdLogging = process.env.NODE_ENV === 'production';
+  const tsStart = Date.now();
 
   try {
     const response = await axios.post(
@@ -413,12 +469,23 @@ async function reviewAltText({ altText, image = null, context = {}, service = 'a
 
     const content = response.data?.choices?.[0]?.message?.content?.trim() || '';
     const parsed = parseReviewResponse(content);
+    const usage = response.data?.usage || null;
 
-    logger.info('[OpenAI] Review response received', {
-      model,
-      imageSource: base64Data ? 'base64' : 'url',
-      parsed: Boolean(parsed)
-    });
+    logger.info('[OpenAI] Review response received', isProdLogging
+      ? {
+        model,
+        latencyMs: Date.now() - tsStart,
+        promptTokens: usage?.prompt_tokens ?? null,
+        completionTokens: usage?.completion_tokens ?? null,
+        totalTokens: usage?.total_tokens ?? null,
+        outputLength: content.length,
+        status: parsed ? 'completed' : 'unparseable'
+      }
+      : {
+        model,
+        imageSource: base64Data ? 'base64' : 'url',
+        parsed: Boolean(parsed)
+      });
 
     if (!parsed) {
       return null;
@@ -442,14 +509,19 @@ async function reviewAltText({ altText, image = null, context = {}, service = 'a
       summary: typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 120) : '',
       issues,
       model,
-      usage: response.data?.usage || null
+      usage
     };
   } catch (error) {
     if (shouldSkipReviewForImageError(error)) {
-      logger.warn('[OpenAI] Review skipped because image could not be fetched', {
-        status: error?.response?.status || null,
-        message: error?.response?.data?.error?.message || error.message
-      });
+      logger.warn('[OpenAI] Review skipped because image could not be fetched', isProdLogging
+        ? {
+          status: error?.response?.status || null,
+          model
+        }
+        : {
+          status: error?.response?.status || null,
+          message: error?.response?.data?.error?.message || error.message
+        });
       return null;
     }
 
@@ -459,14 +531,22 @@ async function reviewAltText({ altText, image = null, context = {}, service = 'a
     const isRateLimit = httpStatus === 429;
     const isServerError = httpStatus >= 500;
 
-    logger.error('[OpenAI] Review generation failed', {
-      error: message,
-      status: httpStatus,
-      model,
-      isApiKeyError,
-      isRateLimit,
-      isServerError
-    });
+    logger.error('[OpenAI] Review generation failed', isProdLogging
+      ? {
+        status: httpStatus,
+        model,
+        isApiKeyError,
+        isRateLimit,
+        isServerError
+      }
+      : {
+        error: message,
+        status: httpStatus,
+        model,
+        isApiKeyError,
+        isRateLimit,
+        isServerError
+      });
 
     const reviewError = new Error(message);
     reviewError.code = isApiKeyError ? 'BACKEND_CONFIG_ERROR'

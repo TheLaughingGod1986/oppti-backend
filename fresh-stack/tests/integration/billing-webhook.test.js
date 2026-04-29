@@ -980,7 +980,7 @@ describe('POST /billing/webhook', () => {
     }));
     expect(infoSpy).toHaveBeenCalledWith('[billing] canonical billing site resolved from license', expect.objectContaining({
       site_id: 'site_billing',
-      license_key: 'lic_site_billing'
+      licenseKeyPrefix: 'lic_site...'
     }));
     expect(infoSpy).toHaveBeenCalledWith('[billing] site entitlement reconciled', expect.objectContaining({
       stripeEventId: 'evt_site_billing_create',

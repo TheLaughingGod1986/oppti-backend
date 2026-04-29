@@ -33,6 +33,22 @@ function hasValidAdminKey(adminKey) {
   return Boolean(process.env.ADMIN_KEY && adminKey && adminKey === process.env.ADMIN_KEY);
 }
 
+function summarizeInvalidAltTextPayload(body = {}) {
+  const image = body && typeof body === 'object' ? body.image : null;
+  const context = body && typeof body === 'object' ? body.context : null;
+
+  return {
+    top_level_keys: body && typeof body === 'object' ? Object.keys(body).slice(0, 20) : [],
+    image_keys: image && typeof image === 'object' ? Object.keys(image).slice(0, 20) : [],
+    has_base64: Boolean(image?.base64 || image?.image_base64),
+    base64_length: typeof image?.base64 === 'string'
+      ? image.base64.length
+      : (typeof image?.image_base64 === 'string' ? image.image_base64.length : 0),
+    has_url: Boolean(image?.url),
+    context_keys: context && typeof context === 'object' ? Object.keys(context).slice(0, 20) : []
+  };
+}
+
 function extractIdempotencyKey(req) {
   return req.header('Idempotency-Key')
     || req.header('X-Idempotency-Key')
@@ -299,7 +315,7 @@ function createAltTextRouter({
     if (!parsed.success) {
       logger.error('[altText] Schema validation failed', {
         errors: parsed.error.flatten(),
-        bodyPreview: JSON.stringify(req.body).substring(0, 500)
+        payload: summarizeInvalidAltTextPayload(req.body)
       });
       return res.status(400).json({ 
         error: 'INVALID_REQUEST', 
@@ -425,17 +441,28 @@ function createAltTextRouter({
     const normalizedBase64 = normalized.base64 || '';
     const cacheKey = normalizedBase64 ? hashPayload(normalizedBase64) : null;
 
-    logger.info('[altText] Image details', {
-      imageSource: normalizedBase64 ? 'base64' : (normalized.url ? 'url' : 'none'),
-      normalizedBase64Length: normalizedBase64 ? normalizedBase64.length : 0,
-      imageUrl: normalized.url || null,
-      dimensions: normalized.width && normalized.height ? `${normalized.width}x${normalized.height}` : 'unknown',
-      filename: normalized.filename || 'unknown',
-      cacheKey: cacheKey ? cacheKey.substring(0, 16) + '...' : null,
-      bypassCache,
-      regenerate,
-      warnings: warnings.length
-    });
+    {
+      const isProdLogging = process.env.NODE_ENV === 'production';
+      logger.info('[altText] Image details', isProdLogging
+        ? {
+          imageSource: normalizedBase64 ? 'base64' : (normalized.url ? 'url' : 'none'),
+          cacheKey: cacheKey ? cacheKey.substring(0, 16) + '...' : null,
+          bypassCache,
+          regenerate,
+          warnings: warnings.length
+        }
+        : {
+          imageSource: normalizedBase64 ? 'base64' : (normalized.url ? 'url' : 'none'),
+          normalizedBase64Length: normalizedBase64 ? normalizedBase64.length : 0,
+          imageUrl: normalized.url || null,
+          dimensions: normalized.width && normalized.height ? `${normalized.width}x${normalized.height}` : 'unknown',
+          filename: normalized.filename || 'unknown',
+          cacheKey: cacheKey ? cacheKey.substring(0, 16) + '...' : null,
+          bypassCache,
+          regenerate,
+          warnings: warnings.length
+        });
+    }
     
     if (cacheKey && !bypassCache) {
       let cachedData = null;
@@ -454,9 +481,15 @@ function createAltTextRouter({
       }
 
       if (cachedData) {
+        const isProdLogging = process.env.NODE_ENV === 'production';
         logger.info('[altText] Cache hit - returning cached result', {
           cacheKey: cacheKey ? cacheKey.substring(0, 16) + '...' : null,
-          cachedAltText: cachedData.altText,
+          cachedAltTextLength: typeof cachedData.altText === 'string' ? cachedData.altText.length : 0,
+          ...(isProdLogging ? {} : {
+            cachedAltTextPreview: typeof cachedData.altText === 'string'
+              ? `${cachedData.altText.slice(0, 60)}${cachedData.altText.length > 60 ? '…' : ''}`
+              : null
+          }),
           cachedModel: cachedData.meta?.modelUsed
         });
 
@@ -890,13 +923,20 @@ function createAltTextRouter({
       });
     }
     
-    logger.info('[altText] Alt text generated', {
-      altText,
-      altTextLength: altText ? altText.length : 0,
-      generationTimeMs: generationTime,
-      modelUsed: meta?.modelUsed,
-      tokensUsed: usage?.total_tokens
-    });
+    {
+      const isProdLogging = process.env.NODE_ENV === 'production';
+      logger.info('[altText] Alt text generated', {
+        altTextLength: altText ? altText.length : 0,
+        ...(isProdLogging ? {} : {
+          altTextPreview: altText
+            ? `${altText.slice(0, 80)}${altText.length > 80 ? '…' : ''}`
+            : null
+        }),
+        generationTimeMs: generationTime,
+        modelUsed: meta?.modelUsed,
+        tokensUsed: usage?.total_tokens
+      });
+    }
 
     const finalizeResult = await finalizeGenerationQuotaReservation(supabase, {
       generationRequestId: reservation.reservation?.generation_request_id || null,
@@ -1046,6 +1086,10 @@ function createAltTextRouter({
         error: 'SITE_ID_UNAVAILABLE_AFTER_GENERATION'
       });
     }
+
+    // Reduce risk of logging generated content in production environments.
+    // (Alt text is user-facing content; keep only length/metadata in prod logs.)
+    // Note: the response payload still contains the generated altText (required by plugin).
 
     logGenerationAccountingTrace({
       requestId: req.id || null,

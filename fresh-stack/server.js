@@ -41,6 +41,18 @@ const BULK_JOB_DISPATCH = String(process.env.BULK_JOB_DISPATCH || 'immediate').t
   ? 'redis'
   : 'immediate';
 const DIAGNOSTICS_ROUTE_ENABLED = true;
+const PROTECTED_API_PREFIXES = [
+  '/api/alt-text',
+  '/api/billing',
+  '/api/contact',
+  '/api/dashboard',
+  '/api/jobs',
+  '/api/license',
+  '/api/licenses',
+  '/api/review',
+  '/api/usage',
+  '/api/auth'
+];
 
 let supabase = null;
 try {
@@ -121,14 +133,15 @@ function createApp({
   });
 
   app.get('/ready', async (_req, res) => {
-    const checks = { redis: !!redis, supabase: !!supabaseClient };
+    const redisRequired = BULK_JOB_DISPATCH === 'redis';
+    const checks = { redis: !!redis, redis_required: redisRequired, supabase: !!supabaseClient };
     try {
       if (redis) await redis.ping();
     } catch (_error) {
       checks.redis = false;
     }
     return res.json({
-      ready: checks.redis && checks.supabase,
+      ready: checks.supabase && (!redisRequired || checks.redis),
       ...checks,
       runtime: runtimeIdentityProvider()
     });
@@ -176,6 +189,36 @@ function createApp({
   }));
 
   app.use('/api/contact', createContactRouter({ redis }));
+
+  app.use((req, res, next) => {
+    if (req.path === '/api/billing/webhook') {
+      return res.status(404).json({
+        success: false,
+        error: 'NOT_FOUND',
+        code: 'NOT_FOUND',
+        message: `Cannot ${req.method} ${req.originalUrl}`
+      });
+    }
+
+    if (
+      req.path.startsWith('/api/')
+      && !PROTECTED_API_PREFIXES.some((prefix) => req.path === prefix || req.path.startsWith(`${prefix}/`))
+    ) {
+      logger.warn('[api] unmatched_route', {
+        method: req.method,
+        path: req.path,
+        originalUrl: req.originalUrl
+      });
+      return res.status(404).json({
+        success: false,
+        error: 'NOT_FOUND',
+        code: 'NOT_FOUND',
+        message: `Cannot ${req.method} ${req.originalUrl}`
+      });
+    }
+
+    return next();
+  });
 
   app.use(authMiddleware({ supabase: supabaseClient }));
 
@@ -280,11 +323,20 @@ function createApp({
     getJobRecord: queue.getJobRecord
   }));
 
-  app.use('/billing', createBillingRouter({ supabase: supabaseClient, getStripe, priceIds }));
-  app.use('/dashboard', createDashboardRouter({
+  const billingRouterInstance = createBillingRouter({
+    supabase: supabaseClient,
+    getStripe,
+    priceIds
+  });
+  app.use('/billing', billingRouterInstance);
+  app.use('/api/billing', billingRouterInstance);
+
+  const dashboardRouterInstance = createDashboardRouter({
     supabase: supabaseClient,
     getJobRecord: queue.getJobRecord
-  }));
+  });
+  app.use('/dashboard', dashboardRouterInstance);
+  app.use('/api/dashboard', dashboardRouterInstance);
 
   app.use((req, res) => {
     if (res.headersSent) return;

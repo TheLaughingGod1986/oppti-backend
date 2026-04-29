@@ -58,6 +58,12 @@ const LEGACY_SITE_COLUMN_MAP = {
   deactivated_at: 'deactivated_at'
 };
 
+function maskSecret(value) {
+  if (!value) return null;
+  const stringValue = String(value);
+  return stringValue.length <= 8 ? '[redacted]' : `${stringValue.slice(0, 8)}...`;
+}
+
 function ensureDiagnosticsBucket(target, key) {
   if (!target) return null;
   if (!target[key]) {
@@ -115,7 +121,10 @@ async function fetchAccountByLicenseKey(supabase, licenseKey) {
     supabase.from('licenses').select(ACCOUNT_SELECT).eq('license_key', licenseKey)
   );
   if (error && !isMissingSchemaError(error)) {
-    logger.warn('[siteQuota] account lookup by license key failed', { licenseKey, error: error.message });
+    logger.warn('[siteQuota] account lookup by license key failed', {
+      licenseKeyPrefix: maskSecret(licenseKey),
+      error: error.message
+    });
   }
   return data || null;
 }
