@@ -10,6 +10,7 @@ const {
 } = require('./quota');
 const { upsertGeneratedImageAltState } = require('./imageAltState');
 const { recordUsage } = require('./usage');
+const { resolveUsageAttributionUserId } = require('./usageAttribution');
 
 function nowIso() {
   return new Date().toISOString();
@@ -246,11 +247,18 @@ async function processLicensedBulkItem({
       }
     }
 
+    const attribution = await resolveUsageAttributionUserId(supabase, {
+      req: null,
+      siteHash: effectiveSite?.site_hash || siteKey,
+      effectiveSite,
+      licenseId
+    });
+
     const usageWrite = await recordUsage(supabase, {
       licenseKey: effectiveLicenseKey,
       licenseId,
       siteHash: effectiveSite?.site_hash || siteKey,
-      userId: userInfo?.user_id,
+      userId: attribution.userId,
       userEmail: userInfo?.user_email,
       pluginVersion: userInfo?.plugin_version,
       creditsUsed: 1,
@@ -264,6 +272,15 @@ async function processLicensedBulkItem({
       imageFilename: normalized.filename,
       endpoint: 'api/jobs/bulk',
       status: 'success'
+    });
+
+    logger.debug('[usage] attribution_debug', {
+      usage_log_id: usageWrite?.data?.id || null,
+      site_hash_present: Boolean(effectiveSite?.site_hash || siteKey),
+      license_id_present: Boolean(licenseId),
+      user_id_source: attribution.source,
+      endpoint: 'api/jobs/bulk',
+      credits_used: 1
     });
 
     if (effectiveSite?.id) {

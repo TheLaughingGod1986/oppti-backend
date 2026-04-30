@@ -42,7 +42,7 @@ jest.mock('../../services/quota', () => ({
 }));
 
 jest.mock('../../services/usage', () => ({
-  recordUsage: jest.fn().mockResolvedValue({ error: null })
+  recordUsage: jest.fn().mockResolvedValue({ error: null, data: { id: 'usage_1' } })
 }));
 
 jest.mock('../../services/imageAltState', () => ({
@@ -243,7 +243,7 @@ describe('POST /api/alt-text', () => {
     app.use(express.json());
     app.use('/api/alt-text', createAltTextRouter({
       supabase: createSupabaseMock({
-        id: 'lic-1',
+        id: '11111111-1111-1111-1111-111111111111',
         license_key: 'key-123',
         plan: 'pro',
         status: 'active'
@@ -282,7 +282,7 @@ describe('POST /api/alt-text', () => {
 
   test('uses logged-in quota when trial headers are stale', async () => {
     const supabase = createSupabaseMock({
-      id: 'lic-1',
+      id: '11111111-1111-1111-1111-111111111111',
       license_key: 'key-123',
       plan: 'pro',
       status: 'active'
@@ -310,6 +310,44 @@ describe('POST /api/alt-text', () => {
     expect(res.status).toBe(200);
     expect(res.body.altText).toBe('mock alt');
     expect(usageService.recordUsage).toHaveBeenCalledTimes(1);
+    expect(usageService.recordUsage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      userId: '11111111-1111-1111-1111-111111111111',
+      endpoint: 'api/alt-text',
+      status: 'success'
+    }));
+  });
+
+  test('falls back to site owner when no authenticated user is present', async () => {
+    quotaService.reserveGenerationQuota.mockResolvedValueOnce({
+      error: null,
+      reservation: { generation_request_id: 'generation_request_456' },
+      site: {
+        id: 'site_2',
+        site_hash: 'site-key-2',
+        license_key: 'key-123',
+        owner_user_id: '22222222-2222-2222-2222-222222222222'
+      }
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/alt-text', createAltTextRouter({
+      supabase: createSupabaseMock({ id: '11111111-1111-1111-1111-111111111111', license_key: 'key-123' }),
+      redis: null,
+      resultCache: new Map(),
+      checkRateLimit: async () => true,
+      getSiteFromHeaders: async () => ({ quota: 50, used: 0, remaining: 50 })
+    }));
+
+    const res = await request(app).post('/api/alt-text').send({
+      image: { url: 'https://example.com/img.jpg', width: 1, height: 1 }
+    });
+
+    expect(res.status).toBe(200);
+    expect(usageService.recordUsage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      userId: '22222222-2222-2222-2222-222222222222',
+      siteHash: 'site-key-2'
+    }));
   });
 
   test('anonymous generation succeeds and persists quota across requests', async () => {

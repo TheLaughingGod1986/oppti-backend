@@ -23,6 +23,7 @@ const { findOrCreateTrialSite } = require('../services/site');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { hashRequestFingerprint } = require('../services/siteQuota');
 const { extractUserInfo } = require('../middleware/auth');
+const { resolveUsageAttributionUserId } = require('../services/usageAttribution');
 const { buildTrialGenerationForSingleRequest } = require('../lib/trialGenerationContract');
 
 function hashPayload(base64) {
@@ -1012,11 +1013,28 @@ function createAltTextRouter({
         }
       }
 
+      const attribution = await resolveUsageAttributionUserId(supabase, {
+        req,
+        siteHash: effectiveSite?.site_hash || siteKey,
+        effectiveSite,
+        licenseId
+      });
+
+      if (!attribution.userId) {
+        logger.warn('[usage] attribution_missing', {
+          endpoint: 'api/alt-text',
+          status: 'success',
+          site_hash_present: Boolean(effectiveSite?.site_hash || siteKey),
+          license_id_present: Boolean(licenseId),
+          reason: attribution.reason || 'unknown'
+        });
+      }
+
       logger.info('[altText] Recording usage', {
         licenseKey: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : 'missing',
         licenseId: licenseId ? `${licenseId.substring(0, 8)}...` : 'missing',
         siteKey: effectiveSite?.site_hash || siteKey,
-        userId: userInfo.user_id,
+        userId: attribution.userId || null,
         creditsUsed: 1
       });
 
@@ -1024,7 +1042,7 @@ function createAltTextRouter({
         licenseKey: effectiveLicenseKey,
         licenseId,
         siteHash: effectiveSite?.site_hash || siteKey,
-        userId: userInfo.user_id,
+        userId: attribution.userId,
         userEmail: userInfo.user_email,
         pluginVersion: userInfo.plugin_version,
         creditsUsed: 1,
@@ -1038,6 +1056,15 @@ function createAltTextRouter({
         imageFilename: normalized.filename,
         endpoint: 'api/alt-text',
         status: 'success'
+      });
+
+      logger.debug('[usage] attribution_debug', {
+        usage_log_id: usageResult?.data?.id || null,
+        site_hash_present: Boolean(effectiveSite?.site_hash || siteKey),
+        license_id_present: Boolean(licenseId),
+        user_id_source: attribution.source,
+        endpoint: 'api/alt-text',
+        credits_used: 1
       });
 
       if (licenseId) {

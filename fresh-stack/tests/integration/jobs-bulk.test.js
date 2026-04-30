@@ -82,6 +82,7 @@ const { createQueue } = require('../../lib/queue');
 const { createBulkAltTextProcessor } = require('../../services/bulkAltTextProcessor');
 const { createJobsRouter } = require('../../routes/jobs');
 const imageAltStateService = require('../../services/imageAltState');
+const usageService = require('../../services/usage');
 
 function flushImmediate() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -183,6 +184,12 @@ describe('POST /api/jobs bulk pipeline', () => {
     expect(job.results).toHaveLength(5);
     expect(quota.enforceQuota).toHaveBeenCalled();
     expect(imageAltStateService.upsertGeneratedImageAltState).toHaveBeenCalledTimes(5);
+    expect(usageService.recordUsage).toHaveBeenCalled();
+    expect(usageService.recordUsage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      userId: '11111111-1111-1111-1111-111111111111',
+      endpoint: 'api/jobs/bulk',
+      status: 'success'
+    }));
     expect(imageAltStateService.resolveImageAltStateSyncTarget).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       siteHash: 'bulk-site',
       licenseKey: 'test-bulk-license'
