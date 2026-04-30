@@ -1,5 +1,6 @@
 const logger = require('../lib/logger');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
+const { isDevMode } = require('../lib/devMode');
 const { getQuotaStatus } = require('./quota');
 const { countImageAltStatesForSite } = require('./imageAltState');
 
@@ -427,7 +428,8 @@ function resolveDashboardState({ counts, job, credits } = {}) {
 }
 
 function buildDashboardSiteIdentity(req) {
-  const hasAccountAuth = Boolean(req?.user || req?.license || req?.header?.('X-License-Key'));
+  // TASK 2: in dev mode, treat as a connected account so dev sites are always allowed
+  const hasAccountAuth = isDevMode() || Boolean(req?.user || req?.license || req?.header?.('X-License-Key'));
   return buildSiteIdentity({
     siteHash: req?.trialMode
       ? req?.trialSiteHash

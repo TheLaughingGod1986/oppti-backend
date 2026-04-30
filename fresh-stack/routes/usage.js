@@ -1,6 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { isDevMode, DEV_USAGE_MOCK, applyDevUsageOverride } = require('../lib/devMode');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const { buildTrialGenerationForBatchPlan } = require('../lib/trialGenerationContract');
 const {
@@ -220,8 +221,56 @@ function createUsageRouter({ supabase }) {
       });
     }
 
+    // TASK 6: UI safety — not connected and not dev → tell the client to connect
     if (status.error) {
-      return res.status(status.status || 401).json(status);
+      if (!isDevMode()) {
+        return res.status(status.status || 401).json({
+          ...status,
+          connect_message: 'Connect account to see usage'
+        });
+      }
+      // Dev mode: fall through to mock data below instead of returning an error
+    }
+
+    // TASKS 3, 4, 5: dev-mode usage override (single source, filter hook, debug log)
+    if (isDevMode()) {
+      process.stderr.write('[BBAI DEV MODE] Using mocked usage data\n');
+      let usage = {
+        used: DEV_USAGE_MOCK.used,
+        remaining: DEV_USAGE_MOCK.remaining,
+        limit: DEV_USAGE_MOCK.limit,
+        plan: DEV_USAGE_MOCK.plan,
+        plan_type: DEV_USAGE_MOCK.plan,
+        billing_cycle: 'monthly',
+        auth_state: 'authenticated',
+        quota_type: 'monthly',
+        quota_state: 'active',
+        signup_required: false,
+        upgrade_required: false,
+        free_plan_offer: 50,
+        warning_threshold: null,
+        is_near_limit: false,
+        trial: null
+      };
+      // TASK 4: allow hook override without editing core
+      usage = applyDevUsageOverride(usage);
+      return res.json({
+        success: true,
+        data: {
+          usage,
+          auth_state: 'authenticated',
+          quota_type: 'monthly',
+          quota_state: 'active',
+          credits_total: usage.limit,
+          credits_used: usage.used,
+          credits_remaining: usage.remaining,
+          total_limit: usage.limit,
+          plan_type: usage.plan,
+          signup_required: false,
+          upgrade_required: false,
+          free_plan_offer: 50
+        }
+      });
     }
 
     const trial = await getAnonymousTrialStatus(supabase, {
