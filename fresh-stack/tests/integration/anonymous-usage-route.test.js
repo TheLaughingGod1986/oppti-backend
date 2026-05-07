@@ -82,7 +82,7 @@ describe('GET /usage anonymous trial status', () => {
       .set('X-Anon-Id', 'anon-usage-1');
 
     expect(res.status).toBe(200);
-    expect(res.body.data.auth_state).toBe('anonymous');
+    expect(res.body.data.auth_state).toBe('guest_trial');
     expect(res.body.data.quota_type).toBe('trial');
     expect(res.body.data.quota_state).toBe('active');
     expect(res.body.data.credits_total).toBe(5);
@@ -117,7 +117,7 @@ describe('GET /usage anonymous trial status', () => {
       .set('X-Anon-Id', 'anon-usage-2');
 
     expect(res.status).toBe(200);
-    expect(res.body.data.auth_state).toBe('anonymous');
+    expect(res.body.data.auth_state).toBe('guest_trial');
     expect(res.body.data.quota_type).toBe('trial');
     expect(res.body.data.quota_state).toBe('exhausted');
     expect(res.body.data.credits_total).toBe(5);

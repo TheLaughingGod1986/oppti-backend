@@ -1,5 +1,6 @@
 const {
   buildSiteIdentity,
+  normalizeDomain,
   normalizeSiteUrl,
   isDevelopmentHost,
   generateSyntheticSiteHash
@@ -12,6 +13,14 @@ describe('siteIdentity', () => {
     expect(result.isValid).toBe(true);
     expect(result.canonicalDomain).toBe('example.com');
     expect(result.normalizedSiteUrl).toBe('example.com/wp-admin');
+  });
+
+  test('normalizes domains for usage telemetry', () => {
+    expect(normalizeDomain('https://www.example.com/blog?x=1#top')).toBe('example.com');
+    expect(normalizeDomain('http://example.co.uk')).toBe('example.co.uk');
+    expect(normalizeDomain('example.com/wp-admin')).toBe('example.com');
+    expect(normalizeDomain('')).toBeNull();
+    expect(normalizeDomain('http://')).toBeNull();
   });
 
   test('preserves meaningful subdomains', () => {

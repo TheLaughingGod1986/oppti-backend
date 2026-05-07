@@ -384,7 +384,7 @@ describe('POST /api/alt-text', () => {
       });
 
     expect(first.status).toBe(200);
-    expect(first.body.auth_state).toBe('anonymous');
+    expect(first.body.auth_state).toBe('guest_trial');
     expect(first.body.quota_type).toBe('trial');
     expect(first.body.credits_total).toBe(5);
     expect(first.body.credits_used).toBe(1);
@@ -422,7 +422,17 @@ describe('POST /api/alt-text', () => {
       total: 5
     }));
     expect(supabase._state.trialUsage).toHaveLength(2);
-    expect(usageService.recordUsage).not.toHaveBeenCalled();
+    expect(usageService.recordUsage).toHaveBeenCalledTimes(2);
+    expect(usageService.recordUsage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      userId: null,
+      siteHash: 'site-anon-1',
+      installHash: 'site-anon-1',
+      authState: 'guest_trial',
+      planKey: 'trial',
+      isTrial: true,
+      requestSource: 'wordpress_plugin',
+      domain: 'example.com'
+    }));
   });
 
   test('anonymous generation returns trial counters even when quota status includes free-plan monthly counters', async () => {
@@ -467,7 +477,7 @@ describe('POST /api/alt-text', () => {
       });
 
     expect(res.status).toBe(200);
-    expect(res.body.auth_state).toBe('anonymous');
+    expect(res.body.auth_state).toBe('guest_trial');
     expect(res.body.quota_type).toBe('trial');
     expect(res.body.credits_total).toBe(5);
     expect(res.body.credits_used).toBe(1);
@@ -476,6 +486,13 @@ describe('POST /api/alt-text', () => {
     expect(res.body.limit).toBe(5);
     expect(res.body.free_plan_offer).toBe(50);
     expect(supabase._state.trialUsage).toHaveLength(0);
+    expect(usageService.recordUsage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      siteHash: 'site-anon-v2',
+      authState: 'guest_trial',
+      planKey: 'trial',
+      isTrial: true,
+      domain: 'example.com'
+    }));
   });
 
   test('same site does not mint a fresh anonymous trial for a different anon id', async () => {
@@ -520,7 +537,7 @@ describe('POST /api/alt-text', () => {
 
     expect(res.status).toBe(402);
     expect(res.body.code).toBe('TRIAL_EXHAUSTED');
-    expect(res.body.auth_state).toBe('anonymous');
+    expect(res.body.auth_state).toBe('guest_trial');
     expect(res.body.quota_type).toBe('trial');
     expect(res.body.quota_state).toBe('exhausted');
     expect(res.body.credits_total).toBe(5);

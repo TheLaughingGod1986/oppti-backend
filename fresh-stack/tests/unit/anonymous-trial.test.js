@@ -12,7 +12,7 @@ describe('anonymous trial quota contract', () => {
     });
 
     expect(status).toEqual(expect.objectContaining({
-      auth_state: 'anonymous',
+      auth_state: 'guest_trial',
       quota_type: 'trial',
       quota_state: 'active',
       credits_total: 5,

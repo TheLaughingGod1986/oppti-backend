@@ -68,7 +68,7 @@ function buildAnonymousTrialStatus({ used, limit = getAnonymousTrialLimit(), ano
   });
 
   return {
-    auth_state: 'anonymous',
+    auth_state: 'guest_trial',
     quota_type: 'trial',
     quota_state: quotaState,
     credits_total: normalizedLimit,
@@ -89,7 +89,7 @@ function buildAnonymousTrialStatus({ used, limit = getAnonymousTrialLimit(), ano
     billing_cycle: 'trial',
     anon_id: anonId || null,
     anonymous: {
-      auth_state: 'anonymous',
+      auth_state: 'guest_trial',
       anon_id: anonId || null,
       used: normalizedUsed,
       remaining,

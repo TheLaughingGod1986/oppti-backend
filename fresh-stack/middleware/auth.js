@@ -186,8 +186,11 @@ function authMiddleware({ supabase }) {
       || null;
     const installUuid = req.header('X-Install-UUID')
       || req.header('X-WP-Install-UUID')
+      || req.header('X-Install-Hash')
       || req.header('X-Install-Id')
       || req.header('X-Install-ID')
+      || body.install_hash
+      || body.installHash
       || body.install_uuid
       || body.installUuid
       || null;
@@ -305,7 +308,15 @@ function extractUserInfo(req) {
   return {
     user_id: req.header('X-WP-User-ID') || req.header('X-User-ID') || null,
     user_email: req.header('X-WP-User-Email') || req.header('X-User-Email') || null,
-    plugin_version: req.header('X-Plugin-Version') || null
+    plugin_version: req.header('X-Plugin-Version') || null,
+    wp_version: req.header('X-WP-Version') || null,
+    php_version: req.header('X-PHP-Version') || null,
+    auth_state: req.header('X-Auth-State') || null,
+    plan_key: req.header('X-Plan-Key') || null,
+    request_source: req.header('X-Request-Source') || null,
+    plugin_channel: req.header('X-Plugin-Channel') || null,
+    environment: req.header('X-Environment') || null,
+    install_hash: req.header('X-Install-Hash') || req.header('X-Install-UUID') || req.header('X-WP-Install-UUID') || null
   };
 }
 

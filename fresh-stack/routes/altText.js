@@ -20,7 +20,7 @@ const {
 const { upsertGeneratedImageAltState } = require('../services/imageAltState');
 const { recordUsage } = require('../services/usage');
 const { findOrCreateTrialSite } = require('../services/site');
-const { buildSiteIdentity } = require('../lib/siteIdentity');
+const { buildSiteIdentity, normalizeDomain } = require('../lib/siteIdentity');
 const { hashRequestFingerprint } = require('../services/siteQuota');
 const { extractUserInfo } = require('../middleware/auth');
 const { resolveUsageAttributionUserId } = require('../services/usageAttribution');
@@ -56,6 +56,58 @@ function extractIdempotencyKey(req) {
     || req.body?.idempotency_key
     || req.body?.idempotencyKey
     || null;
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim() !== '') {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function sanitizeTelemetryValue(...args) {
+  const last = args[args.length - 1];
+  const maxLength = typeof last === 'number' ? last : 255;
+  const values = typeof last === 'number' ? args.slice(0, -1) : args;
+  const normalized = firstString(...values);
+  return normalized ? normalized.slice(0, maxLength) : null;
+}
+
+function extractRequestTelemetry(req, body = {}) {
+  const siteUrl = sanitizeTelemetryValue(
+    req.header('X-Site-URL'),
+    body.site_url,
+    body.siteUrl,
+    body.trial_site_url,
+    500
+  );
+
+  return {
+    site_url: siteUrl,
+    domain: normalizeDomain(siteUrl),
+    wp_version: sanitizeTelemetryValue(req.header('X-WP-Version'), body.wp_version, body.wpVersion, 64),
+    php_version: sanitizeTelemetryValue(req.header('X-PHP-Version'), body.php_version, body.phpVersion, 64),
+    install_hash: sanitizeTelemetryValue(
+      req.header('X-Install-Hash'),
+      req.header('X-Install-UUID'),
+      req.header('X-WP-Install-UUID'),
+      body.install_hash,
+      body.installHash,
+      body.install_uuid,
+      body.installUuid,
+      255
+    ),
+    auth_state: sanitizeTelemetryValue(req.header('X-Auth-State'), body.auth_state, body.authState, 64),
+    plan_key: sanitizeTelemetryValue(req.header('X-Plan-Key'), body.plan_key, body.planKey, 64),
+    request_source: sanitizeTelemetryValue(req.header('X-Request-Source'), body.request_source, body.requestSource, 64),
+    plugin_channel: sanitizeTelemetryValue(req.header('X-Plugin-Channel'), body.plugin_channel, body.pluginChannel, 64),
+    environment: sanitizeTelemetryValue(req.header('X-Environment'), body.environment, 64),
+    request_id: sanitizeTelemetryValue(req.id, req.header('X-Request-ID'), body.request_id, body.requestId, 128),
+    generation_batch_id: sanitizeTelemetryValue(body.generation_batch_id, body.generationBatchId, 128),
+    user_agent: sanitizeTelemetryValue(req.get('user-agent'), 1000)
+  };
 }
 
 function buildGenerationFingerprint({
@@ -333,7 +385,9 @@ function createAltTextRouter({
     );
     const siteIdentity = buildSiteIdentity({
       siteHash: req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || 'default'),
-      installUuid: req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || req.body?.site_id || req.body?.siteId || null),
+      installUuid: req.trialMode
+        ? (req.header('X-Install-Hash') || req.header('X-Install-UUID') || req.trialSiteHash)
+        : (req.header('X-Install-Hash') || req.header('X-Install-UUID') || req.header('X-Site-Key') || req.header('X-Site-Hash') || req.body?.install_hash || req.body?.installHash || req.body?.site_id || req.body?.siteId || null),
       siteUrl: req.header('X-Site-URL') || req.body?.trial_site_url || req.body?.site_url || null,
       siteFingerprint: req.header('X-Site-Fingerprint') || req.body?.site_fingerprint || null,
       // Trial mode is explicitly intended to work for local/dev installs.
@@ -346,6 +400,7 @@ function createAltTextRouter({
       body: parsed.data,
       siteIdentity
     });
+    const requestTelemetry = extractRequestTelemetry(req, req.body || {});
 
     if (req.trialMode) {
       logger.info('[altText] Anonymous identity resolved', {
@@ -605,6 +660,12 @@ function createAltTextRouter({
       image_filename: normalized.filename || null,
       image_url: normalized.url || null,
       plugin_version: userInfo.plugin_version || null,
+      install_hash: requestTelemetry.install_hash || null,
+      auth_state: req.trialMode ? 'guest_trial' : (requestTelemetry.auth_state || null),
+      plan_key: requestTelemetry.plan_key || null,
+      request_source: requestTelemetry.request_source || 'wordpress_plugin',
+      plugin_channel: requestTelemetry.plugin_channel || null,
+      environment: requestTelemetry.environment || null,
       wp_user_id: userInfo.user_id || null,
       wp_user_email: userInfo.user_email || null,
       anon_id: anonymousContext.anonId || null,
@@ -957,6 +1018,42 @@ function createAltTextRouter({
     const effectiveLicenseKey = effectiveSite?.license_key || licenseKey || null;
 
     if (req.trialMode) {
+      const trialUsageLogPayload = {
+        licenseKey: null,
+        licenseId: null,
+        siteHash: effectiveSite?.site_hash || siteIdentity.siteHash || req.trialSiteHash,
+        installHash: requestTelemetry.install_hash || siteIdentity.wpInstallUuid || null,
+        siteUrl: requestTelemetry.site_url || siteIdentity.siteUrl || null,
+        domain: requestTelemetry.domain || normalizeDomain(siteIdentity.siteUrl),
+        userId: null,
+        userEmail: null,
+        pluginVersion: userInfo.plugin_version,
+        wpVersion: requestTelemetry.wp_version || userInfo.wp_version,
+        phpVersion: requestTelemetry.php_version || userInfo.php_version,
+        authState: 'guest_trial',
+        planKey: 'trial',
+        requestSource: requestTelemetry.request_source || 'wordpress_plugin',
+        pluginChannel: requestTelemetry.plugin_channel,
+        environment: requestTelemetry.environment,
+        requestId: requestTelemetry.request_id || req.id,
+        generationBatchId: requestTelemetry.generation_batch_id,
+        userAgent: requestTelemetry.user_agent,
+        imageCount: 1,
+        eventType: 'generation',
+        isTrial: true,
+        creditsUsed: 1,
+        promptTokens: usage?.prompt_tokens,
+        completionTokens: usage?.completion_tokens,
+        totalTokens: usage?.total_tokens,
+        cached: false,
+        modelUsed: meta?.modelUsed,
+        generationTimeMs: meta?.generation_time_ms,
+        imageUrl: normalized.url,
+        imageFilename: normalized.filename,
+        endpoint: 'api/alt-text',
+        status: 'success'
+      };
+
       if (reservation.reservation?.quota_source === 'legacy_trial') {
         const trialPayload = {
           site_hash: siteIdentity.siteHash || req.trialSiteHash,
@@ -988,6 +1085,14 @@ function createAltTextRouter({
         }
         usageResult = { error };
         trialUsageResult = usageResult;
+        const trialUsageLog = await recordUsage(supabase, trialUsageLogPayload);
+        if (trialUsageLog.error) {
+          logger.warn('[usage] anonymous_trial_usage_logs_write_failed', {
+            site_hash: trialUsageLogPayload.siteHash || null,
+            request_id: req.id || null,
+            error: serializeSupabaseError(trialUsageLog.error)
+          });
+        }
       } else {
         logger.info('[altText] Anonymous trial usage recorded by V2 site_trials', {
           site_hash: effectiveSite?.site_hash || siteIdentity.siteHash || req.trialSiteHash,
@@ -996,6 +1101,14 @@ function createAltTextRouter({
           quota_source: reservation.reservation?.quota_source || null,
           generation_request_id: reservation.reservation?.generation_request_id || null
         });
+        const trialUsageLog = await recordUsage(supabase, trialUsageLogPayload);
+        if (trialUsageLog.error) {
+          logger.warn('[usage] anonymous_trial_usage_logs_write_failed', {
+            site_hash: trialUsageLogPayload.siteHash || null,
+            request_id: req.id || null,
+            error: serializeSupabaseError(trialUsageLog.error)
+          });
+        }
       }
     } else {
       // Normal flow: record in usage_logs with license tracking.
@@ -1045,6 +1158,21 @@ function createAltTextRouter({
         userId: attribution.userId,
         userEmail: userInfo.user_email,
         pluginVersion: userInfo.plugin_version,
+        wpVersion: requestTelemetry.wp_version || userInfo.wp_version,
+        phpVersion: requestTelemetry.php_version || userInfo.php_version,
+        siteUrl: requestTelemetry.site_url || siteIdentity.siteUrl,
+        domain: requestTelemetry.domain || normalizeDomain(siteIdentity.siteUrl),
+        installHash: requestTelemetry.install_hash,
+        authState: requestTelemetry.auth_state || (licenseId ? 'authenticated_paid' : 'authenticated_free'),
+        planKey: requestTelemetry.plan_key,
+        requestSource: requestTelemetry.request_source || 'wordpress_plugin',
+        pluginChannel: requestTelemetry.plugin_channel,
+        environment: requestTelemetry.environment,
+        requestId: requestTelemetry.request_id || req.id,
+        generationBatchId: requestTelemetry.generation_batch_id,
+        userAgent: requestTelemetry.user_agent,
+        imageCount: 1,
+        eventType: 'generation',
         creditsUsed: 1,
         promptTokens: usage?.prompt_tokens,
         completionTokens: usage?.completion_tokens,

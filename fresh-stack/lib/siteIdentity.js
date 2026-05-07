@@ -34,6 +34,25 @@ function normalizeHost(hostname) {
   return host || null;
 }
 
+function normalizeDomain(siteUrl) {
+  if (!siteUrl || typeof siteUrl !== 'string') return null;
+
+  const trimmed = siteUrl.trim();
+  if (!trimmed) return null;
+
+  let candidate = trimmed;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) {
+    candidate = `https://${candidate}`;
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    return normalizeHost(parsed.hostname);
+  } catch (_error) {
+    return null;
+  }
+}
+
 function isDevelopmentHost(hostname) {
   const host = normalizeHost(hostname);
   if (!host) return false;
@@ -184,7 +203,7 @@ function extractSiteIdentityFromRequest(req, body = req?.body || {}) {
     siteUrl: req?.header('X-Site-URL') || body.site_url || body.siteUrl || null,
     siteHash: req?.header('X-Site-Hash') || req?.header('X-Site-Key') || body.site_id || body.siteId || body.siteHash || body.installId || null,
     siteFingerprint: req?.header('X-Site-Fingerprint') || body.site_fingerprint || body.siteFingerprint || body.fingerprint || null,
-    installUuid: req?.header('X-Install-UUID') || body.install_uuid || body.installUuid || body.site_id || body.siteId || body.installId || null
+    installUuid: req?.header('X-Install-Hash') || req?.header('X-Install-UUID') || body.install_hash || body.installHash || body.install_uuid || body.installUuid || body.site_id || body.siteId || body.installId || null
   });
 }
 
@@ -193,6 +212,7 @@ module.exports = {
   extractSiteIdentityFromRequest,
   normalizeIdentifier,
   normalizeHost,
+  normalizeDomain,
   normalizeSiteUrl,
   isDevelopmentHost,
   generateSyntheticSiteHash

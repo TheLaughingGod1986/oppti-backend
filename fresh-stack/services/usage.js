@@ -20,9 +20,16 @@ async function recordUsage(supabase, {
   licenseKey,
   licenseId,
   siteHash,
+  installHash,
+  siteUrl,
+  domain,
   userId,
   userEmail,
   creditsUsed = 1,
+  endpoint = 'api/alt-text',
+  eventType,
+  imageCount = 1,
+  imageId,
   promptTokens,
   completionTokens,
   totalTokens,
@@ -32,7 +39,17 @@ async function recordUsage(supabase, {
   imageUrl,
   imageFilename,
   pluginVersion,
-  endpoint = 'api/alt-text',
+  wpVersion,
+  phpVersion,
+  authState,
+  planKey,
+  requestSource,
+  pluginChannel,
+  environment,
+  requestId,
+  generationBatchId,
+  userAgent,
+  isTrial,
   status = 'success',
   errorMessage = null
 }) {
@@ -44,9 +61,16 @@ async function recordUsage(supabase, {
     license_key: licenseKey || null,
     license_id: validatedLicenseId,
     site_hash: siteHash || null,
+    install_hash: installHash || null,
+    site_url: siteUrl || null,
+    domain: domain || null,
     user_id: validatedUserId,
     user_email: userEmail || null,
     credits_used: creditsUsed,
+    endpoint: endpoint || 'api/alt-text',
+    event_type: eventType || endpoint || 'generation',
+    image_count: Math.max(1, Number(imageCount) || 1),
+    image_id: imageId || null,
     prompt_tokens: promptTokens || null,
     completion_tokens: completionTokens || null,
     total_tokens: totalTokens ?? (promptTokens && completionTokens ? promptTokens + completionTokens : null),
@@ -56,7 +80,17 @@ async function recordUsage(supabase, {
     image_url: imageUrl || null,
     image_filename: imageFilename || null,
     plugin_version: pluginVersion || null,
-    endpoint: endpoint || 'api/alt-text',
+    wp_version: wpVersion || null,
+    php_version: phpVersion || null,
+    is_trial: typeof isTrial === 'boolean' ? isTrial : authState === 'guest_trial',
+    auth_state: authState || (validatedUserId ? 'authenticated_unknown' : null),
+    plan_key: planKey || null,
+    request_source: requestSource || null,
+    plugin_channel: pluginChannel || null,
+    environment: environment || null,
+    request_id: requestId || null,
+    generation_batch_id: generationBatchId || null,
+    user_agent: userAgent || null,
     status: status || 'success',
     error_message: errorMessage || null
   };
@@ -69,7 +103,36 @@ async function recordUsage(supabase, {
     credits_used: creditsUsed 
   });
   
-  const { error, data } = await supabase.from('usage_logs').insert(payload).select();
+  const insertUsageLog = (insertPayload) => supabase.from('usage_logs').insert(insertPayload).select();
+  let { error, data } = await insertUsageLog(payload);
+  let schemaFallbackUsed = false;
+
+  if (error && isTelemetrySchemaError(error)) {
+    schemaFallbackUsed = true;
+    const legacyPayload = {
+      license_key: payload.license_key,
+      license_id: payload.license_id,
+      site_hash: payload.site_hash,
+      user_id: payload.user_id,
+      user_email: payload.user_email,
+      credits_used: payload.credits_used,
+      prompt_tokens: payload.prompt_tokens,
+      completion_tokens: payload.completion_tokens,
+      total_tokens: payload.total_tokens,
+      cached: payload.cached,
+      model_used: payload.model_used,
+      generation_time_ms: payload.generation_time_ms,
+      image_url: payload.image_url,
+      image_filename: payload.image_filename,
+      plugin_version: payload.plugin_version,
+      endpoint: payload.endpoint,
+      status: payload.status,
+      error_message: payload.error_message
+    };
+    const fallback = await insertUsageLog(legacyPayload);
+    error = fallback.error;
+    data = fallback.data;
+  }
 
   if (error) {
     logger.error('[usage] usage_log_write', {
@@ -78,6 +141,7 @@ async function recordUsage(supabase, {
       site_hash: payload.site_hash || null,
       endpoint: payload.endpoint,
       status: payload.status,
+      schema_fallback_used: schemaFallbackUsed,
       error: serializeSupabaseError(error)
     });
     logger.error('[usage] Failed to insert usage log', { 
@@ -105,6 +169,7 @@ async function recordUsage(supabase, {
       site_hash: payload.site_hash,
       endpoint: payload.endpoint,
       status: payload.status,
+      schema_fallback_used: schemaFallbackUsed,
       cached: payload.cached,
       credits_used: payload.credits_used
     });
@@ -153,6 +218,16 @@ async function recordUsage(supabase, {
     table: 'usage_logs',
     quota_summary_expected: Boolean(!error && payload.license_key)
   };
+}
+
+function isTelemetrySchemaError(error) {
+  const message = String(error?.message || error?.details || '').toLowerCase();
+  const code = String(error?.code || '').toLowerCase();
+  return code === 'pgrst204'
+    || code === '42703'
+    || message.includes('could not find')
+    || message.includes('column')
+    || message.includes('schema cache');
 }
 
 /**
