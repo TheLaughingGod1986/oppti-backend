@@ -19,7 +19,11 @@ const {
 async function validateLicense(supabase, licenseKey) {
   const key = (licenseKey || '').trim();
   if (!key) {
-    return { error: 'INVALID_LICENSE', status: 401, message: 'License key is required' };
+    return { error: 'INVALID_LICENSE', code: 'INVALID_LICENSE', status: 401, message: 'License key is required' };
+  }
+
+  if (!supabase) {
+    return { error: 'SERVICE_UNAVAILABLE', code: 'SERVICE_UNAVAILABLE', status: 503, message: 'Database connection not available' };
   }
 
   const { data: license, error } = await supabase
@@ -29,14 +33,14 @@ async function validateLicense(supabase, licenseKey) {
     .single();
 
   if (error || !license) {
-    return { error: 'INVALID_LICENSE', status: 401, message: 'License key not found' };
+    return { error: 'INVALID_LICENSE', code: 'INVALID_LICENSE', status: 401, message: 'License key not found' };
   }
 
   if (license.status === 'expired') {
-    return { error: 'LICENSE_EXPIRED', status: 410, message: 'License expired', license };
+    return { error: 'LICENSE_EXPIRED', code: 'LICENSE_EXPIRED', status: 410, message: 'License expired', license };
   }
   if (['suspended', 'cancelled'].includes(license.status)) {
-    return { error: 'LICENSE_SUSPENDED', status: 403, message: 'License suspended or cancelled', license };
+    return { error: 'LICENSE_SUSPENDED', code: 'LICENSE_SUSPENDED', status: 403, message: 'License suspended or cancelled', license };
   }
 
   const limits = getLimits(license.plan);
