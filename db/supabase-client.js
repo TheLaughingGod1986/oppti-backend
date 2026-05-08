@@ -50,6 +50,17 @@ if (process.env.NODE_ENV === 'test') {
     throw new Error('SUPABASE_SERVICE_ROLE_KEY environment variable is required');
   }
 
+  // @supabase/realtime-js requires a WebSocket implementation. Node.js >= 21
+  // ships globalThis.WebSocket natively; older runtimes (e.g. Render free tier
+  // on Node 20) do not, so we polyfill with the `ws` package.
+  if (typeof globalThis.WebSocket === 'undefined') {
+    try {
+      globalThis.WebSocket = require('ws');
+    } catch (_e) {
+      // ws unavailable — realtime features disabled, REST queries still work
+    }
+  }
+
   // Create Supabase client with service role key for server-side operations
   // This bypasses Row Level Security (RLS) policies - use with caution
   const supabase = createClient(
