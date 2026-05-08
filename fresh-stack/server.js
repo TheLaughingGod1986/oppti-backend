@@ -55,14 +55,22 @@ const PROTECTED_API_PREFIXES = [
 ];
 
 let supabase = null;
+logger.info('[init] Supabase env check', {
+  SUPABASE_URL_set: Boolean(process.env.SUPABASE_URL),
+  SUPABASE_SERVICE_ROLE_KEY_set: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+  SUPABASE_URL_length: (process.env.SUPABASE_URL || '').length,
+  SUPABASE_SERVICE_ROLE_KEY_length: (process.env.SUPABASE_SERVICE_ROLE_KEY || '').length,
+});
 try {
   const supabaseClient = require('../db/supabase-client');
   supabase = supabaseClient.supabase || supabaseClient;
   if (supabase) {
-    logger.info('[init] Supabase client initialized');
+    logger.info('[init] Supabase client initialized successfully');
+  } else {
+    logger.error('[init] Supabase client loaded but returned null/undefined');
   }
-} catch (_error) {
-  logger.warn('[init] Supabase client not available; API functionality limited');
+} catch (initError) {
+  logger.error('[init] Supabase client init failed', { error: initError.message, stack: initError.stack });
 }
 
 function buildRuntimeIdentity() {
