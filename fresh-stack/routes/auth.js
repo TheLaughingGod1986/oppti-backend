@@ -397,6 +397,15 @@ function createAuthRouter({ supabase }) {
       });
     }
 
+    if (!supabase) {
+      return sendRegisterResponse({
+        success: false,
+        error: 'SERVICE_UNAVAILABLE',
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Service temporarily unavailable. Please try again later.',
+      });
+    }
+
     const { email, password, name, site_id, site_url } = parsed.data;
     const registerTrace = buildAuthWriteTrace({
       connectionSource: 'register',
@@ -660,6 +669,14 @@ function createAuthRouter({ supabase }) {
       });
     }
 
+    if (!supabase) {
+      return res.status(503).json({
+        error: 'SERVICE_UNAVAILABLE',
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Service temporarily unavailable. Please try again later.',
+      });
+    }
+
     const { email, password } = parsed.data;
     const loginTrace = buildAuthWriteTrace({
       connectionSource: 'login',
@@ -860,6 +877,14 @@ function createAuthRouter({ supabase }) {
       }
 
       const token = authHeader.substring(7); // Remove 'Bearer '
+
+      if (!supabase) {
+        return res.status(503).json({
+          error: 'SERVICE_UNAVAILABLE',
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Service temporarily unavailable. Please try again later.',
+        });
+      }
 
       // Verify token
       let decoded;
