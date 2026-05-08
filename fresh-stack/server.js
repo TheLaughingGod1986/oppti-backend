@@ -56,10 +56,12 @@ const PROTECTED_API_PREFIXES = [
 
 let supabase = null;
 logger.info('[init] Supabase env check', {
+  NODE_ENV: process.env.NODE_ENV || '(not set)',
   SUPABASE_URL_set: Boolean(process.env.SUPABASE_URL),
   SUPABASE_SERVICE_ROLE_KEY_set: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
   SUPABASE_URL_length: (process.env.SUPABASE_URL || '').length,
   SUPABASE_SERVICE_ROLE_KEY_length: (process.env.SUPABASE_SERVICE_ROLE_KEY || '').length,
+  SUPABASE_URL_prefix: (process.env.SUPABASE_URL || '').substring(0, 30) || '(empty)',
 });
 try {
   const supabaseClient = require('../db/supabase-client');
