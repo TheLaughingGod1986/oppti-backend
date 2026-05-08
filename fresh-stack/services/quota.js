@@ -77,7 +77,7 @@ async function getLegacyQuotaStatus(supabase, {
     .single();
 
   if (licenseError || !license) {
-    return { error: 'INVALID_LICENSE', status: 401, message: 'License not found' };
+    return { error: 'INVALID_LICENSE', code: 'INVALID_LICENSE', status: 401, message: 'License not found' };
   }
 
   const limits = getLimits(license.plan);
@@ -388,6 +388,7 @@ async function checkQuotaAvailable(supabase, { licenseKey, siteHash, creditsNeed
   if (status.credits_remaining < creditsNeeded) {
     return {
       error: 'QUOTA_EXCEEDED',
+      code: 'QUOTA_EXCEEDED',
       status: 402,
       message: 'Quota exceeded',
       credits_used: status.credits_used,
@@ -568,6 +569,7 @@ async function reserveGenerationQuota(supabase, {
   if (legacy.error) {
     return {
       error: legacy.error,
+      code: legacy.error,
       status: legacy.status,
       message: legacy.message,
       payload: legacy

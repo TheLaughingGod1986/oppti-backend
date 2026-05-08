@@ -281,7 +281,7 @@ function authMiddleware({ supabase }) {
         req.authMethod = 'api_token';
         return next();
       }
-      return res.status(401).json({ error: 'INVALID_API_TOKEN', message: 'Invalid or missing API token' });
+      return res.status(401).json({ error: 'INVALID_API_TOKEN', code: 'INVALID_API_TOKEN', message: 'Invalid or missing API token' });
     }
 
     // Allow unauthenticated only if no token configured
@@ -296,8 +296,9 @@ function authMiddleware({ supabase }) {
       hasInstallUuid: Boolean(installUuid),
       hasSiteFingerprint: Boolean(siteFingerprint)
     });
-    return res.status(401).json({ 
-      error: 'INVALID_LICENSE', 
+    return res.status(401).json({
+      error: 'INVALID_LICENSE',
+      code: 'INVALID_LICENSE',
       message: 'License key required. Please send X-License-Key header with your license key.',
       hint: 'Check your plugin settings to ensure the license key is configured correctly.'
     });
