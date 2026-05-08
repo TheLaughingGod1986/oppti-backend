@@ -66,13 +66,19 @@ logger.info('[init] Supabase env check', {
 try {
   const supabaseClient = require('../db/supabase-client');
   supabase = supabaseClient.supabase || supabaseClient;
-  if (supabase) {
+  if (supabase && typeof supabase.from === 'function') {
     logger.info('[init] Supabase client initialized successfully');
   } else {
-    logger.error('[init] Supabase client loaded but returned null/undefined');
+    logger.error('[init] Supabase client loaded but is not a valid client object', { type: typeof supabase });
+    supabase = null;
   }
 } catch (initError) {
   logger.error('[init] Supabase client init failed', { error: initError.message, stack: initError.stack });
+  supabase = null;
+}
+
+if (!supabase) {
+  logger.error('[init] Supabase client unavailable. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables.');
 }
 
 function buildRuntimeIdentity() {
@@ -134,7 +140,18 @@ function createApp({
 
   app.get('/health', (_req, res) => {
     const runtime = runtimeIdentityProvider();
-    res.json({
+    const dbOk = Boolean(supabaseClient);
+    if (!dbOk) {
+      return res.status(503).json({
+        ok: false,
+        service: runtime.service_name,
+        time: new Date().toISOString(),
+        error: 'DATABASE_UNAVAILABLE',
+        message: 'Supabase client not initialized',
+        runtime
+      });
+    }
+    return res.json({
       ok: true,
       service: runtime.service_name,
       time: new Date().toISOString(),
@@ -377,6 +394,10 @@ function startServer({
   app = createApp(),
   supabaseClient = supabase
 } = {}) {
+  if (!supabaseClient) {
+    logger.error('[init] Cannot start server: Supabase client is not initialized. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
+    process.exit(1);
+  }
   return app.listen(port, host, async () => {
     logger.info(`Fresh alt-text service running on http://${host}:${port}`);
     logRuntimeIdentityStartup({
