@@ -654,6 +654,7 @@ function createAuthRouter({ supabase }) {
     if (!parsed.success) {
       return res.status(400).json({
         error: 'INVALID_REQUEST',
+        code: 'INVALID_REQUEST',
         message: 'Invalid request data',
         details: parsed.error.flatten(),
       });
@@ -680,6 +681,7 @@ function createAuthRouter({ supabase }) {
         emitAuthWriteTrace('login', loginTrace);
         return res.status(401).json({
           error: 'INVALID_CREDENTIALS',
+          code: 'INVALID_CREDENTIALS',
           message: 'Invalid email or password',
         });
       }
@@ -690,6 +692,7 @@ function createAuthRouter({ supabase }) {
         emitAuthWriteTrace('login', loginTrace);
         return res.status(401).json({
           error: 'NO_PASSWORD',
+          code: 'NO_PASSWORD',
           message: 'This account uses license key authentication. Please contact your administrator for the license key.',
         });
       }
@@ -706,10 +709,11 @@ function createAuthRouter({ supabase }) {
         emitAuthWriteTrace('login', loginTrace);
         return res.status(401).json({
           error: 'INVALID_CREDENTIALS',
+          code: 'INVALID_CREDENTIALS',
           message: 'Invalid email or password',
         });
       }
-      
+
       logger.info('[Auth] Login successful', { email, userId: user.id });
       loginTrace.user_id = user.id;
       loginTrace.license_key_prefix = redactLicenseKey(user.license_key);
@@ -720,6 +724,7 @@ function createAuthRouter({ supabase }) {
         emitAuthWriteTrace('login', loginTrace);
         return res.status(403).json({
           error: 'ACCOUNT_INACTIVE',
+          code: 'ACCOUNT_INACTIVE',
           message: 'Your account is not active',
           status: user.status,
         });
@@ -835,6 +840,7 @@ function createAuthRouter({ supabase }) {
       logger.error('[Auth] Login error:', err);
       return res.status(500).json({
         error: 'SERVER_ERROR',
+        code: 'SERVER_ERROR',
         message: 'An error occurred during login',
       });
     }
@@ -848,6 +854,7 @@ function createAuthRouter({ supabase }) {
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({
           error: 'UNAUTHORIZED',
+          code: 'UNAUTHORIZED',
           message: 'No authentication token provided',
         });
       }
@@ -861,6 +868,7 @@ function createAuthRouter({ supabase }) {
       } catch (err) {
         return res.status(401).json({
           error: 'INVALID_TOKEN',
+          code: 'INVALID_TOKEN',
           message: 'Invalid or expired token',
         });
       }
@@ -875,6 +883,7 @@ function createAuthRouter({ supabase }) {
       if (error || !user) {
         return res.status(404).json({
           error: 'USER_NOT_FOUND',
+          code: 'USER_NOT_FOUND',
           message: 'User account not found',
         });
       }
@@ -895,6 +904,7 @@ function createAuthRouter({ supabase }) {
       logger.error('[Auth] Get user error:', err);
       return res.status(500).json({
         error: 'SERVER_ERROR',
+        code: 'SERVER_ERROR',
         message: 'An error occurred',
       });
     }
@@ -921,6 +931,7 @@ function createAuthRouter({ supabase }) {
       });
       return res.status(400).json({
         error: 'INVALID_REQUEST',
+        code: 'INVALID_REQUEST',
         message: 'Invalid email address',
       });
     }
@@ -1066,6 +1077,7 @@ function createAuthRouter({ supabase }) {
       });
       return res.status(400).json({
         error: 'INVALID_REQUEST',
+        code: 'INVALID_REQUEST',
         message: 'Invalid request data. Password must be at least 8 characters.',
         details: parsed.error.flatten(),
       });
@@ -1077,6 +1089,7 @@ function createAuthRouter({ supabase }) {
       if (!supabase) {
         return res.status(503).json({
           error: 'SERVICE_UNAVAILABLE',
+          code: 'SERVICE_UNAVAILABLE',
           message: 'Password reset service is not available. Database connection required.',
         });
       }
@@ -1092,6 +1105,7 @@ function createAuthRouter({ supabase }) {
         // Don't reveal if email exists
         return res.status(400).json({
           error: 'INVALID_TOKEN',
+          code: 'INVALID_TOKEN',
           message: 'Invalid or expired reset token',
         });
       }
@@ -1101,6 +1115,7 @@ function createAuthRouter({ supabase }) {
         logger.warn('[Auth] Invalid reset token', { email, tokenProvided: token.substring(0, 8) + '...' });
         return res.status(400).json({
           error: 'INVALID_TOKEN',
+          code: 'INVALID_TOKEN',
           message: 'Invalid or expired reset token',
         });
       }
@@ -1113,6 +1128,7 @@ function createAuthRouter({ supabase }) {
           logger.warn('[Auth] Expired reset token', { email, expiresAt });
           return res.status(400).json({
             error: 'TOKEN_EXPIRED',
+            code: 'TOKEN_EXPIRED',
             message: 'Reset token has expired. Please request a new password reset.',
           });
         }
@@ -1139,6 +1155,7 @@ function createAuthRouter({ supabase }) {
         });
         return res.status(500).json({
           error: 'UPDATE_FAILED',
+          code: 'UPDATE_FAILED',
           message: 'Failed to update password. Please try again.',
         });
       }
@@ -1154,6 +1171,7 @@ function createAuthRouter({ supabase }) {
       logger.error('[Auth] Reset password error:', err);
       return res.status(500).json({
         error: 'SERVER_ERROR',
+        code: 'SERVER_ERROR',
         message: 'An error occurred while resetting your password',
       });
     }

@@ -370,10 +370,11 @@ function createAltTextRouter({
         errors: parsed.error.flatten(),
         payload: summarizeInvalidAltTextPayload(req.body)
       });
-      return res.status(400).json({ 
-        error: 'INVALID_REQUEST', 
+      return res.status(400).json({
+        error: 'INVALID_REQUEST',
+        code: 'INVALID_REQUEST',
         message: 'Invalid payload - request does not match expected schema',
-        details: parsed.error.flatten() 
+        details: parsed.error.flatten()
       });
     }
 
@@ -479,11 +480,12 @@ function createAltTextRouter({
         width: image.width,
         height: image.height
       });
-      return res.status(400).json({ 
-        error: 'INVALID_REQUEST', 
+      return res.status(400).json({
+        error: 'INVALID_REQUEST',
+        code: 'INVALID_REQUEST',
         message: 'Image validation failed',
-        errors, 
-        warnings 
+        errors,
+        warnings
       });
     }
     
