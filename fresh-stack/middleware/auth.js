@@ -124,19 +124,23 @@ function authMiddleware({ supabase }) {
         });
 
         // Fetch user from database
-        const { data: user } = await supabase
-          .from('licenses')
-          .select('*')
-          .eq('id', decoded.user_id)
-          .single();
-
-        if (user && user.status === 'active') {
-          req.user = user;
-          req.license = user; // Set license for quota tracking
-          req.authMethod = 'jwt';
-          return next();
+        if (!supabase) {
+          logger.warn('[Auth] JWT auth skipped: supabase client not available');
         } else {
-          logger.warn('[Auth] JWT user not found or inactive');
+          const { data: user } = await supabase
+            .from('licenses')
+            .select('*')
+            .eq('id', decoded.user_id)
+            .single();
+
+          if (user && user.status === 'active') {
+            req.user = user;
+            req.license = user; // Set license for quota tracking
+            req.authMethod = 'jwt';
+            return next();
+          } else {
+            logger.warn('[Auth] JWT user not found or inactive');
+          }
         }
       } catch (err) {
         logger.warn('[Auth] JWT validation failed', { error: err.message });
