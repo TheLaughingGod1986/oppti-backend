@@ -1,6 +1,14 @@
+jest.mock('../../lib/logger', () => ({
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn()
+}));
+
 const { getQuotaStatus } = require('../../services/quota');
 const { buildDashboardStateTruth } = require('../../services/dashboardStateTruth');
 const { resolveImageAltStateSiteContext } = require('../../services/imageAltState');
+const logger = require('../../lib/logger');
 
 function createQuery(rows, { countMode = false, error = null } = {}) {
   const state = {
@@ -82,7 +90,7 @@ function createQuery(rows, { countMode = false, error = null } = {}) {
   return chain;
 }
 
-function createSupabaseMock() {
+function createSupabaseMock({ tableErrors = {} } = {}) {
   const state = {
     licenses: [{
       id: 'lic_1',
@@ -321,7 +329,7 @@ function createSupabaseMock() {
       if (table === 'quota_summaries') {
         return {
           select() {
-            return createQuery(state.quotaSummaries);
+            return createQuery(state.quotaSummaries, { error: tableErrors.quota_summaries || null });
           }
         };
       }
@@ -329,7 +337,7 @@ function createSupabaseMock() {
       if (table === 'usage_logs') {
         return {
           select() {
-            return createQuery(state.usageLogs);
+            return createQuery(state.usageLogs, { error: tableErrors.usage_logs || null });
           }
         };
       }
@@ -425,6 +433,83 @@ function seedLinkedSiteWithStaleQuotaAndUsage(supabase, account, {
 }
 
 describe('authenticated site healing on read paths', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('legacy quota audit logs successful zero-row lookups without error null', async () => {
+    const supabase = createSupabaseMock();
+    const account = supabase._state.licenses[0];
+
+    const result = await getQuotaStatus(supabase, {
+      licenseKey: account.license_key,
+      requestId: 'req-zero-rows'
+    });
+
+    expect(result.error).toBeUndefined();
+
+    const rowsFoundPayloads = logger.info.mock.calls
+      .filter(([message]) => message === '[bbai-credits] rows_found')
+      .map(([, payload]) => payload);
+    const usageRowsPayload = rowsFoundPayloads.find((payload) => payload.source_candidate === 'usage_logs');
+
+    expect(usageRowsPayload).toEqual(expect.objectContaining({
+      rows_found: 0,
+      status: 'no_rows',
+      reason: 'no_matching_usage_rows'
+    }));
+    expect(usageRowsPayload).not.toHaveProperty('error');
+    expect(usageRowsPayload).not.toHaveProperty('license_key');
+
+    const selectedPayload = logger.info.mock.calls
+      .filter(([message]) => message === '[bbai-credits] source_selected')
+      .map(([, payload]) => payload)
+      .find((payload) => payload.request_id === 'req-zero-rows');
+    expect(selectedPayload).toEqual(expect.objectContaining({
+      fallback_reason: 'quota_summary_missing_and_usage_logs_empty',
+      selected_source: 'fallback/default path',
+      checked_sources: ['quota_summaries', 'usage_logs'],
+      site_id: null,
+      site_hash: null,
+      license_key_prefix: 'lic-heal...'
+    }));
+  });
+
+  test('legacy quota audit logs actual usage lookup errors explicitly', async () => {
+    const usageError = {
+      code: 'XX001',
+      message: 'usage_logs unavailable'
+    };
+    const supabase = createSupabaseMock({
+      tableErrors: {
+        usage_logs: usageError
+      }
+    });
+    const account = supabase._state.licenses[0];
+
+    await getQuotaStatus(supabase, {
+      licenseKey: account.license_key,
+      requestId: 'req-usage-error'
+    });
+
+    const usageRowsPayload = logger.warn.mock.calls
+      .filter(([message]) => message === '[bbai-credits] rows_found')
+      .map(([, payload]) => payload)
+      .find((payload) => payload.source_candidate === 'usage_logs');
+
+    expect(usageRowsPayload).toEqual(expect.objectContaining({
+      rows_found: 0,
+      status: 'error',
+      error_message: 'usage_logs unavailable',
+      error_code: 'XX001',
+      error: expect.objectContaining({
+        code: 'XX001',
+        message: 'usage_logs unavailable'
+      })
+    }));
+    expect(usageRowsPayload).not.toHaveProperty('reason');
+  });
+
   test('quota status self-heals missing canonical site and returns a non-null site', async () => {
     const supabase = createSupabaseMock();
     const account = supabase._state.licenses[0];

@@ -15,7 +15,7 @@ function logV2Fallback(message, details = {}) {
 function maskLicenseKeyForAudit(licenseKey) {
   if (!licenseKey) return null;
   const normalized = String(licenseKey);
-  return normalized.length > 8 ? `${normalized.substring(0, 8)}...` : normalized;
+  return normalized.length > 8 ? `${normalized.substring(0, 8)}...` : '[redacted]';
 }
 
 function toAuditIsoString(value) {
@@ -31,6 +31,31 @@ function toAuditNumber(value, fallback = 0) {
 
 function logCreditsAudit(message, details = {}, level = 'info') {
   logger[level](`[bbai-credits] ${message}`, details);
+}
+
+function buildRowsFoundAuditPayload(details = {}, error = null) {
+  const rowsFound = toAuditNumber(details.rows_found, 0);
+  const payload = {
+    ...details,
+    rows_found: rowsFound,
+    status: error ? 'error' : (rowsFound > 0 ? 'ok' : 'no_rows')
+  };
+
+  if (!error && rowsFound === 0) {
+    // rows_found: 0 is not an error. It means no matching usage rows were found for that lookup path.
+    payload.reason = details.reason || 'no_matching_usage_rows';
+  }
+
+  if (error) {
+    const serialized = serializeSupabaseError(error);
+    payload.error = serialized;
+    payload.error_message = serialized?.message || error.message || null;
+    if (serialized?.code || error.code) {
+      payload.error_code = serialized?.code || error.code;
+    }
+  }
+
+  return payload;
 }
 
 /**
@@ -62,8 +87,8 @@ async function getLegacyQuotaStatus(supabase, {
       if (site.license_key !== licenseKey) {
         logger.info('[Quota] Using site license for credit sharing', {
           site_hash: siteHash,
-          requested_license: licenseKey?.substring(0, 8) + '...',
-          site_license: site.license_key.substring(0, 8) + '...'
+          requested_license: maskLicenseKeyForAudit(licenseKey),
+          site_license: maskLicenseKeyForAudit(site.license_key)
         });
       }
       effectiveLicenseKey = site.license_key;
@@ -88,7 +113,9 @@ async function getLegacyQuotaStatus(supabase, {
   const auditContext = {
     request_id: requestId || null,
     account_id: accountId || null,
+    license_id_prefix: maskLicenseKeyForAudit(license.id),
     license_key_prefix: maskLicenseKeyForAudit(license.license_key),
+    site_id: null,
     site_hash: siteHash || null,
     period_start: toAuditIsoString(periodStart),
     period_end: toAuditIsoString(periodEnd)
@@ -108,14 +135,13 @@ async function getLegacyQuotaStatus(supabase, {
     .eq('period_start', periodStart.toISOString())
     .maybeSingle();
 
-  logCreditsAudit('rows_found', {
+  logCreditsAudit('rows_found', buildRowsFoundAuditPayload({
     ...auditContext,
     source_candidate: 'quota_summaries',
     lookup_key: 'license_key+period_start',
     rows_found: summary ? 1 : 0,
-    credits_used_candidate: toAuditNumber(summary?.total_credits_used, 0),
-    error: summaryError ? serializeSupabaseError(summaryError) : null
-  }, summaryError ? 'warn' : 'info');
+    credits_used_candidate: toAuditNumber(summary?.total_credits_used, 0)
+  }, summaryError), summaryError ? 'warn' : 'info');
 
   const totalLimit = limits.credits;
 
@@ -124,8 +150,10 @@ async function getLegacyQuotaStatus(supabase, {
   let siteUsageFromLogs = {};
   let selectedSource = summary ? 'quota_summaries' : 'fallback/default path';
   let fallbackReason = summary ? null : 'quota_summary_missing';
+  const checkedSources = ['quota_summaries'];
 
   if (!summary || summary.total_credits_used === 0) {
+    checkedSources.push('usage_logs');
     // Fallback: aggregate from usage_logs for this billing period
     // For credit sharing: query by site_hash if available, otherwise by license_key
     let usageQuery = supabase
@@ -151,7 +179,7 @@ async function getLegacyQuotaStatus(supabase, {
 
     const quotaLogData = {
       siteHash: siteHash || 'none',
-      license_key: license.license_key.substring(0, 8) + '...',
+      license_key_prefix: maskLicenseKeyForAudit(license.license_key),
       period_start: periodStart.toISOString(),
       period_end: periodEnd.toISOString(),
       logs_found: usageLogs?.length || 0
@@ -163,14 +191,13 @@ async function getLegacyQuotaStatus(supabase, {
       logger.info('[Quota] Fallback usage query', quotaLogData);
     }
 
-    logCreditsAudit('rows_found', {
+    logCreditsAudit('rows_found', buildRowsFoundAuditPayload({
       ...auditContext,
       source_candidate: 'usage_logs',
       lookup_key: siteHash ? 'site_hash' : 'license_key',
       rows_found: usageRowsFound,
-      credits_used_candidate: usageCredits,
-      error: usageError ? serializeSupabaseError(usageError) : null
-    }, usageError ? 'warn' : 'info');
+      credits_used_candidate: usageCredits
+    }, usageError), usageError ? 'warn' : 'info');
 
     if (usageLogs && usageLogs.length > 0) {
       creditsUsed = usageLogs.reduce((sum, log) => sum + (log.credits_used || 1), 0);
@@ -231,6 +258,8 @@ async function getLegacyQuotaStatus(supabase, {
   logCreditsAudit('source_selected', {
     ...auditContext,
     source_selected: selectedSource,
+    selected_source: selectedSource,
+    checked_sources: checkedSources,
     used: toAuditNumber(creditsUsed, 0),
     limit: toAuditNumber(effectiveTotalLimit, 0),
     remaining: toAuditNumber(creditsRemaining, 0),
@@ -304,9 +333,13 @@ async function getQuotaStatus(supabase, {
     logCreditsAudit('fallback_reason', {
       request_id: requestId || null,
       account_id: account?.id || null,
+      license_id_prefix: maskLicenseKeyForAudit(account?.id || null),
       license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
+      site_id: identity?.siteId || null,
       site_hash: siteHash || identity.siteHash || null,
       source_selected: 'fallback/default path',
+      selected_source: 'fallback/default path',
+      checked_sources: ['site_quotas'],
       fallback_reason: 'development_site_not_allowed'
     }, 'warn');
     return getLegacyQuotaStatus(supabase, {
@@ -334,7 +367,7 @@ async function getQuotaStatus(supabase, {
     logger.error('[site] authenticated_site_healing_failed', {
       request_id: requestId || null,
       account_id: account?.id || null,
-      license_key_prefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null,
+      license_key_prefix: maskLicenseKeyForAudit(licenseKey),
       site_hash: siteHash || identity?.siteHash || null,
       site_url: siteUrl || identity?.siteUrl || null,
       site_fingerprint_present: Boolean(siteFingerprint || identity?.siteFingerprint),
@@ -347,7 +380,13 @@ async function getQuotaStatus(supabase, {
     logV2Fallback('Trial quota status V2 path failed; using legacy trial fallback', {
       v2_error_code: siteStatus.error,
       v2_error_message: siteStatus.message || null,
+      fallback_reason: `site_quota_v2:${siteStatus.error}`,
+      selected_source: 'legacy_trial',
+      checked_sources: ['site_quotas'],
+      site_id: identity?.siteId || null,
       site_hash: siteHash || identity?.siteHash || null,
+      license_id_prefix: maskLicenseKeyForAudit(account?.id || null),
+      license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
       request_id: requestId || null
     });
     return siteStatus;
@@ -360,15 +399,24 @@ async function getQuotaStatus(supabase, {
   logV2Fallback('Quota status V2 path failed; using legacy quota status', {
     v2_error_code: siteStatus.error,
     v2_error_message: siteStatus.message || null,
+    fallback_reason: `site_quota_v2:${siteStatus.error}`,
+    selected_source: 'fallback/default path',
+    checked_sources: ['site_quotas'],
+    site_id: identity?.siteId || null,
     site_hash: siteHash || identity?.siteHash || null,
-    license_key_prefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null
+    license_id_prefix: maskLicenseKeyForAudit(account?.id || null),
+    license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null)
   });
   logCreditsAudit('fallback_reason', {
     request_id: requestId || null,
     account_id: account?.id || null,
+    license_id_prefix: maskLicenseKeyForAudit(account?.id || null),
     license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
+    site_id: identity?.siteId || null,
     site_hash: siteHash || identity?.siteHash || null,
     source_selected: 'fallback/default path',
+    selected_source: 'fallback/default path',
+    checked_sources: ['site_quotas'],
     fallback_reason: `site_quota_v2:${siteStatus.error}`
   }, 'warn');
   return getLegacyQuotaStatus(supabase, {
@@ -522,7 +570,13 @@ async function reserveGenerationQuota(supabase, {
       logV2Fallback('Trial reservation V2 path failed; using legacy trial fallback', {
         v2_error_code: result.error,
         v2_error_message: result.message || null,
+        fallback_reason: `site_quota_v2:${result.error}`,
+        selected_source: 'legacy_trial',
+        checked_sources: ['site_quotas'],
+        site_id: result.site?.id || null,
         site_hash: effectiveSiteHash || identity?.siteHash || null,
+        license_id_prefix: maskLicenseKeyForAudit(account?.id || null),
+        license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
         request_id: requestId || null
       });
       return {
@@ -560,8 +614,13 @@ async function reserveGenerationQuota(supabase, {
   logV2Fallback('Site reservation V2 path failed; using legacy license quota fallback', {
     v2_error_code: result.error,
     v2_error_message: result.message || null,
+    fallback_reason: `site_quota_v2:${result.error}`,
+    selected_source: 'legacy',
+    checked_sources: ['site_quotas'],
+    site_id: result.site?.id || null,
     site_hash: effectiveSiteHash || identity?.siteHash || null,
-    license_key_prefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null,
+    license_id_prefix: maskLicenseKeyForAudit(account?.id || null),
+    license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
     request_id: requestId || null
   });
 

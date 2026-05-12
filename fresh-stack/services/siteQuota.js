@@ -360,7 +360,7 @@ function truncateMatchValue(value) {
 function maskLicenseKeyForCreditAudit(licenseKey) {
   if (!licenseKey) return null;
   const normalized = String(licenseKey);
-  return normalized.length > 8 ? `${normalized.substring(0, 8)}...` : normalized;
+  return normalized.length > 8 ? `${normalized.substring(0, 8)}...` : '[redacted]';
 }
 
 function toCreditAuditIsoString(value) {
@@ -378,6 +378,31 @@ function logCreditsAudit(message, details = {}, level = 'info') {
   logger[level](`[bbai-credits] ${message}`, details);
 }
 
+function buildRowsFoundAuditPayload(details = {}, error = null) {
+  const rowsFound = toCreditAuditNumber(details.rows_found, 0);
+  const payload = {
+    ...details,
+    rows_found: rowsFound,
+    status: error ? 'error' : (rowsFound > 0 ? 'ok' : 'no_rows')
+  };
+
+  if (!error && rowsFound === 0) {
+    // rows_found: 0 is not an error. It means no matching usage rows were found for that lookup path.
+    payload.reason = details.reason || 'no_matching_usage_rows';
+  }
+
+  if (error) {
+    const serialized = serializeSupabaseError(error);
+    payload.error = serialized;
+    payload.error_message = serialized?.message || error.message || null;
+    if (serialized?.code || error.code) {
+      payload.error_code = serialized?.code || error.code;
+    }
+  }
+
+  return payload;
+}
+
 async function selectEffectiveSiteQuotaRead(supabase, {
   site = null,
   siteQuota = null,
@@ -391,6 +416,7 @@ async function selectEffectiveSiteQuotaRead(supabase, {
   const auditContext = {
     request_id: requestId || null,
     account_id: account?.id || null,
+    license_id_prefix: maskLicenseKeyForCreditAudit(account?.id || null),
     license_key_prefix: maskLicenseKeyForCreditAudit(licenseKey || account?.license_key || site?.license_key || null),
     site_id: site?.id || null,
     site_hash: site?.site_hash || null,
@@ -405,17 +431,20 @@ async function selectEffectiveSiteQuotaRead(supabase, {
     source_path: 'site_quota_v2'
   });
 
-  logCreditsAudit('rows_found', {
+  const checkedSources = ['site_quotas'];
+
+  logCreditsAudit('rows_found', buildRowsFoundAuditPayload({
     ...auditContext,
     source_candidate: 'site_quotas',
     lookup_key: 'site_id+quota_period_start+quota_period_end',
     rows_found: siteQuota ? 1 : 0,
     credits_used_candidate: currentUsed,
     credits_remaining_candidate: toCreditAuditNumber(currentRemaining, 0)
-  });
+  }));
 
   let summaryRow = null;
   let summaryCandidate = 0;
+  checkedSources.push('quota_summaries');
   if (auditContext.license_key_prefix && auditContext.period_start) {
     const { data, error } = await supabase
       .from('quota_summaries')
@@ -433,28 +462,28 @@ async function selectEffectiveSiteQuotaRead(supabase, {
         )
       : 0;
 
-    logCreditsAudit('rows_found', {
+    logCreditsAudit('rows_found', buildRowsFoundAuditPayload({
       ...auditContext,
       source_candidate: 'quota_summaries',
       lookup_key: 'license_key+period_start',
       rows_found: data ? 1 : 0,
-      credits_used_candidate: summaryCandidate,
-      error: error ? serializeSupabaseError(error) : null
-    }, error ? 'warn' : 'info');
+      credits_used_candidate: summaryCandidate
+    }, error), error ? 'warn' : 'info');
   } else {
-    logCreditsAudit('rows_found', {
+    logCreditsAudit('rows_found', buildRowsFoundAuditPayload({
       ...auditContext,
       source_candidate: 'quota_summaries',
       lookup_key: 'license_key+period_start',
       rows_found: 0,
       credits_used_candidate: 0,
       fallback_reason: licenseKey ? 'missing_period_start' : 'missing_license_key'
-    });
+    }));
   }
 
   let usageRows = 0;
   let usageCandidate = 0;
   let usageSourceKey = 'site_hash';
+  checkedSources.push('usage_logs');
   if (auditContext.period_start && auditContext.period_end && (site?.site_hash || licenseKey)) {
     let usageQuery = supabase
       .from('usage_logs')
@@ -476,16 +505,15 @@ async function selectEffectiveSiteQuotaRead(supabase, {
       ? data.reduce((sum, row) => sum + toCreditAuditNumber(row?.credits_used, 1), 0)
       : 0;
 
-    logCreditsAudit('rows_found', {
+    logCreditsAudit('rows_found', buildRowsFoundAuditPayload({
       ...auditContext,
       source_candidate: 'usage_logs',
       lookup_key: usageSourceKey,
       rows_found: usageRows,
-      credits_used_candidate: usageCandidate,
-      error: error ? serializeSupabaseError(error) : null
-    }, error ? 'warn' : 'info');
+      credits_used_candidate: usageCandidate
+    }, error), error ? 'warn' : 'info');
   } else {
-    logCreditsAudit('rows_found', {
+    logCreditsAudit('rows_found', buildRowsFoundAuditPayload({
       ...auditContext,
       source_candidate: 'usage_logs',
       lookup_key: site?.site_hash ? 'site_hash' : 'license_key',
@@ -494,7 +522,7 @@ async function selectEffectiveSiteQuotaRead(supabase, {
       fallback_reason: auditContext.period_start && auditContext.period_end
         ? 'missing_site_hash_and_license_key'
         : 'missing_period_bounds'
-    });
+    }));
   }
 
   let selectedSource = 'site_quotas';
@@ -530,6 +558,8 @@ async function selectEffectiveSiteQuotaRead(supabase, {
   logCreditsAudit('source_selected', {
     ...auditContext,
     source_selected: selectedSource,
+    selected_source: selectedSource,
+    checked_sources: checkedSources,
     rows_found: selectedRowsFound,
     used: selectedUsed,
     limit: toCreditAuditNumber(totalLimit, 0),
