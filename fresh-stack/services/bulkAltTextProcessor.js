@@ -256,9 +256,9 @@ async function processLicensedBulkItem({
 
     const usageWrite = await recordUsage(supabase, {
       licenseKey: effectiveLicenseKey,
-      licenseId,
+      licenseId: licenseId || attribution.userId || null,
       siteHash: effectiveSite?.site_hash || siteKey,
-      userId: attribution.userId,
+      userId: null,
       userEmail: userInfo?.user_email,
       pluginVersion: userInfo?.plugin_version,
       creditsUsed: 1,
