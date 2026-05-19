@@ -3,6 +3,7 @@ const { getLimits } = require('./planLimits');
 const { trackGenerationMilestone, trackCreditsExhausted } = require('../../src/services/loops');
 const logger = require('../lib/logger');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
+const { isInternalTelemetryHost } = require('../lib/siteIdentity');
 
 /**
  * Check if a string is a valid UUID format
@@ -53,10 +54,37 @@ async function recordUsage(supabase, {
   status = 'success',
   errorMessage = null
 }) {
-  // Validate UUID fields - only include if they're valid UUIDs, otherwise null
-  const validatedUserId = (userId && isValidUUID(userId)) ? userId : null;
-  const validatedLicenseId = (licenseId && isValidUUID(licenseId)) ? licenseId : null;
-  
+  // Resolve the authoritative account attribution (licenses.id).
+  // Prefer an explicitly-passed licenseId; otherwise look it up from
+  // licenseKey so usage_logs.license_id is reliably populated.
+  let validatedLicenseId = (licenseId && isValidUUID(licenseId)) ? licenseId : null;
+  if (!validatedLicenseId && licenseKey) {
+    try {
+      const { data: licenseRow } = await supabase
+        .from('licenses')
+        .select('id')
+        .eq('license_key', licenseKey)
+        .maybeSingle();
+      if (licenseRow?.id && isValidUUID(licenseRow.id)) {
+        validatedLicenseId = licenseRow.id;
+      }
+    } catch (lookupErr) {
+      logger.debug('[usage] license_id_lookup_failed', {
+        license_key: licenseKey ? `${licenseKey.substring(0, 8)}...` : null,
+        error: lookupErr?.message || String(lookupErr)
+      });
+    }
+  }
+
+  // usage_logs.user_id is deprecated for new writes: never persist a
+  // licenses.id into it. Keep it only for a genuinely distinct non-license
+  // user identity (none exist today, so this resolves to null in practice).
+  const validatedUserId = (userId && isValidUUID(userId) && userId !== validatedLicenseId)
+    ? userId
+    : null;
+
+  const isInternal = isInternalTelemetryHost({ domain, siteUrl });
+
   const payload = {
     license_key: licenseKey || null,
     license_id: validatedLicenseId,
@@ -91,6 +119,7 @@ async function recordUsage(supabase, {
     request_id: requestId || null,
     generation_batch_id: generationBatchId || null,
     user_agent: userAgent || null,
+    is_internal: isInternal,
     status: status || 'success',
     error_message: errorMessage || null
   };

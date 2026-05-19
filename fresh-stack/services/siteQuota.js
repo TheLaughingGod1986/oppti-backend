@@ -2165,6 +2165,7 @@ async function syncLegacySitePointers(supabase, {
         .from('sites')
         .update({
           license_key: account.license_key,
+          license_id: account.id || null,
           owner_user_id: site.owner_user_id || account.id || null,
           updated_at: new Date().toISOString(),
           last_seen_at: new Date().toISOString()

@@ -310,8 +310,10 @@ describe('POST /api/alt-text', () => {
     expect(res.status).toBe(200);
     expect(res.body.altText).toBe('mock alt');
     expect(usageService.recordUsage).toHaveBeenCalledTimes(1);
+    // Identity cleanup: licenses.id is persisted in license_id, never user_id.
     expect(usageService.recordUsage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      userId: '11111111-1111-1111-1111-111111111111',
+      licenseId: '11111111-1111-1111-1111-111111111111',
+      userId: null,
       endpoint: 'api/alt-text',
       status: 'success'
     }));
@@ -344,8 +346,11 @@ describe('POST /api/alt-text', () => {
     });
 
     expect(res.status).toBe(200);
+    // Identity cleanup: attribution resolves to license_id (from the site's
+    // license key); user_id is no longer written with a licenses.id.
     expect(usageService.recordUsage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      userId: '22222222-2222-2222-2222-222222222222',
+      licenseId: '11111111-1111-1111-1111-111111111111',
+      userId: null,
       siteHash: 'site-key-2'
     }));
   });

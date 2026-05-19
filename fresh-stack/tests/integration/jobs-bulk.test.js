@@ -185,8 +185,10 @@ describe('POST /api/jobs bulk pipeline', () => {
     expect(quota.enforceQuota).toHaveBeenCalled();
     expect(imageAltStateService.upsertGeneratedImageAltState).toHaveBeenCalledTimes(5);
     expect(usageService.recordUsage).toHaveBeenCalled();
+    // Identity cleanup: licenses.id is persisted in license_id, never user_id.
     expect(usageService.recordUsage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      userId: '11111111-1111-1111-1111-111111111111',
+      licenseId: '11111111-1111-1111-1111-111111111111',
+      userId: null,
       endpoint: 'api/jobs/bulk',
       status: 'success'
     }));

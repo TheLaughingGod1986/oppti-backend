@@ -59,6 +59,25 @@ function isDevelopmentHost(hostname) {
   return DEV_HOST_PATTERNS.some((pattern) => pattern.test(host));
 }
 
+const INTERNAL_TELEMETRY_PATTERNS = [
+  /tastewp/i,
+  /beepbeepaiaudit/i,
+  /live-check/i,
+  /schema-v2/i,
+  /site_verify/i,
+  /(^|\.)example\.com$/i
+];
+
+// Telemetry-only classifier. Flags dev/local/TasteWP/internal-test hosts so
+// reporting can exclude them. MUST NOT be used by quota or reservation code:
+// it never blocks a generation or quota check.
+function isInternalTelemetryHost({ domain = null, siteUrl = null } = {}) {
+  const host = normalizeDomain(domain || siteUrl) || normalizeHost(domain);
+  if (!host) return false;
+  if (isDevelopmentHost(host)) return true;
+  return INTERNAL_TELEMETRY_PATTERNS.some((pattern) => pattern.test(host));
+}
+
 function stripDefaultPort(protocol, port) {
   if (!port) return '';
   if ((protocol === 'http:' && port === '80') || (protocol === 'https:' && port === '443')) {
@@ -215,5 +234,6 @@ module.exports = {
   normalizeDomain,
   normalizeSiteUrl,
   isDevelopmentHost,
+  isInternalTelemetryHost,
   generateSyntheticSiteHash
 };
