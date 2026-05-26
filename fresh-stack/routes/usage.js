@@ -10,6 +10,7 @@ const {
 } = require('../services/anonymousTrial');
 const { getQuotaStatus } = require('../services/quota');
 const { getUserUsage, getSiteUsage, getPeriodBounds } = require('../services/usage');
+const { buildEntitlementState } = require('../services/entitlementState');
 
 function inferQuotaType(planType = 'free') {
   if (planType === 'free') return 'monthly';
@@ -192,6 +193,10 @@ function createUsageRouter({ supabase }) {
       return res.json({
         success: true,
         data: {
+          entitlement_state: buildEntitlementState(trialInfo, {
+            isLoggedIn: false,
+            isTrial: true
+          }),
           usage: {
             used: trialInfo.credits_used,
             remaining: trialInfo.credits_remaining,
@@ -231,11 +236,16 @@ function createUsageRouter({ supabase }) {
     });
     const quotaState = status.quota_state || resolveQuotaState(status);
     const quotaType = inferQuotaType(status.plan_type);
+    const entitlementState = buildEntitlementState(status, {
+      isLoggedIn: true,
+      isTrial: false
+    });
 
     // Return in format expected by plugin
     return res.json({
       success: true,
       data: {
+        entitlement_state: entitlementState,
         usage: {
           used: status.credits_used,
           remaining: status.credits_remaining,

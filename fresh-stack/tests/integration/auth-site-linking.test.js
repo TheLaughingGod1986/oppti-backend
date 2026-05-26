@@ -7,6 +7,17 @@ jest.mock('../../../src/services/loops', () => ({
   trackAccountCreated: jest.fn().mockResolvedValue(undefined)
 }));
 
+jest.mock('../../services/quota', () => ({
+  getQuotaStatus: jest.fn().mockResolvedValue({
+    error: null,
+    plan_type: 'free',
+    credits_used: 0,
+    credits_remaining: 50,
+    total_limit: 50,
+    reset_date: '2026-06-25T00:00:00.000Z'
+  })
+}));
+
 const { createAuthRouter } = require('../../routes/auth');
 const { createLicenseRouter } = require('../../routes/license');
 
@@ -367,6 +378,13 @@ describe('site-aware auth linking', () => {
     expect(first.status).toBe(200);
     expect(first.body.shared_site).toBe(false);
     expect(first.body.site.id).toBeTruthy();
+    expect(first.body.message).toBe('Account created. Your free monthly credits are now active.');
+    expect(first.body.entitlement_state).toEqual(expect.objectContaining({
+      plan: 'free',
+      tokens_remaining: 50,
+      can_generate: true,
+      is_logged_in: true
+    }));
 
     const second = await request(app)
       .post('/auth/register')
@@ -507,6 +525,12 @@ describe('site-aware auth linking', () => {
     expect(login.body.site).toEqual(expect.objectContaining({
       id: expect.any(String),
       site_hash: 'wp-login-heal'
+    }));
+    expect(login.body.entitlement_state).toEqual(expect.objectContaining({
+      plan: 'free',
+      tokens_remaining: 50,
+      can_generate: true,
+      is_logged_in: true
     }));
     expect(supabase._state.siteMemberships).toEqual(expect.arrayContaining([
       expect.objectContaining({

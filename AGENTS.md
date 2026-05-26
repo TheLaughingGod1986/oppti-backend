@@ -15,7 +15,9 @@ npm run dev
 npm test
 npm run test:unit
 npm run test:integration
+npm run test:watch
 npm run test:coverage
+npm run test:ci
 npm run smoke
 ```
 
@@ -56,6 +58,39 @@ npm run verify:site-quota-v2
 
 Notes:
 - This script shells out to the `supabase` CLI and checks the linked project schema.
+
+Duplicate-site audit:
+
+```bash
+node scripts/audit-site-duplicates.js
+node scripts/audit-site-duplicates.js --json
+```
+
+Notes:
+- Loads `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from repo-root `.env`.
+- Audits unmerged `sites` records for duplicate install UUIDs, site hashes, fingerprints, domains, and multi-user memberships.
+
+Manual site merge:
+
+```bash
+node scripts/merge-sites.js --source <site-id> --target <site-id>
+node scripts/merge-sites.js --source <site-id> --target <site-id> --actor <user-id> --write
+```
+
+Notes:
+- Default mode is dry-run; add `--write` to invoke `bbai_merge_sites`.
+- This is operator-only and intended for manual duplicate-site resolution.
+
+License password reset:
+
+```bash
+node scripts/reset-license-password.js <email> <newPassword>
+LICENSE_EMAIL=user@example.com NEW_PASSWORD='new-password' node scripts/reset-license-password.js
+```
+
+Notes:
+- Loads `.env` and `.env.local`.
+- Uses `DATABASE_URL` when present, otherwise falls back to `SUPABASE_URL` plus `SUPABASE_SERVICE_ROLE_KEY`.
 
 ## Smoke Test
 

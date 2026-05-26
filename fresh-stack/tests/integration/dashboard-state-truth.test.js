@@ -341,6 +341,11 @@ describe('GET /dashboard/state-truth', () => {
     expect(res.status).toBe(200);
     expect(res.body.state).toBe('QUOTA_EXHAUSTED');
     expect(res.body.credits.exhausted).toBe(true);
+    expect(res.body.entitlement_state).toEqual(expect.objectContaining({
+      tokens_remaining: 0,
+      can_generate: false,
+      can_autopilot: false
+    }));
     expect(res.body.resolution.state_source).toBe('credits.exhausted');
   });
 
@@ -401,6 +406,13 @@ describe('GET /dashboard/state-truth', () => {
       exhausted: false,
       source: 'license'
     });
+    expect(res.body.entitlement_state).toEqual(expect.objectContaining({
+      plan: 'pro',
+      token_limit: 100,
+      tokens_used_this_month: 17,
+      tokens_remaining: 83,
+      can_generate: true
+    }));
     expect(getQuotaStatus).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       account: expect.objectContaining({ license_key: 'license-key-1' }),
       licenseKey: 'license-key-1',

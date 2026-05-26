@@ -1,6 +1,7 @@
 const logger = require('../lib/logger');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { getQuotaStatus } = require('./quota');
+const { buildEntitlementState } = require('./entitlementState');
 const { countImageAltStatesForSite } = require('./imageAltState');
 
 const ACTIVE_QUEUE_JOB_STATUSES = new Set(['accepted', 'queued', 'preparing', 'generating', 'processing']);
@@ -496,6 +497,15 @@ async function buildDashboardStateTruth({
     return {
       success: true,
       state: 'ERROR',
+      entitlement_state: buildEntitlementState({
+        plan: 'unknown',
+        plan_type: 'unknown',
+        quota_state: 'unavailable',
+        upgrade_required: false
+      }, {
+        isLoggedIn: true,
+        isTrial: false
+      }),
       counts: buildZeroCounts('quota_error'),
       job: buildIdleJob('quota_error'),
       credits: {
@@ -532,11 +542,16 @@ async function buildDashboardStateTruth({
     getJobRecord
   });
   const credits = buildCredits(quotaStatus);
+  const entitlementState = buildEntitlementState(quotaStatus, {
+    isLoggedIn: true,
+    isTrial: false
+  });
   const resolvedState = resolveDashboardState({ counts, job, credits });
 
   const response = {
     success: true,
     state: resolvedState.state,
+    entitlement_state: entitlementState,
     counts: {
       missing: counts.missing,
       to_review: counts.to_review,

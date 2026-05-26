@@ -269,6 +269,10 @@ async function getLegacyQuotaStatus(supabase, {
   return {
     plan_type: license.plan,
     license_status: license.status,
+    token_limit: effectiveTotalLimit,
+    tokens_used_this_month: creditsUsed,
+    total_tokens_used: license.total_tokens_used ?? creditsUsed,
+    last_generation_at: license.last_generation_at || null,
     credits_used: creditsUsed,
     credits_remaining: creditsRemaining,
     total_limit: effectiveTotalLimit,

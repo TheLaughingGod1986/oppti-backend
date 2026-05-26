@@ -91,6 +91,13 @@ describe('GET /usage anonymous trial status', () => {
     expect(res.body.data.total_limit).toBe(5);
     expect(res.body.data.free_plan_offer).toBe(50);
     expect(res.body.data.signup_required).toBe(false);
+    expect(res.body.data.entitlement_state).toEqual(expect.objectContaining({
+      plan: 'trial',
+      tokens_remaining: 3,
+      can_generate: true,
+      is_logged_in: false,
+      is_trial: true
+    }));
     expect(res.body.data.anonymous).toEqual(expect.objectContaining({
       anon_id: 'anon-usage-1',
       used: 2,
@@ -126,6 +133,7 @@ describe('GET /usage anonymous trial status', () => {
     expect(res.body.data.signup_required).toBe(true);
     expect(res.body.data.upgrade_required).toBe(false);
     expect(res.body.data.free_plan_offer).toBe(50);
+    expect(res.body.data.entitlement_state.can_generate).toBe(false);
   });
 
   test('POST /api/usage/trial-batch-plan returns authoritative processable and skip counts', async () => {
@@ -194,5 +202,13 @@ describe('GET /usage anonymous trial status', () => {
     expect(res.body.data.credits_remaining).toBe(43);
     expect(res.body.data.plan_type).toBe('free');
     expect(res.body.data.signup_required).toBe(false);
+    expect(res.body.data.entitlement_state).toEqual(expect.objectContaining({
+      plan: 'free',
+      token_limit: 50,
+      tokens_used_this_month: 7,
+      tokens_remaining: 43,
+      can_generate: true,
+      is_logged_in: true
+    }));
   });
 });

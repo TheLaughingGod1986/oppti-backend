@@ -20,6 +20,13 @@ jest.mock('../../middleware/auth', () => ({
 
 jest.mock('../../services/quota', () => ({
   enforceQuota: jest.fn().mockResolvedValue({ credits_remaining: 1000 }),
+  getQuotaStatus: jest.fn().mockResolvedValue({
+    error: null,
+    plan_type: 'pro',
+    credits_used: 5,
+    credits_remaining: 995,
+    total_limit: 1000
+  }),
   reserveGenerationQuota: jest.fn().mockResolvedValue({
     error: null,
     reservation: { generation_request_id: null, quota_source: 'site' },
@@ -182,6 +189,11 @@ describe('POST /api/jobs bulk pipeline', () => {
     expect(job.failed).toBe(0);
     expect(job.items.every((it) => it.status === 'completed')).toBe(true);
     expect(job.results).toHaveLength(5);
+    expect(job.entitlement_state).toEqual(expect.objectContaining({
+      plan: 'pro',
+      tokens_remaining: 995,
+      can_generate: true
+    }));
     expect(quota.enforceQuota).toHaveBeenCalled();
     expect(imageAltStateService.upsertGeneratedImageAltState).toHaveBeenCalledTimes(5);
     expect(usageService.recordUsage).toHaveBeenCalled();
@@ -253,6 +265,13 @@ describe('POST /api/jobs bulk pipeline', () => {
         payload: { credits_remaining: 0 }
       })
     );
+    quota.getQuotaStatus.mockResolvedValueOnce({
+      error: null,
+      plan_type: 'pro',
+      credits_used: 1000,
+      credits_remaining: 0,
+      total_limit: 1000
+    });
 
     const res = await request(app)
       .post('/api/jobs')
@@ -265,6 +284,10 @@ describe('POST /api/jobs bulk pipeline', () => {
       });
 
     expect(res.status).toBe(402);
+    expect(res.body.entitlement_state).toEqual(expect.objectContaining({
+      plan: 'pro',
+      can_generate: false
+    }));
   });
 
   test('returns 401 without license key', async () => {

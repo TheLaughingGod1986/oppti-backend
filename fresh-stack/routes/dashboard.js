@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const { z } = require('zod');
 const logger = require('../lib/logger');
 const { getQuotaStatus } = require('../services/quota');
+const { buildEntitlementState } = require('../services/entitlementState');
 const { getUsageLogs } = require('../services/usage');
 const { buildDashboardStateTruth } = require('../services/dashboardStateTruth');
 const {
@@ -258,6 +259,10 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
 
     return res.json({
       license_key: licenseKey,
+      entitlement_state: buildEntitlementState(quota, {
+        isLoggedIn: true,
+        isTrial: false
+      }),
       credits_used: quota.credits_used,
       credits_remaining: quota.credits_remaining,
       total_limit: quota.total_limit,

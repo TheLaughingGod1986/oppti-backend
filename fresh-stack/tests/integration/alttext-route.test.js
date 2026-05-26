@@ -236,6 +236,11 @@ describe('POST /api/alt-text', () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.altText).toBe('mock alt');
+    expect(res.body.entitlement_state).toEqual(expect.objectContaining({
+      plan: 'pro',
+      can_generate: true,
+      is_logged_in: true
+    }));
   });
 
   test('persists image state ledger on successful generation', async () => {
@@ -353,6 +358,53 @@ describe('POST /api/alt-text', () => {
       userId: null,
       siteHash: 'site-key-2'
     }));
+  });
+
+  test('returns authoritative exhausted entitlement state when authenticated generation is denied', async () => {
+    quotaService.reserveGenerationQuota.mockResolvedValueOnce({
+      error: 'QUOTA_EXCEEDED',
+      status: 402,
+      message: 'Quota exceeded',
+      payload: {
+        credits_used: 50,
+        remaining_credits: 0,
+        total_limit: 50
+      }
+    });
+    quotaService.getQuotaStatus.mockResolvedValueOnce({
+      error: null,
+      plan_type: 'free',
+      credits_used: 50,
+      credits_remaining: 0,
+      total_limit: 50,
+      reset_date: '2026-06-25T00:00:00.000Z'
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/alt-text', createAltTextRouter({
+      supabase: createSupabaseMock(),
+      redis: null,
+      resultCache: new Map(),
+      checkRateLimit: async () => true,
+      getSiteFromHeaders: async () => ({ quota: 50, used: 50, remaining: 0 })
+    }));
+
+    const res = await request(app).post('/api/alt-text').send({
+      image: { url: 'https://example.com/exhausted.jpg', width: 1, height: 1 }
+    });
+
+    expect(res.status).toBe(402);
+    expect(res.body.entitlement_state).toEqual(expect.objectContaining({
+      plan: 'free',
+      token_limit: 50,
+      tokens_used_this_month: 50,
+      tokens_remaining: 0,
+      can_generate: false,
+      can_autopilot: false,
+      upgrade_required: true
+    }));
+    expect(generateAltText).not.toHaveBeenCalled();
   });
 
   test('anonymous generation succeeds and persists quota across requests', async () => {
@@ -487,6 +539,12 @@ describe('POST /api/alt-text', () => {
     expect(res.body.credits_total).toBe(5);
     expect(res.body.credits_used).toBe(1);
     expect(res.body.credits_remaining).toBe(4);
+    expect(res.body.entitlement_state).toEqual(expect.objectContaining({
+      plan: 'trial',
+      tokens_remaining: 4,
+      can_generate: true,
+      is_trial: true
+    }));
     expect(res.body.total_limit).toBe(5);
     expect(res.body.limit).toBe(5);
     expect(res.body.free_plan_offer).toBe(50);
@@ -549,6 +607,11 @@ describe('POST /api/alt-text', () => {
     expect(res.body.credits_used).toBe(5);
     expect(res.body.credits_remaining).toBe(0);
     expect(res.body.signup_required).toBe(true);
+    expect(res.body.entitlement_state).toEqual(expect.objectContaining({
+      tokens_remaining: 0,
+      can_generate: false,
+      is_trial: true
+    }));
     expect(res.body.anonymous).toEqual(expect.objectContaining({
       used: 5,
       remaining: 0,

@@ -9,6 +9,8 @@ const { sendPasswordResetEmail, isAvailable: isEmailAvailable } = require('../li
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { getAnonymousTrialContinuity } = require('../services/anonymousTrial');
+const { buildEntitlementState } = require('../services/entitlementState');
+const { getQuotaStatus } = require('../services/quota');
 const {
   ensureSiteMembership,
   fetchAccountByLicenseKey,
@@ -348,6 +350,40 @@ async function observeAnonymousSignupMerge({
   });
 }
 
+async function loadAuthEntitlementState({
+  supabase,
+  account,
+  site,
+  siteIdentity,
+  requestId
+} = {}) {
+  try {
+    const status = await getQuotaStatus(supabase, {
+      account,
+      licenseKey: account?.license_key || null,
+      siteHash: site?.site_hash || siteIdentity?.siteHash || null,
+      siteUrl: site?.site_url || siteIdentity?.siteUrl || null,
+      siteFingerprint: site?.site_fingerprint || siteIdentity?.siteFingerprint || null,
+      installUuid: site?.wp_install_uuid || siteIdentity?.wpInstallUuid || null,
+      requestId: requestId || null,
+      quotaMode: 'site'
+    });
+    if (status.error) {
+      return null;
+    }
+    return buildEntitlementState(status, {
+      isLoggedIn: true,
+      isTrial: false
+    });
+  } catch (error) {
+    logger.warn('[Auth] Entitlement state refresh unavailable', {
+      requestId: requestId || null,
+      error: error.message
+    });
+    return null;
+  }
+}
+
 function createAuthRouter({ supabase }) {
   const router = express.Router();
 
@@ -598,10 +634,17 @@ function createAuthRouter({ supabase }) {
       });
       registerTrace.final_state = 'success';
       emitAuthWriteTrace('register', registerTrace);
+      const entitlementState = await loadAuthEntitlementState({
+        supabase,
+        account: user,
+        site: siteLink.site,
+        siteIdentity,
+        requestId: req.id || null
+      });
 
       return sendRegisterResponse({
         success: true,
-        message: 'Account created successfully',
+        message: 'Account created. Your free monthly credits are now active.',
         data: {
           token,
           user: {
@@ -613,7 +656,8 @@ function createAuthRouter({ supabase }) {
           },
           site: siteLink.site || null,
           shared_site: siteLink.sharedSite,
-          existing_email: maskEmail(siteLink.existingAccount?.email || null)
+          existing_email: maskEmail(siteLink.existingAccount?.email || null),
+          ...(entitlementState ? { entitlement_state: entitlementState } : {})
         },
         // Keep top-level for backward compatibility
         token,
@@ -626,7 +670,8 @@ function createAuthRouter({ supabase }) {
         },
         site: siteLink.site || null,
         shared_site: siteLink.sharedSite,
-        existing_email: maskEmail(siteLink.existingAccount?.email || null)
+        existing_email: maskEmail(siteLink.existingAccount?.email || null),
+        ...(entitlementState ? { entitlement_state: entitlementState } : {})
       });
     } catch (err) {
       registerTrace.final_state = 'server_error';
@@ -820,6 +865,13 @@ function createAuthRouter({ supabase }) {
 
       loginTrace.final_state = 'success';
       emitAuthWriteTrace('login', loginTrace);
+      const entitlementState = await loadAuthEntitlementState({
+        supabase,
+        account: user,
+        site: siteLink.site,
+        siteIdentity,
+        requestId: req.id || null
+      });
 
       return res.json({
         success: true,
@@ -835,7 +887,8 @@ function createAuthRouter({ supabase }) {
           },
           site: siteLink.site || null,
           shared_site: siteLink.sharedSite,
-          existing_email: maskEmail(siteLink.existingAccount?.email || null)
+          existing_email: maskEmail(siteLink.existingAccount?.email || null),
+          ...(entitlementState ? { entitlement_state: entitlementState } : {})
         },
         // Keep top-level for backward compatibility
         token,
@@ -848,7 +901,8 @@ function createAuthRouter({ supabase }) {
         },
         site: siteLink.site || null,
         shared_site: siteLink.sharedSite,
-        existing_email: maskEmail(siteLink.existingAccount?.email || null)
+        existing_email: maskEmail(siteLink.existingAccount?.email || null),
+        ...(entitlementState ? { entitlement_state: entitlementState } : {})
       });
     } catch (err) {
       loginTrace.final_state = 'server_error';

@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { captureServerEvent } = require('../lib/posthog');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const { validateImagePayload } = require('../lib/validation');
@@ -25,6 +26,7 @@ const { hashRequestFingerprint } = require('../services/siteQuota');
 const { extractUserInfo } = require('../middleware/auth');
 const { resolveUsageAttributionUserId } = require('../services/usageAttribution');
 const { buildTrialGenerationForSingleRequest } = require('../lib/trialGenerationContract');
+const { buildEntitlementState } = require('../services/entitlementState');
 
 function hashPayload(base64) {
   return crypto.createHash('md5').update(base64).digest('hex');
@@ -267,6 +269,50 @@ function buildAnonymousResponseFields(anonymousContext, trialInfo) {
     trial_exhausted: resolvedTrialInfo.trial_exhausted,
     anonymous: resolvedTrialInfo.anonymous
   };
+}
+
+function buildGenerationEntitlementState(req, {
+  quotaStatus = null,
+  anonymousResponseFields = null,
+  responseFields = null
+} = {}) {
+  const source = req.trialMode
+    ? (anonymousResponseFields || responseFields || {})
+    : (quotaStatus && !quotaStatus.error ? quotaStatus : (responseFields || {}));
+
+  return buildEntitlementState(source, {
+    isLoggedIn: !req.trialMode,
+    isTrial: Boolean(req.trialMode)
+  });
+}
+
+function captureGenerationEvent(event, {
+  req,
+  siteIdentity,
+  entitlementState = null,
+  outcome = null
+} = {}) {
+  const distinctId = siteIdentity?.siteHash || null;
+  if (!distinctId) return;
+
+  captureServerEvent({
+    event,
+    distinctId,
+    properties: {
+      request_id: req?.id || null,
+      auth_state: req?.trialMode ? 'guest_trial' : 'authenticated',
+      plan: entitlementState?.plan || null,
+      quota_state: entitlementState?.quota_state || null,
+      tokens_remaining: entitlementState?.tokens_remaining ?? null,
+      outcome
+    }
+  }).catch((error) => {
+    logger.warn('[analytics] generation_event_capture_failed', {
+      event,
+      request_id: req?.id || null,
+      error: error.message
+    });
+  });
 }
 
 function resolveQuotaPathLabel(reservation) {
@@ -556,6 +602,7 @@ function createAltTextRouter({
         let creditsInfo = {};
         let trialInfo = null;
         let anonymousResponseFields = null;
+        let cachedQuotaStatus = null;
         try {
           const quotaStatus = await getQuotaStatus(supabase, {
             account: req.user || req.license || null,
@@ -564,6 +611,7 @@ function createAltTextRouter({
             quotaMode: req.trialMode ? 'trial' : 'site',
             requestId: req.id || null
           });
+          cachedQuotaStatus = quotaStatus;
           if (req.trialMode) {
             trialInfo = await getAnonymousTrialStatus(supabase, {
               quotaStatus: quotaStatus.error ? {} : quotaStatus,
@@ -608,6 +656,11 @@ function createAltTextRouter({
           ...creditsInfo,
           ...(trialInfo || {}),
           ...(anonymousResponseFields || {}),
+          entitlement_state: buildGenerationEntitlementState(req, {
+            quotaStatus: cachedQuotaStatus,
+            anonymousResponseFields,
+            responseFields: creditsInfo
+          }),
           ...(cachedTrialGeneration ? { trial_generation: cachedTrialGeneration } : {}),
           cached: true
         });
@@ -754,6 +807,9 @@ function createAltTextRouter({
           message: 'Free trial exhausted. Upgrade to continue generating alt text.',
           ...trialInfo,
           ...anonymousResponseFields,
+          entitlement_state: buildGenerationEntitlementState(req, {
+            anonymousResponseFields
+          }),
           trial_generation: buildTrialGenerationForSingleRequest({
             outcome: 'quota_denied',
             batchRequestedTotal: parsed.data.trial_batch?.requested_total,
@@ -780,6 +836,7 @@ function createAltTextRouter({
       // Trial exhausted must return structured trial status for UI correctness.
       let trialInfo = null;
       let anonymousResponseFields = null;
+      let deniedQuotaStatus = null;
       if (req.trialMode) {
         try {
           const quotaStatus = await getQuotaStatus(supabase, {
@@ -801,6 +858,18 @@ function createAltTextRouter({
 
         if (!anonymousResponseFields) {
           anonymousResponseFields = buildAnonymousResponseFields(anonymousContext, null);
+        }
+      } else {
+        try {
+          deniedQuotaStatus = await getQuotaStatus(supabase, {
+            account: req.user || req.license || null,
+            licenseKey,
+            siteIdentity,
+            quotaMode: 'site',
+            requestId: req.id || null
+          });
+        } catch (_err) {
+          // Best-effort: preserve the existing quota rejection response.
         }
       }
 
@@ -862,7 +931,7 @@ function createAltTextRouter({
         finalResultState: 'quota_denied'
       });
 
-      return res.status(reservation.status || 402).json({
+      const deniedResponseFields = {
         error: reservation.error,
         message: reservation.message || 'Quota exceeded',
         code: reservation.error,
@@ -876,7 +945,20 @@ function createAltTextRouter({
         ...(anonymousResponseFields || {}),
         trial_exhausted: anonymousResponseFields?.trial_exhausted === true || reservation.error === 'TRIAL_EXHAUSTED' ? true : undefined,
         ...(trialGenerationDenied ? { trial_generation: trialGenerationDenied } : {})
+      };
+      deniedResponseFields.entitlement_state = buildGenerationEntitlementState(req, {
+        quotaStatus: deniedQuotaStatus,
+        anonymousResponseFields,
+        responseFields: deniedResponseFields
       });
+      captureGenerationEvent('generation_blocked_no_credits', {
+        req,
+        siteIdentity,
+        entitlementState: deniedResponseFields.entitlement_state,
+        outcome: reservation.error
+      });
+
+      return res.status(reservation.status || 402).json(deniedResponseFields);
     }
 
     logger.info('[altText] Quota reserved, calling OpenAI', {
@@ -971,6 +1053,12 @@ function createAltTextRouter({
           trialRemainingAfter: anonymousResponseFields.trial_remaining
         })
         : null;
+
+      captureGenerationEvent('generation_failed', {
+        req,
+        siteIdentity,
+        outcome: errorCode
+      });
 
       return res.status(httpStatus).json({
         error: errorCode,
@@ -1354,6 +1442,25 @@ function createAltTextRouter({
         generation_time_ms: meta?.generation_time_ms
       }
     };
+    response.entitlement_state = buildGenerationEntitlementState(req, {
+      quotaStatus,
+      anonymousResponseFields,
+      responseFields: response
+    });
+    captureGenerationEvent('generation_completed', {
+      req,
+      siteIdentity,
+      entitlementState: response.entitlement_state,
+      outcome: 'success'
+    });
+    if (!response.entitlement_state.can_generate && response.entitlement_state.tokens_remaining === 0) {
+      captureGenerationEvent('credits_exhausted', {
+        req,
+        siteIdentity,
+        entitlementState: response.entitlement_state,
+        outcome: 'final_generation'
+      });
+    }
 
     if (req.trialMode && trialAtRequestStart && anonymousResponseFields) {
       response.trial_generation = buildTrialGenerationForSingleRequest({

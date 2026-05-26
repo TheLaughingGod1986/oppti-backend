@@ -6,8 +6,10 @@ const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { hashRequestFingerprint } = require('./siteQuota');
 const {
   finalizeGenerationQuotaReservation,
+  getQuotaStatus,
   reserveGenerationQuota
 } = require('./quota');
+const { buildEntitlementState } = require('./entitlementState');
 const { upsertGeneratedImageAltState } = require('./imageAltState');
 const { recordUsage } = require('./usage');
 const { resolveUsageAttributionUserId } = require('./usageAttribution');
@@ -532,8 +534,20 @@ function createBulkAltTextProcessor({ supabase, getJobRecord, setJobRecord, item
       await withLock(async () => {
         const latest = await getJobRecord(jobId);
         if (!latest) return;
+        const quotaStatus = await getQuotaStatus(supabase, {
+          licenseKey,
+          siteHash: siteKey,
+          installUuid: siteKey,
+          quotaMode: 'site'
+        });
         latest.status = 'completed';
         latest.batchCompletedAt = nowIso();
+        if (!quotaStatus.error) {
+          latest.entitlement_state = buildEntitlementState(quotaStatus, {
+            isLoggedIn: true,
+            isTrial: false
+          });
+        }
         latest.timings = {
           ...latest.timings,
           batch_total_ms: Date.now() - batchT0

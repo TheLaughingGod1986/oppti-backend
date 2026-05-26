@@ -36,7 +36,7 @@ const LEGACY_SITE_SELECT = [
   'deactivated_at'
 ].join(', ');
 
-const ACCOUNT_SELECT = 'id, email, license_key, plan, status, billing_cycle, billing_day_of_month, stripe_customer_id, stripe_subscription_id';
+const ACCOUNT_SELECT = 'id, email, license_key, plan, status, billing_cycle, billing_day_of_month, stripe_customer_id, stripe_subscription_id, token_limit, tokens_used_this_month, total_tokens_used, last_generation_at';
 const PLAN_SELECT = 'id, display_name, monthly_included_credits, credit_grant_amount, billing_interval_default, is_paid';
 const ROLE_RANK = {
   member: 1,
@@ -1914,6 +1914,10 @@ async function getSiteQuotaStatus(supabase, {
     subscription: subscription || null,
     plan_type: effectivePlanId,
     license_status: legacyAccount?.status || 'active',
+    token_limit: totalLimit,
+    tokens_used_this_month: creditsUsed,
+    total_tokens_used: legacyAccount?.total_tokens_used ?? creditsUsed,
+    last_generation_at: legacyAccount?.last_generation_at || null,
     credits_used: creditsUsed,
     credits_remaining: creditsRemaining,
     total_limit: totalLimit,

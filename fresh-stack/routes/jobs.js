@@ -1,7 +1,8 @@
 const express = require('express');
 const { z } = require('zod');
 const logger = require('../lib/logger');
-const { enforceQuota } = require('../services/quota');
+const { enforceQuota, getQuotaStatus } = require('../services/quota');
+const { buildEntitlementState } = require('../services/entitlementState');
 const { extractUserInfo } = require('../middleware/auth');
 const {
   LEDGER_SYNC_SCOPES,
@@ -140,13 +141,35 @@ function createJobsRouter({ supabase, checkRateLimit, getSiteFromHeaders, create
     try {
       await enforceQuota(supabase, { licenseKey, siteHash: siteKey, creditsNeeded: images.length });
     } catch (err) {
+      let entitlementState = null;
+      try {
+        const quotaStatus = await getQuotaStatus(supabase, {
+          account: req.user || req.license || null,
+          licenseKey,
+          siteHash: rawSiteKey,
+          siteUrl,
+          siteFingerprint,
+          installUuid,
+          quotaMode: 'site',
+          requestId: req.id || null
+        });
+        if (!quotaStatus.error) {
+          entitlementState = buildEntitlementState(quotaStatus, {
+            isLoggedIn: true,
+            isTrial: false
+          });
+        }
+      } catch (_quotaError) {
+        // Preserve the existing gate response when status refresh is unavailable.
+      }
       return res.status(err.status || 402).json({
         error: err.code || 'INSUFFICIENT_QUOTA',
         message: err.message,
         code: err.code || 'INSUFFICIENT_QUOTA',
         required_credits: images.length,
         credits_remaining: err.payload?.credits_remaining,
-        reset_date: err.payload?.reset_date
+        reset_date: err.payload?.reset_date,
+        ...(entitlementState ? { entitlement_state: entitlementState } : {})
       });
     }
 
