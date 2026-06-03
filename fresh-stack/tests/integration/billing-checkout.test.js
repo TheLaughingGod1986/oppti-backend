@@ -423,3 +423,122 @@ describe('POST /billing/checkout', () => {
     expect(stripeClient.checkout.sessions.create).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /billing/portal', () => {
+  test('resolves customer from active site subscription when client omits customerId', async () => {
+    const stripeClient = {
+      billingPortal: {
+        sessions: {
+          create: jest.fn().mockResolvedValue({
+            url: 'https://stripe.test/portal'
+          })
+        }
+      }
+    };
+
+    const supabase = createSupabaseMock({
+      siteRecord: {
+        id: 'site_paid',
+        site_hash: 'site_hash_paid',
+        license_key: 'lic_paid'
+      },
+      siteSubscriptions: [{
+        id: 'site_sub_paid',
+        site_id: 'site_paid',
+        plan_id: 'pro',
+        stripe_customer_id: 'cus_paid',
+        stripe_subscription_id: 'sub_paid',
+        status: 'active',
+        billing_interval: 'month',
+        current_period_end: '2026-07-01T00:00:00.000Z'
+      }],
+      licenses: [{
+        license_key: 'lic_paid',
+        plan: 'pro'
+      }]
+    });
+
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: {
+        id: 'account_paid',
+        email: 'paid@example.com',
+        license_key: 'lic_paid',
+        plan: 'pro'
+      }
+    });
+
+    const res = await request(app)
+      .post('/billing/portal')
+      .set('X-Site-Key', 'site_hash_paid')
+      .send({
+        returnUrl: 'https://app.example.com/billing'
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      success: true,
+      url: 'https://stripe.test/portal',
+      customerId: 'cus_paid',
+      subscriptionId: 'sub_paid',
+      source: 'site_subscriptions:license_sites'
+    }));
+    expect(stripeClient.billingPortal.sessions.create).toHaveBeenCalledWith({
+      customer: 'cus_paid',
+      return_url: 'https://app.example.com/billing'
+    });
+  });
+
+  test('returns billing_not_linked for manual pro grants without Stripe customer', async () => {
+    const stripeClient = {
+      billingPortal: {
+        sessions: {
+          create: jest.fn()
+        }
+      }
+    };
+
+    const supabase = createSupabaseMock({
+      siteRecord: {
+        id: 'site_manual',
+        site_hash: 'site_hash_manual',
+        license_key: 'lic_manual'
+      },
+      siteSubscriptions: [{
+        id: 'site_sub_manual',
+        site_id: 'site_manual',
+        plan_id: 'pro',
+        stripe_customer_id: null,
+        stripe_subscription_id: null,
+        status: 'active',
+        billing_interval: 'month',
+        current_period_end: '2026-07-01T00:00:00.000Z'
+      }]
+    });
+
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: {
+        id: 'account_manual',
+        email: 'manual@example.com',
+        license_key: 'lic_manual',
+        plan: 'pro'
+      }
+    });
+
+    const res = await request(app)
+      .post('/billing/portal')
+      .set('X-Site-Key', 'site_hash_manual')
+      .send({
+        returnUrl: 'https://app.example.com/billing'
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual(expect.objectContaining({
+      code: 'billing_not_linked'
+    }));
+    expect(stripeClient.billingPortal.sessions.create).not.toHaveBeenCalled();
+  });
+});

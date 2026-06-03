@@ -2088,19 +2088,49 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
   router.post('/portal', async (req, res) => {
     if (!requireBillingAuth(req, res)) return;
     const { returnUrl, customerId } = req.body || {};
+    const account = req.license || req.user || null;
     const stripeClient = getStripe();
     if (!stripeClient) {
       return res.status(501).json({ error: 'Stripe not configured' });
     }
-    if (!customerId) {
-      return res.status(400).json({ error: 'customerId is required for portal' });
+
+    let resolvedCustomerId = customerId || account?.stripe_customer_id || null;
+    let resolvedSubscriptionId = account?.stripe_subscription_id || null;
+    let resolutionSource = customerId ? 'request' : account?.stripe_customer_id ? 'account' : 'unresolved';
+
+    if (!resolvedCustomerId && supabase && account) {
+      const resolved = await selectBillingSiteSubscriptionForLicense(supabase, account);
+      if (resolved.subscription?.stripe_customer_id) {
+        resolvedCustomerId = resolved.subscription.stripe_customer_id;
+        resolvedSubscriptionId = resolved.subscription.stripe_subscription_id || resolvedSubscriptionId;
+        resolutionSource = `site_subscriptions:${resolved.resolutionPath}`;
+      }
     }
+
+    if (!resolvedCustomerId) {
+      logger.warn('[billing] portal customer unresolved', {
+        account_id: account?.id || null,
+        licenseKeyPrefix: maskSecret(account?.license_key || null),
+        source: resolutionSource
+      });
+      return res.status(409).json({
+        error: 'Billing portal is unavailable because this account is not linked to a Stripe customer.',
+        code: 'billing_not_linked'
+      });
+    }
+
     try {
       const session = await stripeClient.billingPortal.sessions.create({
-        customer: customerId,
+        customer: resolvedCustomerId,
         return_url: returnUrl || `${process.env.FRONTEND_URL || 'https://example.com'}/billing`
       });
-      res.json({ success: true, url: session.url });
+      res.json({
+        success: true,
+        url: session.url,
+        customerId: resolvedCustomerId,
+        subscriptionId: resolvedSubscriptionId,
+        source: resolutionSource
+      });
     } catch (error) {
       logger.error('[billing] portal error', error.message);
       res.status(500).json({ error: 'Failed to create portal session' });
