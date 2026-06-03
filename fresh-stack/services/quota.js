@@ -58,8 +58,6 @@ function buildRowsFoundAuditPayload(details = {}, error = null) {
   return payload;
 }
 
-const FREE_DAILY_GENERATION_LIMIT = getLimits('free').dailyCredits || 5;
-
 function getDailyQuotaWindow(now = new Date()) {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
   const end = new Date(start);
@@ -71,50 +69,10 @@ function getDailyQuotaWindow(now = new Date()) {
 }
 
 async function withDailyFreeAllowance(supabase, status, { siteHash = null, licenseKey = null } = {}) {
-  if (!status || status.error || String(status.plan_type || '').toLowerCase() !== 'free') {
-    return status;
-  }
-  const monthlyLimit = Number(status.total_limit ?? status.credits_total ?? status.limit ?? 0);
-  if (Number.isFinite(monthlyLimit) && monthlyLimit > getLimits('free').credits) {
-    return status;
-  }
-
-  const window = getDailyQuotaWindow();
-  let query = supabase
-    .from('usage_logs')
-    .select('credits_used')
-    .eq('status', 'success')
-    .gte('created_at', window.start)
-    .lt('created_at', window.end);
-  const effectiveSiteHash = status.site?.site_hash || status.site_quota?.site_hash || siteHash;
-  if (effectiveSiteHash) {
-    query = query.eq('site_hash', effectiveSiteHash);
-  } else if (licenseKey) {
-    query = query.eq('license_key', licenseKey);
-  }
-
-  const { data, error } = await query;
-  if (error) {
-    logger.warn('[Quota] Unable to resolve daily free usage; retaining monthly decision', {
-      site_hash: effectiveSiteHash || null,
-      error: serializeSupabaseError(error)
-    });
-    return status;
-  }
-
-  const used = (Array.isArray(data) ? data : [])
-    .reduce((sum, row) => sum + Math.max(Number(row?.credits_used) || 1, 0), 0);
-  const remaining = Math.max(FREE_DAILY_GENERATION_LIMIT - used, 0);
-  const monthlyExhausted = Number(status.credits_remaining) <= 0;
-
-  return {
-    ...status,
-    daily_generation_limit: FREE_DAILY_GENERATION_LIMIT,
-    daily_generations_used: used,
-    daily_generations_remaining: remaining,
-    daily_reset_date: window.end,
-    quota_state: monthlyExhausted ? 'exhausted' : (remaining <= 0 ? 'daily_exhausted' : status.quota_state)
-  };
+  void supabase;
+  void siteHash;
+  void licenseKey;
+  return status;
 }
 
 /**
@@ -702,6 +660,7 @@ async function reserveGenerationQuota(supabase, {
   // (eg. transient RLS/schema mismatch or bad identity signals), fall back to
   // legacy license quota rather than hard-failing generation.
   const v2FallbackErrors = new Set([
+    'DAILY_QUOTA_EXCEEDED',
     'SITE_QUOTA_V2_UNAVAILABLE',
     'SITE_CREATE_FAILED',
     'SITE_NOT_FOUND'

@@ -290,55 +290,6 @@ describe('POST /api/jobs bulk pipeline', () => {
     }));
   });
 
-  test('returns daily exhaustion when a free batch exceeds today remaining allowance', async () => {
-    quota.enforceQuota.mockRejectedValueOnce(
-      Object.assign(new Error('Daily free generation limit reached'), {
-        status: 402,
-        code: 'DAILY_QUOTA_EXCEEDED',
-        payload: {
-          credits_remaining: 47,
-          daily_generation_limit: 5,
-          daily_generations_used: 3,
-          daily_generations_remaining: 2,
-          daily_reset_date: '2026-05-27T00:00:00.000Z'
-        }
-      })
-    );
-    quota.getQuotaStatus.mockResolvedValueOnce({
-      error: null,
-      plan_type: 'free',
-      credits_used: 3,
-      credits_remaining: 47,
-      total_limit: 50,
-      daily_generation_limit: 5,
-      daily_generations_used: 3,
-      daily_generations_remaining: 2,
-      daily_reset_date: '2026-05-27T00:00:00.000Z'
-    });
-
-    const res = await request(app)
-      .post('/api/jobs')
-      .set('X-License-Key', 'test-bulk-license')
-      .set('X-Site-Key', 'bulk-site')
-      .send({
-        images: [
-          { image: { url: 'https://example.com/1.jpg', width: 1, height: 1 } },
-          { image: { url: 'https://example.com/2.jpg', width: 1, height: 1 } },
-          { image: { url: 'https://example.com/3.jpg', width: 1, height: 1 } }
-        ]
-      });
-
-    expect(res.status).toBe(402);
-    expect(res.body.code).toBe('DAILY_QUOTA_EXCEEDED');
-    expect(res.body.entitlement_state).toEqual(expect.objectContaining({
-      plan: 'free',
-      tokens_remaining: 47,
-      daily_generations_remaining: 2,
-      can_generate: true,
-      can_autopilot: false
-    }));
-  });
-
   test('returns 401 without license key', async () => {
     const res = await request(app)
       .post('/api/jobs')

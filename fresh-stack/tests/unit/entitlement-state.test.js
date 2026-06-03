@@ -20,26 +20,6 @@ describe('buildEntitlementState', () => {
     expect(state.can_autopilot).toBe(false);
   });
 
-  test('blocks only free generation after five daily successes while monthly credits remain', () => {
-    const state = buildEntitlementState({
-      plan_type: 'free',
-      credits_used: 5,
-      credits_remaining: 45,
-      total_limit: 50,
-      daily_generation_limit: 5,
-      daily_generations_used: 5,
-      daily_generations_remaining: 0,
-      daily_reset_date: '2026-05-27T00:00:00.000Z'
-    }, {
-      isLoggedIn: true
-    });
-
-    expect(state.tokens_remaining).toBe(45);
-    expect(state.can_generate).toBe(false);
-    expect(state.quota_state).toBe('daily_exhausted');
-    expect(state.message).toBe('Daily generation allowance exhausted.');
-  });
-
   test('recognizes an unlimited entitlement instead of blocking it', () => {
     const state = buildEntitlementState({
       plan_type: 'unlimited',
