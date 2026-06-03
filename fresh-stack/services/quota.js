@@ -58,6 +58,61 @@ function buildRowsFoundAuditPayload(details = {}, error = null) {
   return payload;
 }
 
+const FREE_DAILY_GENERATION_LIMIT = getLimits('free').dailyCredits || 5;
+
+function getDailyQuotaWindow(now = new Date()) {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 1);
+  return {
+    start: start.toISOString(),
+    end: end.toISOString()
+  };
+}
+
+async function withDailyFreeAllowance(supabase, status, { siteHash = null, licenseKey = null } = {}) {
+  if (!status || status.error || String(status.plan_type || '').toLowerCase() !== 'free') {
+    return status;
+  }
+
+  const window = getDailyQuotaWindow();
+  let query = supabase
+    .from('usage_logs')
+    .select('credits_used')
+    .eq('status', 'success')
+    .gte('created_at', window.start)
+    .lt('created_at', window.end);
+  const effectiveSiteHash = status.site?.site_hash || status.site_quota?.site_hash || siteHash;
+  if (effectiveSiteHash) {
+    query = query.eq('site_hash', effectiveSiteHash);
+  } else if (licenseKey) {
+    query = query.eq('license_key', licenseKey);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    logger.warn('[Quota] Unable to resolve daily free usage; retaining monthly decision', {
+      site_hash: effectiveSiteHash || null,
+      error: serializeSupabaseError(error)
+    });
+    return status;
+  }
+
+  const used = (Array.isArray(data) ? data : [])
+    .reduce((sum, row) => sum + Math.max(Number(row?.credits_used) || 1, 0), 0);
+  const remaining = Math.max(FREE_DAILY_GENERATION_LIMIT - used, 0);
+  const monthlyExhausted = Number(status.credits_remaining) <= 0;
+
+  return {
+    ...status,
+    daily_generation_limit: FREE_DAILY_GENERATION_LIMIT,
+    daily_generations_used: used,
+    daily_generations_remaining: remaining,
+    daily_reset_date: window.end,
+    quota_state: monthlyExhausted ? 'exhausted' : (remaining <= 0 ? 'daily_exhausted' : status.quota_state)
+  };
+}
+
 /**
  * Calculate reset date and quota status for a license.
  * IMPORTANT: If siteHash is provided, looks up the site's actual license to ensure
@@ -309,12 +364,12 @@ async function getQuotaStatus(supabase, {
   });
 
   if (!hasSiteSignals) {
-    return getLegacyQuotaStatus(supabase, {
+    return withDailyFreeAllowance(supabase, await getLegacyQuotaStatus(supabase, {
       licenseKey,
       siteHash,
       requestId,
       accountId: account?.id || null
-    });
+    }), { siteHash, licenseKey });
   }
 
   const hasAuthenticatedSiteContext = Boolean(
@@ -346,12 +401,12 @@ async function getQuotaStatus(supabase, {
       checked_sources: ['site_quotas'],
       fallback_reason: 'development_site_not_allowed'
     }, 'warn');
-    return getLegacyQuotaStatus(supabase, {
+    return withDailyFreeAllowance(supabase, await getLegacyQuotaStatus(supabase, {
       licenseKey,
       siteHash: siteHash || identity.siteHash,
       requestId,
       accountId: account?.id || null
-    });
+    }), { siteHash: siteHash || identity.siteHash, licenseKey });
   }
 
   const siteStatus = await getSiteQuotaStatus(supabase, {
@@ -364,7 +419,10 @@ async function getQuotaStatus(supabase, {
   });
 
   if (!siteStatus.error) {
-    return siteStatus;
+    return withDailyFreeAllowance(supabase, siteStatus, {
+      siteHash: siteHash || identity.siteHash,
+      licenseKey: licenseKey || account?.license_key || null
+    });
   }
 
   if (hasAuthenticatedSiteContext) {
@@ -423,12 +481,12 @@ async function getQuotaStatus(supabase, {
     checked_sources: ['site_quotas'],
     fallback_reason: `site_quota_v2:${siteStatus.error}`
   }, 'warn');
-  return getLegacyQuotaStatus(supabase, {
+  return withDailyFreeAllowance(supabase, await getLegacyQuotaStatus(supabase, {
     licenseKey,
     siteHash: siteHash || identity?.siteHash,
     requestId,
     accountId: account?.id || null
-  });
+  }), { siteHash: siteHash || identity?.siteHash, licenseKey });
 }
 
 /**
@@ -446,6 +504,22 @@ async function checkQuotaAvailable(supabase, { licenseKey, siteHash, creditsNeed
       credits_used: status.credits_used,
       total_limit: status.total_limit,
       reset_date: status.reset_date
+    };
+  }
+  if (status.daily_generations_remaining != null && status.daily_generations_remaining < creditsNeeded) {
+    return {
+      error: 'DAILY_QUOTA_EXCEEDED',
+      code: 'DAILY_QUOTA_EXCEEDED',
+      status: 402,
+      message: 'Daily free generation limit reached',
+      credits_used: status.credits_used,
+      credits_remaining: status.credits_remaining,
+      total_limit: status.total_limit,
+      reset_date: status.reset_date,
+      daily_generation_limit: status.daily_generation_limit,
+      daily_generations_used: status.daily_generations_used,
+      daily_generations_remaining: status.daily_generations_remaining,
+      daily_reset_date: status.daily_reset_date
     };
   }
   return status;
@@ -521,6 +595,23 @@ async function reserveGenerationQuota(supabase, {
       site: null,
       account
     };
+  }
+
+  if (quotaMode === 'site') {
+    const available = await checkQuotaAvailable(supabase, {
+      licenseKey: licenseKey || account?.license_key || null,
+      siteHash: effectiveSiteHash,
+      creditsNeeded
+    });
+    if (available.error) {
+      return {
+        error: available.error,
+        code: available.error,
+        status: available.status,
+        message: available.message,
+        payload: available
+      };
+    }
   }
 
   // Use the caller-provided siteIdentity if available (preserves allowDevelopment
@@ -709,5 +800,7 @@ module.exports = {
   reserveGenerationQuota,
   finalizeGenerationQuotaReservation,
   computePeriodStart,
+  getDailyQuotaWindow,
+  withDailyFreeAllowance,
   logV2Fallback
 };

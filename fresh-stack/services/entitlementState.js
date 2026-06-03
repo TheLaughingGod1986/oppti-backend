@@ -38,15 +38,31 @@ function buildEntitlementState(status = {}, {
       reportedRemaining,
       tokenLimit === null ? 0 : Math.max(tokenLimit - tokensUsedThisMonth, 0)
     );
+  const dailyGenerationLimit = unlimited
+    ? null
+    : toNonNegativeNumber(status.daily_generation_limit, null);
+  const dailyGenerationsUsed = dailyGenerationLimit === null
+    ? null
+    : toNonNegativeNumber(status.daily_generations_used, 0);
+  const dailyGenerationsRemaining = dailyGenerationLimit === null
+    ? null
+    : toNonNegativeNumber(
+      status.daily_generations_remaining,
+      Math.max(dailyGenerationLimit - dailyGenerationsUsed, 0)
+    );
   const loggedIn = typeof isLoggedIn === 'boolean'
     ? isLoggedIn
     : status.auth_state !== 'guest_trial' && plan !== 'trial';
   const trial = typeof isTrial === 'boolean'
     ? isTrial
     : status.auth_state === 'guest_trial' || plan === 'trial';
-  const canGenerate = unlimited || tokensRemaining > 0;
+  const monthlyBlocked = !unlimited && tokensRemaining <= 0;
+  const dailyBlocked = !unlimited
+    && dailyGenerationLimit !== null
+    && dailyGenerationsRemaining <= 0;
+  const canGenerate = unlimited || (!monthlyBlocked && !dailyBlocked);
   const quotaState = status.quota_state
-    || (canGenerate ? (status.is_near_limit ? 'near_limit' : 'active') : 'exhausted');
+    || (monthlyBlocked ? 'exhausted' : (dailyBlocked ? 'daily_exhausted' : (status.is_near_limit ? 'near_limit' : 'active')));
   const upgradeRequired = typeof status.upgrade_required === 'boolean'
     ? status.upgrade_required
     : (!canGenerate && loggedIn && plan === 'free');
@@ -58,8 +74,12 @@ function buildEntitlementState(status = {}, {
     tokens_used_this_month: tokensUsedThisMonth,
     total_tokens_used: totalTokensUsed,
     tokens_remaining: tokensRemaining,
+    daily_generation_limit: dailyGenerationLimit,
+    daily_generations_used: dailyGenerationsUsed,
+    daily_generations_remaining: dailyGenerationsRemaining,
+    daily_reset_date: status.daily_reset_date || null,
     can_generate: canGenerate,
-    can_autopilot: loggedIn && canGenerate,
+    can_autopilot: loggedIn && !trial && plan !== 'free' && canGenerate,
     is_logged_in: loggedIn,
     is_trial: trial,
     is_unlimited: unlimited,
@@ -68,7 +88,7 @@ function buildEntitlementState(status = {}, {
     upgrade_required: upgradeRequired,
     quota_state: quotaState,
     message: !canGenerate
-      ? (trial ? 'Free trial exhausted.' : 'Monthly credits exhausted.')
+      ? (trial ? 'Free trial exhausted.' : (monthlyBlocked ? 'Monthly credits exhausted.' : 'Daily generation allowance exhausted.'))
       : null
   };
 }

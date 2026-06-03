@@ -656,6 +656,93 @@ async function findSiteMatch(supabase, column, value, {
   return { site, candidates };
 }
 
+function getAccountLicenseKey(account, legacyLicenseKey) {
+  return legacyLicenseKey || account?.license_key || null;
+}
+
+function filterSitesByLicense(candidates = [], licenseKey = null) {
+  if (!licenseKey) return [];
+  return candidates.filter((candidate) => candidate?.license_key === licenseKey);
+}
+
+async function findLicenseScopedSiteMatch(supabase, column, value, {
+  account = null,
+  legacyLicenseKey = null,
+  requestId = null
+} = {}) {
+  if (!value) {
+    return { site: null, candidates: [] };
+  }
+
+  const licenseKey = getAccountLicenseKey(account, legacyLicenseKey);
+  if (!licenseKey) {
+    return { site: null, candidates: [] };
+  }
+
+  const candidates = filterSitesByLicense(await fetchSitesByColumn(supabase, column, value), licenseKey);
+  if (!candidates.length) {
+    return { site: null, candidates: [] };
+  }
+
+  if (candidates.length > 1) {
+    logger.warn('[siteQuota] Duplicate license-scoped site identity candidates detected', {
+      match_column: column,
+      match_value: truncateMatchValue(value),
+      licenseKeyPrefix: maskSecret(licenseKey),
+      candidate_site_ids: candidates.map((candidate) => candidate.id),
+      duplicate_count: candidates.length
+    });
+
+    await recordSiteAudit(supabase, {
+      siteId: null,
+      actorUserId: account?.id || null,
+      eventType: 'duplicate_license_scoped_site_identity_detected',
+      severity: 'warn',
+      requestId,
+      metadata: {
+        match_column: column,
+        match_value: truncateMatchValue(value),
+        candidate_site_ids: candidates.map((candidate) => candidate.id)
+      }
+    });
+  }
+
+  return {
+    site: choosePreferredSiteCandidate(candidates) || null,
+    candidates
+  };
+}
+
+async function findLicenseOwnedFallbackSite(supabase, {
+  account = null,
+  legacyLicenseKey = null,
+  requestId = null
+} = {}) {
+  const licenseKey = getAccountLicenseKey(account, legacyLicenseKey);
+  if (!licenseKey) {
+    return { site: null, candidates: [] };
+  }
+
+  const candidates = await fetchSitesByColumn(supabase, 'license_key', licenseKey);
+  if (!candidates.length) {
+    return { site: null, candidates: [] };
+  }
+
+  if (candidates.length > 1) {
+    logger.warn('[siteQuota] License ownership fallback is ambiguous', {
+      licenseKeyPrefix: maskSecret(licenseKey),
+      candidate_site_ids: candidates.map((candidate) => candidate.id),
+      request_id: requestId || null
+    });
+    return { site: null, candidates };
+  }
+
+  return {
+    site: candidates[0],
+    candidates
+  };
+}
+
 async function followMergedSite(supabase, site) {
   if (!site?.merged_into_site_id) return site;
   const { site: mergedTarget } = await fetchSiteByColumn(supabase, 'id', site.merged_into_site_id);
@@ -1307,13 +1394,34 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
   let matchedBy = null;
   let site = null;
 
-  if (identity.wpInstallUuid) {
-    const match = await findSiteMatch(supabase, 'wp_install_uuid', identity.wpInstallUuid, {
+  const scopedMatchAttempts = [
+    ['site_hash', identity.siteHash, 'site_hash+license_key'],
+    ['wp_install_uuid', identity.wpInstallUuid, 'wp_install_uuid+license_key'],
+    ['site_fingerprint', identity.siteFingerprint, 'site_fingerprint+license_key'],
+    ['fingerprint', identity.siteFingerprint, 'legacy_fingerprint+license_key'],
+    ['canonical_domain', !identity.isDevelopment ? identity.canonicalDomain : null, 'canonical_domain+license_key'],
+    ['normalized_site_url', !identity.isDevelopment ? identity.normalizedSiteUrl : null, 'normalized_site_url+license_key']
+  ];
+
+  for (const [column, value, matchLabel] of scopedMatchAttempts) {
+    if (site || !value) continue;
+    const match = await findLicenseScopedSiteMatch(supabase, column, value, {
       account,
+      legacyLicenseKey,
       requestId
     });
     site = match.site;
-    matchedBy = site ? 'wp_install_uuid' : matchedBy;
+    matchedBy = site ? matchLabel : matchedBy;
+  }
+
+  if (!site && (account?.license_key || legacyLicenseKey)) {
+    const match = await findLicenseOwnedFallbackSite(supabase, {
+      account,
+      legacyLicenseKey,
+      requestId
+    });
+    site = match.site;
+    matchedBy = site ? 'license_ownership' : matchedBy;
   }
 
   if (!site && identity.siteHash) {
@@ -2040,8 +2148,10 @@ async function reserveSiteCredits(supabase, {
     });
     return {
       error: data?.code || 'QUOTA_EXCEEDED',
-      status: data?.code === 'TRIAL_EXHAUSTED' || data?.code === 'QUOTA_EXCEEDED' ? 402 : 400,
-      message: data?.code === 'TRIAL_EXHAUSTED' ? 'Trial quota exhausted' : 'Quota exceeded',
+      status: ['TRIAL_EXHAUSTED', 'QUOTA_EXCEEDED', 'DAILY_QUOTA_EXCEEDED'].includes(data?.code) ? 402 : 400,
+      message: data?.code === 'TRIAL_EXHAUSTED'
+        ? 'Trial quota exhausted'
+        : (data?.code === 'DAILY_QUOTA_EXCEEDED' ? 'Daily free generation limit reached' : 'Quota exceeded'),
       payload: data,
       site: resolved.site
     };

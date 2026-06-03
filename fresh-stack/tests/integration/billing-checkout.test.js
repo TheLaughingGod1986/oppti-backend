@@ -3,7 +3,7 @@ const request = require('supertest');
 
 const { createBillingRouter } = require('../../routes/billing');
 
-function createSupabaseMock({ siteRecord = null } = {}) {
+function createSupabaseMock({ siteRecord = null, siteSubscriptions = [] } = {}) {
   const normalizedSiteRecord = siteRecord
     ? {
         wp_install_uuid: siteRecord.wp_install_uuid || siteRecord.site_hash || null,
@@ -51,6 +51,32 @@ function createSupabaseMock({ siteRecord = null } = {}) {
                 };
               }
             };
+          }
+        };
+      }
+
+      if (table === 'site_subscriptions') {
+        return {
+          select() {
+            const filters = [];
+            const query = {
+              eq(column, value) {
+                filters.push((row) => row?.[column] === value);
+                return query;
+              },
+              in(column, values) {
+                filters.push((row) => values.includes(row?.[column]));
+                return query;
+              },
+              order() {
+                return query;
+              },
+              limit() {
+                const rows = siteSubscriptions.filter((row) => filters.every((filter) => filter(row)));
+                return Promise.resolve({ data: rows.slice(0, 1), error: null });
+              }
+            };
+            return query;
           }
         };
       }
@@ -226,6 +252,8 @@ describe('POST /billing/checkout', () => {
           source: 'app'
         })
       }
+    }), expect.objectContaining({
+      idempotencyKey: expect.stringMatching(/^checkout:/)
     }));
   });
 
@@ -300,6 +328,77 @@ describe('POST /billing/checkout', () => {
           source: 'app'
         })
       }
+    }), expect.objectContaining({
+      idempotencyKey: expect.stringMatching(/^checkout:/)
     }));
+  });
+
+  test('redirects active subscription customers to the billing portal instead of creating checkout', async () => {
+    const stripeClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn()
+        }
+      },
+      billingPortal: {
+        sessions: {
+          create: jest.fn().mockResolvedValue({
+            url: 'https://stripe.test/portal'
+          })
+        }
+      }
+    };
+
+    const supabase = createSupabaseMock({
+      siteRecord: {
+        id: 'site_paid',
+        site_hash: 'site_hash_paid',
+        license_key: 'lic_paid'
+      },
+      siteSubscriptions: [{
+        id: 'site_sub_paid',
+        site_id: 'site_paid',
+        plan_id: 'pro',
+        stripe_customer_id: 'cus_paid',
+        stripe_subscription_id: 'sub_paid',
+        status: 'active',
+        billing_interval: 'month',
+        current_period_end: '2026-07-01T00:00:00.000Z'
+      }]
+    });
+
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: {
+        id: 'account_paid',
+        email: 'paid@example.com',
+        license_key: 'lic_paid',
+        plan: 'pro',
+        stripe_customer_id: 'cus_paid'
+      }
+    });
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_paid')
+      .send({
+        priceId: 'price_pro',
+        cancelUrl: 'https://app.example.com/billing'
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      success: true,
+      url: 'https://stripe.test/portal',
+      portal: true,
+      customerId: 'cus_paid',
+      subscriptionId: 'sub_paid'
+    }));
+    expect(stripeClient.billingPortal.sessions.create).toHaveBeenCalledWith({
+      customer: 'cus_paid',
+      return_url: 'https://app.example.com/billing'
+    });
+    expect(stripeClient.checkout.sessions.create).not.toHaveBeenCalled();
   });
 });

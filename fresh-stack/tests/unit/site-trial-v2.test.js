@@ -30,6 +30,14 @@ function createQuery(rows, { countMode = false, error = null } = {}) {
       state.rows = state.rows.filter((row) => Array.isArray(values) && values.includes(row?.[column]));
       return chain;
     },
+    gte(column, value) {
+      state.rows = state.rows.filter((row) => row?.[column] >= value);
+      return chain;
+    },
+    lt(column, value) {
+      state.rows = state.rows.filter((row) => row?.[column] < value);
+      return chain;
+    },
     order(column, options = {}) {
       const ascending = options?.ascending !== false;
       state.rows = state.rows.slice().sort((left, right) => {
@@ -68,13 +76,16 @@ function createQuery(rows, { countMode = false, error = null } = {}) {
 }
 
 function createV2TrialSupabaseMock({
+  licenses = [],
   sites = [],
+  siteSubscriptions = [],
+  siteQuotas = [],
   siteTrials = [],
   trialUsage = [],
   failTrialInit = false
 } = {}) {
   const state = {
-    licenses: [],
+    licenses: [...licenses],
     sites: [...sites],
     siteMemberships: [],
     siteAuditLogs: [],
@@ -86,8 +97,8 @@ function createV2TrialSupabaseMock({
       billing_interval_default: 'month',
       is_paid: false
     }],
-    siteSubscriptions: [],
-    siteQuotas: [],
+    siteSubscriptions: [...siteSubscriptions],
+    siteQuotas: [...siteQuotas],
     siteTrials: [...siteTrials],
     trialUsage: [...trialUsage],
     generationRequests: []
@@ -230,6 +241,10 @@ function createV2TrialSupabaseMock({
         };
       }
 
+      if (table === 'usage_logs' || table === 'quota_summaries') {
+        return { select: () => createQuery([]) };
+      }
+
       throw new Error(`Unexpected table: ${table}`);
     },
     async rpc(name, payload) {
@@ -305,6 +320,88 @@ describe('V2 anonymous site trials', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.ANONYMOUS_TRIAL_CREDITS = '5';
+  });
+
+  test('paid license resolves by canonical domain when site hash changes', async () => {
+    const periodStart = '2026-06-01T00:00:00.000Z';
+    const periodEnd = '2026-07-01T00:00:00.000Z';
+    const supabase = createV2TrialSupabaseMock({
+      licenses: [{
+        id: '68d299e9-44d0-4e54-90aa-c6a4053a47cf',
+        email: 'nellamarievtonder@gmail.com',
+        license_key: 'eb1f132a-5bfa-446f-8f72-057b90791260',
+        plan: 'pro',
+        status: 'active',
+        billing_cycle: 'monthly'
+      }],
+      sites: [{
+        id: '7b4d51fc-4cbb-4618-b1e6-227da13cb1c8',
+        license_key: 'eb1f132a-5bfa-446f-8f72-057b90791260',
+        site_hash: '7d7f750946e8c3e0f0228e1d737bb26c',
+        wp_install_uuid: '7d7f750946e8c3e0f0228e1d737bb26c',
+        site_url: 'https://edprevent.com',
+        normalized_site_url: 'https://edprevent.com',
+        canonical_domain: 'edprevent.com',
+        site_fingerprint: 'fingerprint-paid',
+        status: 'active',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }],
+      siteSubscriptions: [{
+        id: 'site_sub_paid',
+        site_id: '7b4d51fc-4cbb-4618-b1e6-227da13cb1c8',
+        plan_id: 'pro',
+        stripe_customer_id: 'cus_Ud914UHz3btRTe',
+        stripe_subscription_id: 'sub_1TdsjCJI9Rm418cMw7IcorZg',
+        status: 'active',
+        billing_interval: 'month',
+        current_period_start: periodStart,
+        current_period_end: periodEnd
+      }],
+      siteQuotas: [{
+        id: 'site_quota_paid',
+        site_id: '7b4d51fc-4cbb-4618-b1e6-227da13cb1c8',
+        quota_period_start: periodStart,
+        quota_period_end: periodEnd,
+        monthly_included_credits: 1000,
+        purchased_credits_balance: 0,
+        bonus_credits_balance: 0,
+        used_credits: 46,
+        remaining_credits: 954
+      }]
+    });
+
+    const status = await getQuotaStatus(supabase, {
+      licenseKey: 'eb1f132a-5bfa-446f-8f72-057b90791260',
+      account: {
+        id: '68d299e9-44d0-4e54-90aa-c6a4053a47cf',
+        license_key: 'eb1f132a-5bfa-446f-8f72-057b90791260',
+        plan: 'pro',
+        status: 'active'
+      },
+      siteHash: '4134bd05c315081e3de298c31cff8ae0',
+      installUuid: '4134bd05c315081e3de298c31cff8ae0',
+      siteUrl: 'https://edprevent.com',
+      siteFingerprint: 'fingerprint-request',
+      quotaMode: 'site',
+      requestId: 'req-paid-domain-fallback'
+    });
+
+    expect(status.error).toBeNull();
+    expect(status.site.id).toBe('7b4d51fc-4cbb-4618-b1e6-227da13cb1c8');
+    expect(status.plan_type).toBe('pro');
+    expect(status.total_limit).toBe(1000);
+    expect(status.credits_remaining).toBe(954);
+    expect(status.subscription).toEqual(expect.objectContaining({
+      stripe_subscription_id: 'sub_1TdsjCJI9Rm418cMw7IcorZg'
+    }));
+    expect(logger.info).toHaveBeenCalledWith(
+      '[siteQuota] Existing site reused',
+      expect.objectContaining({
+        site_id: '7b4d51fc-4cbb-4618-b1e6-227da13cb1c8',
+        matched_by: 'canonical_domain+license_key'
+      })
+    );
   });
 
   test('trial reservation initializes site_trials and reuses the row', async () => {

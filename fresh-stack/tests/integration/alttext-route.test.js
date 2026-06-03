@@ -407,6 +407,64 @@ describe('POST /api/alt-text', () => {
     expect(generateAltText).not.toHaveBeenCalled();
   });
 
+  test('returns daily exhausted entitlement state while monthly credits remain', async () => {
+    quotaService.reserveGenerationQuota.mockResolvedValueOnce({
+      error: 'DAILY_QUOTA_EXCEEDED',
+      status: 402,
+      message: 'Daily free generation limit reached',
+      payload: {
+        credits_used: 5,
+        credits_remaining: 45,
+        total_limit: 50,
+        daily_generation_limit: 5,
+        daily_generations_used: 5,
+        daily_generations_remaining: 0,
+        daily_reset_date: '2026-05-27T00:00:00.000Z'
+      }
+    });
+    quotaService.getQuotaStatus.mockResolvedValueOnce({
+      error: null,
+      plan_type: 'free',
+      credits_used: 5,
+      credits_remaining: 45,
+      total_limit: 50,
+      daily_generation_limit: 5,
+      daily_generations_used: 5,
+      daily_generations_remaining: 0,
+      daily_reset_date: '2026-05-27T00:00:00.000Z',
+      reset_date: '2026-06-25T00:00:00.000Z'
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/alt-text', createAltTextRouter({
+      supabase: createSupabaseMock(),
+      redis: null,
+      resultCache: new Map(),
+      checkRateLimit: async () => true,
+      getSiteFromHeaders: async () => ({ quota: 50, used: 5, remaining: 45 })
+    }));
+
+    const res = await request(app).post('/api/alt-text').send({
+      image: { url: 'https://example.com/daily-exhausted.jpg', width: 1, height: 1 }
+    });
+
+    expect(res.status).toBe(402);
+    expect(res.body.code).toBe('DAILY_QUOTA_EXCEEDED');
+    expect(res.body.credits_remaining).toBe(45);
+    expect(res.body.entitlement_state).toEqual(expect.objectContaining({
+      plan: 'free',
+      tokens_remaining: 45,
+      daily_generation_limit: 5,
+      daily_generations_used: 5,
+      daily_generations_remaining: 0,
+      quota_state: 'daily_exhausted',
+      can_generate: false,
+      can_autopilot: false
+    }));
+    expect(generateAltText).not.toHaveBeenCalled();
+  });
+
   test('anonymous generation succeeds and persists quota across requests', async () => {
     quotaService.reserveGenerationQuota.mockResolvedValue({
       error: null,

@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { verifyWebhookSignature } = require('../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../lib/posthog');
@@ -114,6 +115,16 @@ function maskSecret(value) {
   if (!value) return null;
   const stringValue = String(value);
   return stringValue.length <= 8 ? '[redacted]' : `${stringValue.slice(0, 8)}...`;
+}
+
+function buildCheckoutIdempotencyKey({ licenseKey, siteId, priceId, billingCycle }) {
+  const stablePayload = [
+    licenseKey || 'anonymous',
+    siteId || 'unknown-site',
+    priceId || 'unknown-price',
+    billingCycle || 'unknown-cycle'
+  ].join(':');
+  return `checkout:${crypto.createHash('sha256').update(stablePayload).digest('hex')}`;
 }
 
 function mergeStripeMetadata(...metadataSources) {
@@ -1796,6 +1807,10 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
         stripeEventType: event.type,
         error: error.message
       });
+      return res.status(500).json({
+        received: false,
+        error: 'WEBHOOK_HANDLING_FAILED'
+      });
     }
 
     return res.status(200).json({ received: true });
@@ -1951,6 +1966,47 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       const selectedPlanId = normalizePlanValue(selectedPlan?.id || resolvePlanFromPriceId(priceIds, priceId) || null);
       const currentPlan = normalizePlanValue(account?.plan || null);
       const mode = selectedPlan?.interval === 'one-time' ? 'payment' : 'subscription';
+      if (mode === 'subscription') {
+        const existingBilling = await selectBillingSiteSubscriptionForLicense(supabase, account);
+        const existingSubscription = existingBilling.subscription;
+        const existingCustomerId = existingSubscription?.stripe_customer_id || account?.stripe_customer_id || null;
+        if (existingSubscription && existingCustomerId) {
+          if (!stripeClient.billingPortal?.sessions?.create) {
+            logger.warn('[billing] active subscription found but billing portal unavailable', {
+              account_id: account?.id || null,
+              licenseKeyPrefix: maskSecret(account?.license_key || null),
+              site_id: existingSubscription.site_id || siteRecord?.id || null,
+              stripeCustomerId: existingCustomerId,
+              stripeSubscriptionId: existingSubscription.stripe_subscription_id || null
+            });
+            return res.status(409).json({
+              success: false,
+              error: 'ACTIVE_SUBSCRIPTION_EXISTS',
+              message: 'An active subscription already exists for this license.'
+            });
+          }
+
+          const portalSession = await stripeClient.billingPortal.sessions.create({
+            customer: existingCustomerId,
+            return_url: cancelUrl || successUrl || `${process.env.FRONTEND_URL || 'https://example.com'}/billing`
+          });
+          logger.info('[billing] active subscription checkout redirected to portal', {
+            account_id: account?.id || null,
+            licenseKeyPrefix: maskSecret(account?.license_key || null),
+            site_id: existingSubscription.site_id || siteRecord?.id || null,
+            stripeCustomerId: existingCustomerId,
+            stripeSubscriptionId: existingSubscription.stripe_subscription_id || null,
+            billing_info_source: existingBilling.resolutionPath
+          });
+          return res.json({
+            success: true,
+            url: portalSession.url,
+            portal: true,
+            customerId: existingCustomerId,
+            subscriptionId: existingSubscription.stripe_subscription_id || null
+          });
+        }
+      }
       const purchaseType = inferPurchaseType({
         eventType: 'checkout.session.completed',
         paymentMode: mode,
@@ -2013,7 +2069,13 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         checkoutPayload.payment_intent_data = { metadata };
       }
 
-      const session = await stripeClient.checkout.sessions.create(checkoutPayload);
+      const idempotencyKey = buildCheckoutIdempotencyKey({
+        licenseKey: metadata.license_key,
+        siteId: metadata.site_id,
+        priceId,
+        billingCycle: metadata.billing_interval
+      });
+      const session = await stripeClient.checkout.sessions.create(checkoutPayload, { idempotencyKey });
       res.json({ success: true, url: session.url, sessionId: session.id });
     } catch (error) {
       logger.error('[billing] checkout error', error.message);

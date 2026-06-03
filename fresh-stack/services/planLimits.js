@@ -1,5 +1,5 @@
 const PLAN_LIMITS = {
-  free: { credits: 50, maxSites: 1 },
+  free: { credits: 50, dailyCredits: 5, maxSites: 1 },
   pro: { credits: 1000, maxSites: 1 },
   agency: { credits: 10000, maxSites: null } // null = unlimited
 };
@@ -12,4 +12,3 @@ module.exports = {
   getLimits,
   PLAN_LIMITS
 };
-
