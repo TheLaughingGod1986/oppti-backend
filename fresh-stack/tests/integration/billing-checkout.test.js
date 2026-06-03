@@ -3,7 +3,7 @@ const request = require('supertest');
 
 const { createBillingRouter } = require('../../routes/billing');
 
-function createSupabaseMock({ siteRecord = null, siteSubscriptions = [] } = {}) {
+function createSupabaseMock({ siteRecord = null, siteSubscriptions = [], licenses = [] } = {}) {
   const normalizedSiteRecord = siteRecord
     ? {
         wp_install_uuid: siteRecord.wp_install_uuid || siteRecord.site_hash || null,
@@ -77,6 +77,23 @@ function createSupabaseMock({ siteRecord = null, siteSubscriptions = [] } = {}) 
               }
             };
             return query;
+          }
+        };
+      }
+
+      if (table === 'licenses') {
+        return {
+          select() {
+            return {
+              eq(column, value) {
+                return {
+                  single: jest.fn().mockResolvedValue({
+                    data: licenses.find((row) => row?.[column] === value) || null,
+                    error: null
+                  })
+                };
+              }
+            };
           }
         };
       }
@@ -364,6 +381,10 @@ describe('POST /billing/checkout', () => {
         status: 'active',
         billing_interval: 'month',
         current_period_end: '2026-07-01T00:00:00.000Z'
+      }],
+      licenses: [{
+        license_key: 'lic_paid',
+        plan: 'pro'
       }]
     });
 

@@ -1934,30 +1934,6 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       }
     }
 
-    // Enforce site limit for PRO: only 1 site per subscription
-    // Look up via sites → licenses rather than relying on a site_hash column that doesn't exist on subscriptions
-    if (priceId === priceIds.pro && supabase) {
-      try {
-        const siteLimitRecord = siteRecord ? { license_key: siteRecord.license_key } : null;
-        if (siteLimitRecord?.license_key) {
-          const { data: existingLicense } = await supabase
-            .from('licenses')
-            .select('plan')
-            .eq('license_key', siteLimitRecord.license_key)
-            .single();
-          if (existingLicense?.plan === 'pro') {
-            return res.status(403).json({
-              error: 'SITE_LIMIT_EXCEEDED',
-              message: 'Pro plan is limited to 1 site per subscription.',
-              plan: 'pro'
-            });
-          }
-        }
-      } catch (e) {
-        // fail-open
-      }
-    }
-
     const stripeClient = getStripe();
     if (!stripeClient) {
       return res.status(501).json({ error: 'Stripe not configured' });
@@ -2007,6 +1983,32 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
           });
         }
       }
+
+      // Enforce site limit for PRO: only 1 site per subscription.
+      // Existing subscriptions are handled above so repeated upgrade clicks do
+      // not surface as a site-limit error.
+      if (priceId === priceIds.pro && supabase) {
+        try {
+          const siteLimitRecord = siteRecord ? { license_key: siteRecord.license_key } : null;
+          if (siteLimitRecord?.license_key) {
+            const { data: existingLicense } = await supabase
+              .from('licenses')
+              .select('plan')
+              .eq('license_key', siteLimitRecord.license_key)
+              .single();
+            if (existingLicense?.plan === 'pro') {
+              return res.status(403).json({
+                error: 'SITE_LIMIT_EXCEEDED',
+                message: 'Pro plan is limited to 1 site per subscription.',
+                plan: 'pro'
+              });
+            }
+          }
+        } catch (e) {
+          // fail-open
+        }
+      }
+
       const purchaseType = inferPurchaseType({
         eventType: 'checkout.session.completed',
         paymentMode: mode,
