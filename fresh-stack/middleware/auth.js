@@ -12,6 +12,11 @@ function supportsAnonymousTrialPath(path = '') {
     || path === '/usage';
 }
 
+function isPublicJobPollRequest(req) {
+  return req?.method === 'GET'
+    && /^\/api\/jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req?.path || '');
+}
+
 function authMiddleware({ supabase }) {
   return async function validate(req, res, next) {
     // Public paths that don't require authentication
@@ -34,6 +39,12 @@ function authMiddleware({ supabase }) {
 
     // Skip auth for public paths
     if (publicPaths.includes(req.path)) {
+      return next();
+    }
+
+    // Bulk submit stays licensed, but the returned UUID is the bearer handle
+    // for polling progress. Some plugin clients poll without replaying headers.
+    if (isPublicJobPollRequest(req)) {
       return next();
     }
 

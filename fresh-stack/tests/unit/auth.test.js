@@ -46,9 +46,43 @@ describe('auth middleware', () => {
   test('rejects missing license and api token', async () => {
     const supabase = {};
     const mw = authMiddleware({ supabase });
-    const req = { header: () => null };
+    const req = { path: '/api/alt-text', method: 'POST', header: () => null };
     const res = createRes();
     await mw(req, res, () => {});
+    expect(res.statusCode).toBe(401);
+  });
+
+  test('allows bulk job polling by returned job id without license headers', async () => {
+    const supabase = {};
+    const mw = authMiddleware({ supabase });
+    const req = {
+      path: '/api/jobs/58141ee0-fd90-42f7-8dca-1d6933e79067',
+      method: 'GET',
+      header: () => null
+    };
+    const res = createRes();
+    let nextCalled = false;
+
+    await mw(req, res, () => {
+      nextCalled = true;
+    });
+
+    expect(nextCalled).toBe(true);
+    expect(res.statusCode).toBe(200);
+  });
+
+  test('keeps bulk job creation protected without license headers', async () => {
+    const supabase = {};
+    const mw = authMiddleware({ supabase });
+    const req = { path: '/api/jobs', method: 'POST', header: () => null };
+    const res = createRes();
+    let nextCalled = false;
+
+    await mw(req, res, () => {
+      nextCalled = true;
+    });
+
+    expect(nextCalled).toBe(false);
     expect(res.statusCode).toBe(401);
   });
 
