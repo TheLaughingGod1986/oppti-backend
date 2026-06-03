@@ -59,6 +59,39 @@ npm run verify:site-quota-v2
 Notes:
 - This script shells out to the `supabase` CLI and checks the linked project schema.
 
+Site quota rollout backfill:
+
+```bash
+node scripts/backfill-sites.js
+node scripts/backfill-sites.js --write
+```
+
+Notes:
+- Loads `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from repo-root `.env`.
+- Dry-run is the default; add `--write` to backfill canonical site fields, missing memberships, and trial-derived `sites` rows.
+
+Stripe subscription reconciliation:
+
+```bash
+node scripts/reconcile-stripe-subscriptions-to-sites.js
+node scripts/reconcile-stripe-subscriptions-to-sites.js --write
+```
+
+Notes:
+- Loads `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from repo-root `.env`.
+- Dry-run is the default; add `--write` to upsert `site_subscriptions` and attach legacy `subscriptions.site_id` values.
+
+Legacy quota migration:
+
+```bash
+node scripts/migrate-user-quotas-to-site-quotas.js
+node scripts/migrate-user-quotas-to-site-quotas.js --write
+```
+
+Notes:
+- Loads `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from repo-root `.env`.
+- Dry-run is the default; add `--write` to populate `site_quotas` and `site_trials` from current legacy usage and subscription state.
+
 Duplicate-site audit:
 
 ```bash
