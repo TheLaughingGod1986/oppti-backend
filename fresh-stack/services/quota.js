@@ -74,6 +74,10 @@ async function withDailyFreeAllowance(supabase, status, { siteHash = null, licen
   if (!status || status.error || String(status.plan_type || '').toLowerCase() !== 'free') {
     return status;
   }
+  const monthlyLimit = Number(status.total_limit ?? status.credits_total ?? status.limit ?? 0);
+  if (Number.isFinite(monthlyLimit) && monthlyLimit > getLimits('free').credits) {
+    return status;
+  }
 
   const window = getDailyQuotaWindow();
   let query = supabase

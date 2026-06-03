@@ -66,4 +66,17 @@ describe('daily free generation allowance', () => {
     expect(status.daily_generation_limit).toBeUndefined();
     expect(supabase.from).not.toHaveBeenCalled();
   });
+
+  test('does not add a daily cap to repaired paid quota rows with a stale free label', async () => {
+    const supabase = createUsageSupabase([{ credits_used: 39 }]);
+    const status = await withDailyFreeAllowance(supabase, {
+      plan_type: 'free',
+      credits_remaining: 951,
+      total_limit: 1000
+    });
+
+    expect(status.daily_generation_limit).toBeUndefined();
+    expect(status.quota_state).toBeUndefined();
+    expect(supabase.from).not.toHaveBeenCalled();
+  });
 });
