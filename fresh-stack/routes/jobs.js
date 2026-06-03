@@ -15,7 +15,11 @@ const batchSchema = z.object({
   images: z.array(z.object({
     image: z.any(),
     context: z.any().optional(),
-    id: z.string().optional()
+    id: z.union([z.string(), z.number()]).optional(),
+    attachment_id: z.union([z.string(), z.number()]).optional(),
+    attachmentId: z.union([z.string(), z.number()]).optional(),
+    image_id: z.union([z.string(), z.number()]).optional(),
+    imageId: z.union([z.string(), z.number()]).optional()
   })).min(1),
   context: z.any().optional()
 });

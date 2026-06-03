@@ -5,6 +5,26 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function normalizeItemIdentifier(item, index) {
+  const attachmentId = item.attachment_id
+    ?? item.attachmentId
+    ?? item.image_id
+    ?? item.imageId
+    ?? null;
+
+  const id = item.id ?? attachmentId ?? `item-${index}`;
+  const idString = String(id);
+  const attachmentIdString = attachmentId === null || attachmentId === undefined ? null : String(attachmentId);
+
+  return {
+    id: idString,
+    attachment_id: attachmentIdString,
+    attachmentId: attachmentIdString,
+    image_id: attachmentIdString,
+    imageId: attachmentIdString
+  };
+}
+
 function buildBulkJobRecord(jobId, items, context, siteKey, acceptedAtMs) {
   return {
     jobId,
@@ -25,7 +45,7 @@ function buildBulkJobRecord(jobId, items, context, siteKey, acceptedAtMs) {
     firstItemStartedAt: null,
     progress: 0,
     items: items.map((item, i) => ({
-      id: item.id || `item-${i}`,
+      ...normalizeItemIdentifier(item, i),
       index: i,
       status: 'queued',
       stage: 'queued',
@@ -177,4 +197,4 @@ function createQueue({
   };
 }
 
-module.exports = { createQueue, buildBulkJobRecord };
+module.exports = { createQueue, buildBulkJobRecord, normalizeItemIdentifier };

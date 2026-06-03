@@ -189,6 +189,10 @@ describe('POST /api/jobs bulk pipeline', () => {
     expect(job.failed).toBe(0);
     expect(job.items.every((it) => it.status === 'completed')).toBe(true);
     expect(job.results).toHaveLength(5);
+    expect(job.items[0]).toEqual(expect.objectContaining({
+      id: 'att-0',
+      attachment_id: null
+    }));
     expect(job.entitlement_state).toEqual(expect.objectContaining({
       plan: 'pro',
       tokens_remaining: 995,
@@ -214,6 +218,60 @@ describe('POST /api/jobs bulk pipeline', () => {
       images,
       scope: 'partial',
       allowDowngrade: false
+    }));
+  });
+
+  test('preserves WordPress attachment ids in job progress and results', async () => {
+    const images = [
+      {
+        attachment_id: 123,
+        attachmentId: '123',
+        image_id: '123',
+        image: {
+          url: 'https://example.com/wp-attachment.jpg',
+          width: 100,
+          height: 100,
+          filename: 'wp-attachment.jpg'
+        }
+      }
+    ];
+
+    const res = await request(app)
+      .post('/api/jobs')
+      .set('X-License-Key', 'test-bulk-license')
+      .set('X-Site-Key', 'bulk-site')
+      .send({ images, context: { pageTitle: 'Gallery' } });
+
+    expect(res.status).toBe(202);
+
+    await flushImmediate();
+    await flushImmediate();
+
+    let job;
+    for (let i = 0; i < 50; i += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+      const st = await request(app).get(`/api/jobs/${res.body.jobId}`);
+      job = st.body;
+      if (job.status === 'completed') break;
+    }
+
+    expect(job.status).toBe('completed');
+    expect(job.completed).toBe(1);
+    expect(job.items[0]).toEqual(expect.objectContaining({
+      id: '123',
+      attachment_id: '123',
+      attachmentId: '123',
+      image_id: '123',
+      imageId: '123',
+      status: 'completed'
+    }));
+    expect(job.results[0]).toEqual(expect.objectContaining({
+      id: '123',
+      attachment_id: '123',
+      attachmentId: '123',
+      image_id: '123',
+      imageId: '123',
+      success: true
     }));
   });
 

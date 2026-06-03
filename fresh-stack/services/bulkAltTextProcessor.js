@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const logger = require('../lib/logger');
+const { normalizeItemIdentifier } = require('../lib/queue');
 const { validateImagePayload } = require('../lib/validation');
 const { generateAltText } = require('../lib/openai');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
@@ -426,7 +427,7 @@ function createBulkAltTextProcessor({ supabase, getJobRecord, setJobRecord, item
             }
           });
           latest.results.push({
-            id: item.id || `item-${index}`,
+            ...normalizeItemIdentifier(item, index),
             altText: outcome.altText,
             success: true
           });
@@ -445,7 +446,7 @@ function createBulkAltTextProcessor({ supabase, getJobRecord, setJobRecord, item
             }
           });
           latest.results.push({
-            id: item.id || `item-${index}`,
+            ...normalizeItemIdentifier(item, index),
             altText: null,
             success: false,
             error: outcome.message,
