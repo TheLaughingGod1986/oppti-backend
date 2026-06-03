@@ -641,6 +641,70 @@ describe('authenticated site healing on read paths', () => {
     }));
   });
 
+  test('quota status keeps paid site_quotas authoritative when legacy usage logs are higher', async () => {
+    const supabase = createSupabaseMock();
+    const account = supabase._state.licenses[0];
+    account.plan = 'pro';
+    supabase._state.plans.push({
+      id: 'pro',
+      display_name: 'Pro',
+      monthly_included_credits: 1000,
+      credit_grant_amount: 1000,
+      billing_interval_default: 'month',
+      is_paid: true
+    });
+    const { site, quotaPeriodStart, quotaPeriodEnd } = seedLinkedSiteWithStaleQuotaAndUsage(supabase, account, {
+      creditsUsed: [52]
+    });
+    supabase._state.siteQuotas[0] = {
+      ...supabase._state.siteQuotas[0],
+      monthly_included_credits: 1000,
+      used_credits: 49,
+      remaining_credits: 951
+    };
+    supabase._state.siteSubscriptions.push({
+      id: 'site_sub_pro',
+      site_id: site.id,
+      plan_id: 'pro',
+      status: 'active',
+      stripe_customer_id: 'cus_pro',
+      stripe_subscription_id: 'sub_pro',
+      billing_interval: 'month',
+      current_period_start: quotaPeriodStart,
+      current_period_end: quotaPeriodEnd
+    });
+
+    const result = await getQuotaStatus(supabase, {
+      account,
+      licenseKey: account.license_key,
+      siteHash: 'site-legacy-credits',
+      installUuid: 'site-legacy-credits',
+      siteUrl: 'https://legacy-credits.example.com/wp-admin/',
+      siteFingerprint: 'fp-legacy-credits',
+      requestId: 'req-paid-site-quota-authoritative'
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.plan_type).toBe('pro');
+    expect(result.total_limit).toBe(1000);
+    expect(result.credits_used).toBe(49);
+    expect(result.credits_remaining).toBe(951);
+    expect(result.site_quota).toEqual(expect.objectContaining({
+      site_id: 'site_existing',
+      used_credits: 49,
+      remaining_credits: 951
+    }));
+    expect(logger.info).toHaveBeenCalledWith(
+      '[bbai-credits] source_selected',
+      expect.objectContaining({
+        selected_source: 'site_quotas',
+        fallback_reason: 'paid_site_quota_authoritative',
+        used: 49,
+        remaining: 951
+      })
+    );
+  });
+
   test('dashboard truth returns healed credit usage instead of stale site quota defaults', async () => {
     const supabase = createSupabaseMock();
     const account = supabase._state.licenses[0];

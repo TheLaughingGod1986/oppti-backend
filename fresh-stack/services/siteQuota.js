@@ -406,6 +406,8 @@ function buildRowsFoundAuditPayload(details = {}, error = null) {
 async function selectEffectiveSiteQuotaRead(supabase, {
   site = null,
   siteQuota = null,
+  subscription = null,
+  planId = null,
   account = null,
   licenseKey = null,
   quotaPeriodStart = null,
@@ -529,8 +531,19 @@ async function selectEffectiveSiteQuotaRead(supabase, {
   let selectedUsed = currentUsed;
   let fallbackReason = null;
   let selectedRowsFound = siteQuota ? 1 : 0;
+  const normalizedPlanId = String(planId || subscription?.plan_id || '').toLowerCase();
+  const hasActivePaidSubscription = Boolean(
+    subscription
+    && ['active', 'trialing', 'past_due'].includes(String(subscription.status || '').toLowerCase())
+    && normalizedPlanId
+    && normalizedPlanId !== 'free'
+  );
 
-  if (usageCandidate > selectedUsed) {
+  if (hasActivePaidSubscription && siteQuota) {
+    fallbackReason = usageCandidate > selectedUsed || summaryCandidate > selectedUsed
+      ? 'paid_site_quota_authoritative'
+      : fallbackReason;
+  } else if (usageCandidate > selectedUsed) {
     selectedSource = 'usage_logs';
     selectedUsed = usageCandidate;
     selectedRowsFound = usageRows;
@@ -2005,6 +2018,8 @@ async function getSiteQuotaStatus(supabase, {
     : await selectEffectiveSiteQuotaRead(supabase, {
         site,
         siteQuota,
+        subscription,
+        planId: effectivePlanId,
         account: legacyAccount || account || null,
         licenseKey: licenseKey || site.license_key || legacyAccount?.license_key || null,
         quotaPeriodStart: quotaWindow.quotaPeriodStart,
