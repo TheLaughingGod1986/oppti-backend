@@ -183,7 +183,13 @@ describe('GET /usage anonymous trial status', () => {
       total_limit: 50,
       reset_date: '2026-04-30T00:00:00.000Z',
       warning_threshold: 0.9,
-      is_near_limit: false
+      is_near_limit: false,
+      trial: {
+        total_trial_credits: 5,
+        used_trial_credits: 5,
+        remaining_trial_credits: 0,
+        status: 'exhausted'
+      }
     });
 
     const app = express();
@@ -202,6 +208,7 @@ describe('GET /usage anonymous trial status', () => {
     expect(res.body.data.credits_remaining).toBe(43);
     expect(res.body.data.plan_type).toBe('free');
     expect(res.body.data.signup_required).toBe(false);
+    expect(res.body.data.usage.trial).toBeUndefined();
     expect(res.body.data.entitlement_state).toEqual(expect.objectContaining({
       plan: 'free',
       token_limit: 50,

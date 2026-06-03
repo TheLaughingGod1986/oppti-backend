@@ -229,11 +229,6 @@ function createUsageRouter({ supabase }) {
       return res.status(status.status || 401).json(status);
     }
 
-    const trial = await getAnonymousTrialStatus(supabase, {
-      quotaStatus: status,
-      siteHash: siteKey,
-      anonId: anonymousContext.anonId
-    });
     const quotaState = status.quota_state || resolveQuotaState(status);
     const quotaType = inferQuotaType(status.plan_type);
     const entitlementState = buildEntitlementState(status, {
@@ -262,8 +257,7 @@ function createUsageRouter({ supabase }) {
           upgrade_required: false,
           free_plan_offer: 50,
           warning_threshold: status.warning_threshold,
-          is_near_limit: status.is_near_limit,
-          trial
+          is_near_limit: status.is_near_limit
         },
         auth_state: 'authenticated',
         quota_type: quotaType,
