@@ -390,7 +390,11 @@ const requestSchema = z.object({
       title: z.string().optional(),
       caption: z.string().optional(),
       pageTitle: z.string().optional(),
-      altTextSuggestion: z.string().optional()
+      altTextSuggestion: z.string().optional(),
+      tone: z.string().optional(),
+      descriptionStyle: z.string().optional(),
+      customPrompt: z.string().optional(),
+      additionalInstructions: z.string().optional()
     })
     .optional(),
   trial_batch: z

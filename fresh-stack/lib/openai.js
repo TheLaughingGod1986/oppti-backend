@@ -26,7 +26,11 @@ function buildPrompt(context = {}) {
   if (context.caption) hints.push(`Caption: ${context.caption}`);
   if (context.pageTitle) hints.push(`Page: ${context.pageTitle}`);
   if (context.filename) hints.push(`File: ${context.filename}`);
+  if (context.tone || context.descriptionStyle) hints.push(`Requested style: ${context.tone || context.descriptionStyle}`);
   if (context.altTextSuggestion) hints.push(`User suggestion: ${context.altTextSuggestion}`);
+  if (context.customPrompt || context.additionalInstructions) {
+    hints.push(`Additional user instructions: ${context.customPrompt || context.additionalInstructions}`);
+  }
 
   if (hints.length) {
     lines.push('');
@@ -560,5 +564,6 @@ async function reviewAltText({ altText, image = null, context = {}, service = 'a
 
 module.exports = {
   generateAltText,
-  reviewAltText
+  reviewAltText,
+  buildPrompt
 };
