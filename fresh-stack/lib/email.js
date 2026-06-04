@@ -145,7 +145,9 @@ async function sendContactEmail({
   siteUrl,
   siteHash,
   licenseKey,
-  userId
+  userId,
+  includeLogs,
+  diagnosticBundle
 }) {
   if (!resend) {
     return {
@@ -173,6 +175,21 @@ async function sendContactEmail({
     `;
   }
 
+  const diagnosticText = includeLogs && diagnosticBundle
+    ? String(diagnosticBundle).slice(0, 20000)
+    : '';
+  const diagnosticHtml = diagnosticText
+    ? `
+      <div style="background: #fff; padding: 15px; border-radius: 4px; margin-top: 20px; font-size: 12px; color: #444; border: 1px solid #ddd;">
+        <strong>Attached diagnostics:</strong>
+        <pre style="white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">${diagnosticText
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')}</pre>
+      </div>
+    `
+    : '';
+
   try {
     const { data, error } = await resend.emails.send({
       from: fromEmail,
@@ -199,6 +216,7 @@ async function sendContactEmail({
               <p style="margin: 0; white-space: pre-wrap;">${message.replace(/\n/g, '<br>')}</p>
             </div>
             ${metadataHtml}
+            ${diagnosticHtml}
             <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
             <p style="font-size: 12px; color: #999; margin: 0;">This is an automated message from the AltText AI contact form. You can reply directly to this email to respond to ${name}.</p>
           </div>
@@ -215,6 +233,7 @@ Message:
 ${message}
 
 ${wpVersion || pluginVersion || siteUrl || siteHash || licenseKey || userId ? `\nSystem Information:\n${wpVersion ? `WordPress Version: ${wpVersion}\n` : ''}${pluginVersion ? `Plugin Version: ${pluginVersion}\n` : ''}${siteUrl ? `Site URL: ${siteUrl}\n` : ''}${siteHash ? `Site Hash: ${siteHash.substring(0, 8)}...\n` : ''}${licenseKey ? `License Key: ${licenseKey.substring(0, 8)}...\n` : ''}${userId ? `User ID: ${userId}\n` : ''}` : ''}
+${diagnosticText ? `\nAttached diagnostics:\n${diagnosticText}\n` : ''}
 
 ---
 This is an automated message from the AltText AI contact form. You can reply directly to this email to respond to ${name}.
@@ -262,7 +281,6 @@ module.exports = {
   sendContactEmail,
   isAvailable: () => !!resend
 };
-
 
 
 
