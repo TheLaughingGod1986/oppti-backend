@@ -91,6 +91,7 @@ function buildEntitlementState(status = {}, {
   return {
     plan,
     plan_type: plan,
+    has_paid_entitlement: status.has_paid_entitlement === true,
     token_limit: tokenLimit,
     tokens_used_this_month: tokensUsedThisMonth,
     total_tokens_used: totalTokensUsed,

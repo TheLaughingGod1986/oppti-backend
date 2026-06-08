@@ -1723,6 +1723,22 @@ async function selectActiveSiteSubscription(supabase, siteId) {
   return Array.isArray(data) && data.length ? data[0] : null;
 }
 
+function hasLegacyPaidEntitlementEvidence(account) {
+  if (!account) return false;
+
+  const plan = String(account.plan || '').trim().toLowerCase();
+  if (!plan || ['free', 'trial', 'credits'].includes(plan)) {
+    return false;
+  }
+
+  const status = String(account.status || '').trim().toLowerCase();
+  if (['expired', 'suspended', 'cancelled', 'canceled', 'free'].includes(status)) {
+    return false;
+  }
+
+  return Boolean(account.stripe_subscription_id);
+}
+
 async function selectCurrentSiteQuota(supabase, siteId, { quotaPeriodStart, quotaPeriodEnd }) {
   if (!supabase || !siteId || !quotaPeriodStart || !quotaPeriodEnd) return null;
   const { data, error } = await maybeSingle(
@@ -1979,7 +1995,8 @@ async function getSiteQuotaStatus(supabase, {
   const site = resolved.site;
   const subscription = await selectActiveSiteSubscription(supabase, site.id);
   const legacyAccount = account || await fetchAccountByLicenseKey(supabase, licenseKey || site.license_key);
-  const effectivePlanId = subscription?.plan_id || legacyAccount?.plan || 'free';
+  const hasPaidEntitlement = Boolean(subscription) || hasLegacyPaidEntitlementEvidence(legacyAccount);
+  const effectivePlanId = subscription?.plan_id || (hasPaidEntitlement ? legacyAccount.plan : 'free');
   const plan = await selectPlan(supabase, effectivePlanId);
   const quotaWindow = resolveQuotaWindowFromSubscription(subscription);
   const monthlyIncludedCredits = plan?.monthly_included_credits ?? getLimits(effectivePlanId).credits;
@@ -2006,7 +2023,7 @@ async function getSiteQuotaStatus(supabase, {
     trial = await selectLatestTrial(supabase, site.id);
   }
   const totalLimit = siteQuota
-    ? Number(siteQuota.monthly_included_credits || 0)
+    ? Number(monthlyIncludedCredits || 0)
       + Number(siteQuota.purchased_credits_balance || 0)
       + Number(siteQuota.bonus_credits_balance || 0)
     : monthlyIncludedCredits;
@@ -2036,6 +2053,7 @@ async function getSiteQuotaStatus(supabase, {
     account: legacyAccount || null,
     subscription: subscription || null,
     plan_type: effectivePlanId,
+    has_paid_entitlement: hasPaidEntitlement,
     license_status: legacyAccount?.status || 'active',
     token_limit: totalLimit,
     tokens_used_this_month: creditsUsed,
@@ -2052,7 +2070,7 @@ async function getSiteQuotaStatus(supabase, {
       site_hash: site.site_hash,
       quota_period_start: quotaWindow.quotaPeriodStart,
       quota_period_end: quotaWindow.quotaPeriodEnd,
-      monthly_included_credits: siteQuota?.monthly_included_credits ?? monthlyIncludedCredits,
+      monthly_included_credits: monthlyIncludedCredits,
       purchased_credits_balance: siteQuota?.purchased_credits_balance ?? 0,
       bonus_credits_balance: siteQuota?.bonus_credits_balance ?? 0,
       used_credits: creditsUsed,

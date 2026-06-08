@@ -705,6 +705,52 @@ describe('authenticated site healing on read paths', () => {
     );
   });
 
+  test('quota status demotes stale legacy growth account without active subscription evidence', async () => {
+    const supabase = createSupabaseMock();
+    const account = supabase._state.licenses[0];
+    account.plan = 'growth';
+    account.stripe_subscription_id = null;
+    supabase._state.plans.push({
+      id: 'growth',
+      display_name: 'Growth',
+      monthly_included_credits: 1000,
+      credit_grant_amount: 1000,
+      billing_interval_default: 'month',
+      is_paid: true
+    });
+    seedLinkedSiteWithStaleQuotaAndUsage(supabase, account, {
+      creditsUsed: [1, 2]
+    });
+    supabase._state.siteQuotas[0] = {
+      ...supabase._state.siteQuotas[0],
+      monthly_included_credits: 1000,
+      used_credits: 3,
+      remaining_credits: 997
+    };
+
+    const result = await getQuotaStatus(supabase, {
+      account,
+      licenseKey: account.license_key,
+      siteHash: 'site-legacy-credits',
+      installUuid: 'site-legacy-credits',
+      siteUrl: 'https://legacy-credits.example.com/wp-admin/',
+      siteFingerprint: 'fp-legacy-credits',
+      requestId: 'req-stale-growth-demoted'
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.plan_type).toBe('free');
+    expect(result.total_limit).toBe(50);
+    expect(result.credits_used).toBe(3);
+    expect(result.credits_remaining).toBe(47);
+    expect(result.site_quota).toEqual(expect.objectContaining({
+      site_id: 'site_existing',
+      monthly_included_credits: 50,
+      used_credits: 3,
+      remaining_credits: 47
+    }));
+  });
+
   test('dashboard truth returns healed credit usage instead of stale site quota defaults', async () => {
     const supabase = createSupabaseMock();
     const account = supabase._state.licenses[0];
