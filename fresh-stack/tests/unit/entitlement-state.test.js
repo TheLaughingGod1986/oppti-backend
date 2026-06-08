@@ -51,4 +51,36 @@ describe('buildEntitlementState', () => {
     expect(unknown.can_generate).toBe(false);
     expect(reportedBalance.can_generate).toBe(true);
   });
+
+  test.each(['pro', 'growth'])('demotes stale %s state when the effective allowance is the free limit', (plan) => {
+    const state = buildEntitlementState({
+      plan_type: plan,
+      total_limit: 50,
+      credits_used: 0,
+      credits_remaining: 50
+    }, {
+      isLoggedIn: true
+    });
+
+    expect(state.plan).toBe('free');
+    expect(state.plan_type).toBe('free');
+    expect(state.token_limit).toBe(50);
+    expect(state.can_autopilot).toBe(false);
+  });
+
+  test('preserves real paid pro state at the paid monthly allowance', () => {
+    const state = buildEntitlementState({
+      plan_type: 'pro',
+      total_limit: 1000,
+      credits_used: 0,
+      credits_remaining: 1000
+    }, {
+      isLoggedIn: true
+    });
+
+    expect(state.plan).toBe('pro');
+    expect(state.plan_type).toBe('pro');
+    expect(state.token_limit).toBe(1000);
+    expect(state.can_autopilot).toBe(true);
+  });
 });

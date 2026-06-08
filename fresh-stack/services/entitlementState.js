@@ -1,4 +1,6 @@
 const UNLIMITED_PLAN_TYPES = new Set(['unlimited']);
+const PAID_PLAN_TYPES = new Set(['pro', 'growth', 'agency', 'enterprise']);
+const PAID_MINIMUM_MONTHLY_CREDITS = 1000;
 
 function toNonNegativeNumber(value, fallback = null) {
   const parsed = Number(value);
@@ -12,17 +14,36 @@ function firstDefined(...values) {
   return values.find((value) => value !== undefined && value !== null);
 }
 
+function normalizePlanForAllowance(plan, tokenLimit, unlimited) {
+  const normalized = String(plan || 'free').trim().toLowerCase() || 'free';
+  if (normalized === 'growth') {
+    return tokenLimit !== null && tokenLimit < PAID_MINIMUM_MONTHLY_CREDITS ? 'free' : 'pro';
+  }
+
+  if (
+    !unlimited
+    && PAID_PLAN_TYPES.has(normalized)
+    && tokenLimit !== null
+    && tokenLimit < PAID_MINIMUM_MONTHLY_CREDITS
+  ) {
+    return 'free';
+  }
+
+  return normalized;
+}
+
 function buildEntitlementState(status = {}, {
   isLoggedIn = null,
   isTrial = null
 } = {}) {
-  const plan = status.plan || status.plan_type || 'free';
+  const rawPlan = status.plan || status.plan_type || 'free';
   const rawLimit = firstDefined(status.token_limit, status.total_limit, status.credits_total);
   const parsedLimit = rawLimit === undefined ? null : Number(rawLimit);
   const unlimited = status.is_unlimited === true
     || (Number.isFinite(parsedLimit) && parsedLimit < 0)
-    || UNLIMITED_PLAN_TYPES.has(String(plan).toLowerCase());
+    || UNLIMITED_PLAN_TYPES.has(String(rawPlan).toLowerCase());
   const tokenLimit = unlimited ? null : toNonNegativeNumber(rawLimit, null);
+  const plan = normalizePlanForAllowance(rawPlan, tokenLimit, unlimited);
   const tokensUsedThisMonth = toNonNegativeNumber(
     firstDefined(status.tokens_used_this_month, status.credits_used),
     0
@@ -69,7 +90,7 @@ function buildEntitlementState(status = {}, {
 
   return {
     plan,
-    plan_type: status.plan_type || plan,
+    plan_type: plan,
     token_limit: tokenLimit,
     tokens_used_this_month: tokensUsedThisMonth,
     total_tokens_used: totalTokensUsed,
@@ -94,5 +115,7 @@ function buildEntitlementState(status = {}, {
 }
 
 module.exports = {
-  buildEntitlementState
+  buildEntitlementState,
+  normalizePlanForAllowance,
+  PAID_MINIMUM_MONTHLY_CREDITS
 };

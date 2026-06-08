@@ -229,12 +229,13 @@ function createUsageRouter({ supabase }) {
       return res.status(status.status || 401).json(status);
     }
 
-    const quotaState = status.quota_state || resolveQuotaState(status);
-    const quotaType = inferQuotaType(status.plan_type);
     const entitlementState = buildEntitlementState(status, {
       isLoggedIn: true,
       isTrial: false
     });
+    const responsePlanType = entitlementState.plan_type || entitlementState.plan || status.plan_type || 'free';
+    const quotaState = status.quota_state || resolveQuotaState(status);
+    const quotaType = inferQuotaType(responsePlanType);
 
     // Return in format expected by plugin
     return res.json({
@@ -245,8 +246,8 @@ function createUsageRouter({ supabase }) {
           used: status.credits_used,
           remaining: status.credits_remaining,
           limit: status.total_limit,
-          plan: status.plan_type,
-          plan_type: status.plan_type,
+          plan: responsePlanType,
+          plan_type: responsePlanType,
           resetDate: status.reset_date,
           reset_date: status.reset_date,
           billing_cycle: 'monthly',
