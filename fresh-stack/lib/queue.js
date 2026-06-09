@@ -25,10 +25,11 @@ function normalizeItemIdentifier(item, index) {
   };
 }
 
-function buildBulkJobRecord(jobId, items, context, siteKey, acceptedAtMs) {
+function buildBulkJobRecord(jobId, items, context, siteKey, acceptedAtMs, options = {}) {
+  const type = options.type || 'bulk_alt_text';
   return {
     jobId,
-    type: 'bulk_alt_text',
+    type,
     status: 'accepted',
     results: [],
     errors: [],
@@ -50,6 +51,8 @@ function buildBulkJobRecord(jobId, items, context, siteKey, acceptedAtMs) {
       status: 'queued',
       stage: 'queued',
       altText: null,
+      title: null,
+      meta: null,
       error: null,
       errorCode: null,
       success: null,
@@ -149,14 +152,15 @@ function createQueue({
   async function createJob(items, context, siteKey, meta = {}) {
     const jobId = crypto.randomUUID();
     const acceptedAtMs = Date.now();
-    const { licenseKey, userInfo } = meta;
+    const { licenseKey, userInfo, jobType } = meta;
+    const type = jobType || 'bulk_alt_text';
 
-    const jobRecord = buildBulkJobRecord(jobId, items, context, siteKey, acceptedAtMs);
+    const jobRecord = buildBulkJobRecord(jobId, items, context, siteKey, acceptedAtMs, { type });
     await setJobRecord(jobId, jobRecord);
 
     const job = {
       jobId,
-      type: 'bulk_alt_text',
+      type,
       items,
       context,
       siteKey,

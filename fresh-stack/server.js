@@ -9,10 +9,12 @@ const { getRedis } = require('./lib/redis');
 const logger = require('./lib/logger');
 const { createQueue } = require('./lib/queue');
 const { createBulkAltTextProcessor } = require('./services/bulkAltTextProcessor');
+const { createBulkTitlesProcessor } = require('./services/bulkTitlesProcessor');
 const { createAuthRouter } = require('./routes/auth');
 const { createBillingRouter, createBillingWebhookHandler } = require('./routes/billing');
 const { createUsageRouter } = require('./routes/usage');
 const { createAltTextRouter } = require('./routes/altText');
+const { createTitlesRouter } = require('./routes/titles');
 const { createReviewRouter } = require('./routes/review');
 const { createJobsRouter } = require('./routes/jobs');
 const { createLicenseRouter } = require('./routes/license');
@@ -50,6 +52,7 @@ const PROTECTED_API_PREFIXES = [
   '/api/license',
   '/api/licenses',
   '/api/review',
+  '/api/titles',
   '/api/usage',
   '/api/auth'
 ];
@@ -314,6 +317,20 @@ function createApp({
     setJobRecord: (id, rec) => queueHolder.q.setJobRecord(id, rec),
     itemConcurrency: BULK_ITEM_CONCURRENCY
   });
+  const bulkTitlesProcessor = createBulkTitlesProcessor({
+    supabase: supabaseClient,
+    getJobRecord: (id) => queueHolder.q.getJobRecord(id),
+    setJobRecord: (id, rec) => queueHolder.q.setJobRecord(id, rec),
+    itemConcurrency: BULK_ITEM_CONCURRENCY
+  });
+
+  async function dispatchBulkJob(job) {
+    if (job.type === 'bulk_titles') {
+      await bulkTitlesProcessor.run(job);
+      return;
+    }
+    await bulkProcessor.run(job);
+  }
 
   const queue = createQueue({
     redis,
@@ -321,11 +338,9 @@ function createApp({
     ttlSeconds: JOB_TTL_SECONDS,
     queueKey,
     bulkDispatchMode: BULK_JOB_DISPATCH,
-    bulkRunner: (job) => bulkProcessor.run(job),
+    bulkRunner: (job) => dispatchBulkJob(job),
     jobHandler: async (job) => {
-      if (job.type === 'bulk_alt_text') {
-        await bulkProcessor.run(job);
-      }
+      await dispatchBulkJob(job);
     }
   });
   queueHolder.q = queue;
@@ -343,6 +358,14 @@ function createApp({
   }
 
   app.use('/api/jobs', createJobsRouter({
+    supabase: supabaseClient,
+    checkRateLimit: async (siteKey) => checkRateLimit(siteKey),
+    getSiteFromHeaders,
+    createJob: queue.createJob,
+    getJobRecord: queue.getJobRecord
+  }));
+
+  app.use('/api/titles', createTitlesRouter({
     supabase: supabaseClient,
     checkRateLimit: async (siteKey) => checkRateLimit(siteKey),
     getSiteFromHeaders,

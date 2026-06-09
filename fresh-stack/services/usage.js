@@ -52,7 +52,8 @@ async function recordUsage(supabase, {
   userAgent,
   isTrial,
   status = 'success',
-  errorMessage = null
+  errorMessage = null,
+  featureType = 'alt_text'
 }) {
   // Resolve the authoritative account attribution (licenses.id).
   // Prefer an explicitly-passed licenseId; otherwise look it up from
@@ -121,7 +122,8 @@ async function recordUsage(supabase, {
     user_agent: userAgent || null,
     is_internal: isInternal,
     status: status || 'success',
-    error_message: errorMessage || null
+    error_message: errorMessage || null,
+    feature_type: featureType || 'alt_text'
   };
 
   logger.debug('[usage] Inserting usage log', { 
@@ -158,6 +160,13 @@ async function recordUsage(supabase, {
       status: payload.status,
       error_message: payload.error_message
     };
+    // Only thread feature_type into the legacy payload when it's a non-default
+    // value. The column has a DB-level default of 'alt_text' so omitting it
+    // preserves alt-text behavior on environments where the migration is not
+    // yet applied, while still tagging title rows correctly when it is.
+    if (payload.feature_type && payload.feature_type !== 'alt_text') {
+      legacyPayload.feature_type = payload.feature_type;
+    }
     const fallback = await insertUsageLog(legacyPayload);
     error = fallback.error;
     data = fallback.data;
