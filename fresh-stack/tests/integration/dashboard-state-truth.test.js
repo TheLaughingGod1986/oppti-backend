@@ -384,10 +384,12 @@ describe('GET /dashboard/state-truth', () => {
   });
 
   test('returns credits exactly from the shared quota resolver', async () => {
+    // A real pro plan carries at least the paid monthly allowance (1000);
+    // smaller limits are deliberately demoted to free by buildEntitlementState.
     mockQuotaStatus({
       credits_used: 17,
-      credits_remaining: 83,
-      total_limit: 100,
+      credits_remaining: 983,
+      total_limit: 1000,
       plan_type: 'pro'
     });
     const app = createApp({
@@ -400,17 +402,17 @@ describe('GET /dashboard/state-truth', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.credits).toEqual({
-      limit: 100,
+      limit: 1000,
       used: 17,
-      remaining: 83,
+      remaining: 983,
       exhausted: false,
       source: 'license'
     });
     expect(res.body.entitlement_state).toEqual(expect.objectContaining({
       plan: 'pro',
-      token_limit: 100,
+      token_limit: 1000,
       tokens_used_this_month: 17,
-      tokens_remaining: 83,
+      tokens_remaining: 983,
       can_generate: true
     }));
     expect(getQuotaStatus).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
