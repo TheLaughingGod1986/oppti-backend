@@ -1,4 +1,7 @@
 const express = require('express');
+const logger = require('../lib/logger');
+const { buildSiteIdentity } = require('../lib/siteIdentity');
+const { fetchAccountByLicenseKey, resolveCanonicalSite } = require('../services/siteQuota');
 const { validateLicense, activateLicense, deactivateLicense, transferLicense, sanitizeLicense } = require('../services/license');
 const { setSiteQuota, getSites, deactivateSite } = require('../services/site');
 
@@ -65,7 +68,8 @@ function createLicenseRouter({ supabase }) {
     // Frontend expects organization and site; organization = license/plan info
     const license = result.license || {};
     const organization = {
-      plan: license.plan || license.plan_type || 'free',
+      id: license.id ?? null,
+      plan: license.plan || 'free',
       status: license.status || 'active',
       max_sites: license.max_sites ?? 1,
       license_key: license.license_key
@@ -114,6 +118,63 @@ function createLicenseRouter({ supabase }) {
     if (!licenseKey) {
       return res.status(401).json({ error: 'INVALID_LICENSE', message: 'X-License-Key header required' });
     }
+
+    const rawSiteKey = req.header('X-Site-Key') || req.header('X-Site-Hash') || null;
+    const siteIdentity = buildSiteIdentity({
+      siteHash: rawSiteKey,
+      installUuid: req.header('X-Install-UUID')
+        || req.header('X-WP-Install-UUID')
+        || rawSiteKey
+        || null,
+      siteUrl: req.header('X-Site-URL') || null,
+      siteFingerprint: req.header('X-Site-Fingerprint') || null,
+      allowDevelopment: true
+    });
+
+    if (siteIdentity.isValid) {
+      const account = req.user || req.license || await fetchAccountByLicenseKey(supabase, licenseKey);
+      logger.info('[site] license_sites_healing_attempted', {
+        request_id: req.id || null,
+        account_id: account?.id || null,
+        license_key_prefix: `${licenseKey.substring(0, 8)}...`,
+        site_hash: siteIdentity.siteHash || null,
+        site_url: siteIdentity.siteUrl || null,
+        site_fingerprint_present: Boolean(siteIdentity.siteFingerprint)
+      });
+
+      const healed = await resolveCanonicalSite(supabase, siteIdentity, {
+        createIfMissing: true,
+        legacyLicenseKey: licenseKey,
+        account,
+        requestId: req.id || null
+      });
+
+      if (healed.error) {
+        logger.error('[site] license_sites_healing_failed', {
+          request_id: req.id || null,
+          account_id: account?.id || null,
+          license_key_prefix: `${licenseKey.substring(0, 8)}...`,
+          site_hash: siteIdentity.siteHash || null,
+          site_url: siteIdentity.siteUrl || null,
+          error: healed.error,
+          site_write_error: healed.diagnostics?.site_write_error || null,
+          membership_error: healed.diagnostics?.membership?.error || null
+        });
+      } else {
+        logger.info('[site] license_sites_healing_succeeded', {
+          request_id: req.id || null,
+          account_id: account?.id || null,
+          license_key_prefix: `${licenseKey.substring(0, 8)}...`,
+          site_id: healed.site?.id || null,
+          site_hash: healed.site?.site_hash || siteIdentity.siteHash || null,
+          matched_by: healed.matchedBy || null,
+          created: Boolean(healed.created),
+          membership_attempted: Boolean(healed.diagnostics?.membership?.attempted),
+          membership_success: healed.diagnostics?.membership?.success ?? null
+        });
+      }
+    }
+
     const result = await getSites(supabase, { licenseKey });
     if (result.error) return res.status(500).json({ error: 'SERVER_ERROR', message: result.error.message });
     return res.json({

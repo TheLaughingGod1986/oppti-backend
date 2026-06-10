@@ -10,15 +10,6 @@
  * - SUPABASE_SERVICE_ROLE_KEY (service role, server-side only)
  */
 
-// Load .env only when not already provided (e.g., local dev). In production,
-// platform env vars are injected and we must not rely on a .env file.
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  try {
-    require('dotenv').config();
-  } catch (e) {
-    // ignore if dotenv is unavailable
-  }
-}
 const { createClient } = require('@supabase/supabase-js');
 
 // In tests, use the Jest mock and expose the same helpers to keep imports consistent.
@@ -48,20 +39,33 @@ if (process.env.NODE_ENV === 'test') {
     __clearInsertedData: mock.__clearInsertedData
   };
 } else {
-  // Validate required environment variables
-  if (!process.env.SUPABASE_URL) {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl) {
     throw new Error('SUPABASE_URL environment variable is required');
   }
 
-  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  if (!supabaseServiceRoleKey) {
     throw new Error('SUPABASE_SERVICE_ROLE_KEY environment variable is required');
+  }
+
+  // @supabase/realtime-js requires a WebSocket implementation. Node.js >= 21
+  // ships globalThis.WebSocket natively; older runtimes (e.g. Render free tier
+  // on Node 20) do not, so we polyfill with the `ws` package.
+  if (typeof globalThis.WebSocket === 'undefined') {
+    try {
+      globalThis.WebSocket = require('ws');
+    } catch (_e) {
+      // ws unavailable — realtime features disabled, REST queries still work
+    }
   }
 
   // Create Supabase client with service role key for server-side operations
   // This bypasses Row Level Security (RLS) policies - use with caution
   const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY,
+    supabaseUrl,
+    supabaseServiceRoleKey,
     {
       auth: {
         autoRefreshToken: false,
@@ -71,9 +75,9 @@ if (process.env.NODE_ENV === 'test') {
   );
 
 // Supabase query examples:
-// Find user: supabase.from('users').select('*').eq('id', 1).single()
-// Insert: supabase.from('users').insert({...}).select().single()
-// Update: supabase.from('users').update({...}).eq('id', 1)
+// Find account: supabase.from('licenses').select('*').eq('id', 1).single()
+// Insert: supabase.from('licenses').insert({...}).select().single()
+// Update: supabase.from('licenses').update({...}).eq('id', 1)
 
   /**
    * Helper function to handle Supabase errors consistently

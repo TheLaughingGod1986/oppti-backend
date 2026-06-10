@@ -1,0 +1,171 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - link "Render" [ref=e7] [cursor=pointer]:
+          - /url: /
+          - img "Render" [ref=e8]
+        - button "M My Workspace" [ref=e12] [cursor=pointer]:
+          - generic [ref=e13]:
+            - generic [ref=e14]: M
+            - generic "My Workspace" [ref=e15]
+            - img [ref=e16]
+      - button "Search Command + K" [ref=e22] [cursor=pointer]:
+        - img [ref=e24]
+        - text: Search
+        - generic [ref=e26]:
+          - img [ref=e27]
+          - generic [ref=e29]: Command
+          - generic [ref=e30]: +
+          - generic [ref=e31]: K
+          - generic [ref=e32]: K
+      - generic [ref=e33]:
+        - button "New" [ref=e35] [cursor=pointer]:
+          - generic [ref=e36]:
+            - img [ref=e37]
+            - generic [ref=e39]: New
+        - button "Upgrade" [ref=e41] [cursor=pointer]:
+          - generic [ref=e42]:
+            - img [ref=e43]
+            - generic [ref=e45]: Upgrade
+        - button "Help" [ref=e47] [cursor=pointer]:
+          - img "Help" [ref=e48]
+        - button "Gravatar for benoats@gmail.com" [ref=e53] [cursor=pointer]:
+          - img "Gravatar for benoats@gmail.com" [ref=e55]
+    - generic [ref=e56]:
+      - navigation [ref=e57]:
+        - separator [ref=e58]
+        - generic [ref=e59]:
+          - generic [ref=e60]:
+            - link "Dashboard" [ref=e61] [cursor=pointer]:
+              - /url: /
+              - img [ref=e62]
+              - generic [ref=e64]: Dashboard
+            - generic [ref=e65]:
+              - img [ref=e66]
+              - generic "Loading..." [ref=e68]
+          - generic [ref=e69]:
+            - list [ref=e70]:
+              - listitem [ref=e71]:
+                - link "Events" [ref=e72] [cursor=pointer]:
+                  - /url: /web/srv-d3r1hjggjchc73bnp39g/events
+                  - img [ref=e73]
+                  - generic [ref=e80]: Events
+              - listitem [ref=e81]:
+                - link "Settings" [ref=e82] [cursor=pointer]:
+                  - /url: /web/srv-d3r1hjggjchc73bnp39g/settings
+                  - img [ref=e83]
+                  - generic [ref=e86]: Settings
+            - generic [ref=e87]:
+              - generic [ref=e88]: Monitor
+              - list "Monitor" [ref=e89]:
+                - listitem [ref=e90]:
+                  - link "Logs" [ref=e91] [cursor=pointer]:
+                    - /url: /web/srv-d3r1hjggjchc73bnp39g/logs
+                    - img [ref=e92]
+                    - generic [ref=e97]: Logs
+                - listitem [ref=e98]:
+                  - link "Metrics" [ref=e99] [cursor=pointer]:
+                    - /url: /web/srv-d3r1hjggjchc73bnp39g/metrics
+                    - img [ref=e100]
+                    - generic [ref=e102]: Metrics
+            - generic [ref=e103]:
+              - generic [ref=e104]: Manage
+              - list "Manage" [ref=e105]:
+                - listitem [ref=e106]:
+                  - link "Environment" [ref=e107] [cursor=pointer]:
+                    - /url: /web/srv-d3r1hjggjchc73bnp39g/env
+                    - img [ref=e108]
+                    - generic [ref=e112]: Environment
+                - listitem [ref=e113]:
+                  - link "Shell" [ref=e114] [cursor=pointer]:
+                    - /url: /web/srv-d3r1hjggjchc73bnp39g/shell
+                    - img [ref=e115]
+                    - generic [ref=e119]:
+                      - generic [ref=e120]: Shell
+                      - status [ref=e123]:
+                        - img [ref=e124]
+                - listitem [ref=e126]:
+                  - link "Scaling" [ref=e127] [cursor=pointer]:
+                    - /url: /web/srv-d3r1hjggjchc73bnp39g/scaling
+                    - img [ref=e128]
+                    - generic [ref=e133]:
+                      - generic [ref=e134]: Scaling
+                      - status [ref=e137]:
+                        - img [ref=e138]
+                - listitem [ref=e140]:
+                  - link "Previews" [ref=e141] [cursor=pointer]:
+                    - /url: /web/srv-d3r1hjggjchc73bnp39g/previews
+                    - img [ref=e142]
+                    - generic [ref=e146]: Previews
+                - listitem [ref=e147]:
+                  - link "Disk" [ref=e148] [cursor=pointer]:
+                    - /url: /web/srv-d3r1hjggjchc73bnp39g/disks
+                    - img [ref=e149]
+                    - generic [ref=e154]:
+                      - generic [ref=e155]: Disk
+                      - status [ref=e158]:
+                        - img [ref=e159]
+                - listitem [ref=e161]:
+                  - link "One-Off Jobs" [ref=e162] [cursor=pointer]:
+                    - /url: /web/srv-d3r1hjggjchc73bnp39g/jobs
+                    - img [ref=e163]
+                    - generic [ref=e169]:
+                      - generic [ref=e170]: One-Off Jobs
+                      - status [ref=e173]:
+                        - img [ref=e174]
+        - generic [ref=e176]:
+          - alert [ref=e177]:
+            - img [ref=e179]
+            - generic [ref=e183]:
+              - generic [ref=e184]:
+                - generic [ref=e185]: "Workflows: Now in beta"
+                - generic [ref=e186]:
+                  - text: Orchestrate your agents and background jobs with automatic retries and scale-to-zero.
+                  - link "Learn more" [ref=e187] [cursor=pointer]:
+                    - /url: https://render.com/docs/workflows
+              - link "Create Workflow" [ref=e189] [cursor=pointer]:
+                - /url: /workflow/new
+            - button "Close notification" [ref=e190] [cursor=pointer]:
+              - img [ref=e191]
+          - generic [ref=e193]:
+            - button "Collapse items" [expanded] [ref=e194] [cursor=pointer]:
+              - img [ref=e195]
+            - list "Footer navigation" [ref=e197]:
+              - listitem [ref=e198]:
+                - link "Changelog" [ref=e199] [cursor=pointer]:
+                  - /url: https://render.com/changelog
+                  - img [ref=e200]
+                  - generic [ref=e205]: Changelog
+              - listitem [ref=e206]:
+                - link "Invite a friend" [ref=e207] [cursor=pointer]:
+                  - /url: /invites
+                  - img [ref=e208]
+                  - generic [ref=e210]: Invite a friend
+              - listitem [ref=e211]:
+                - button "Contact support" [ref=e212] [cursor=pointer]:
+                  - img [ref=e213]
+                  - generic [ref=e217]: Contact support
+            - link "Render Status" [ref=e219] [cursor=pointer]:
+              - /url: https://status.render.com
+              - img [ref=e220]
+              - generic [ref=e222]: Render Status
+      - generic [ref=e225]:
+        - img "Loading..." [ref=e226]
+        - generic [ref=e229]: Loading...
+  - generic:
+    - generic:
+      - generic: "0 services selected:"
+      - generic:
+        - generic:
+          - button:
+            - generic:
+              - img
+            - generic: Move
+            - img
+    - generic:
+      - separator
+      - generic:
+        - generic:
+          - button:
+            - img

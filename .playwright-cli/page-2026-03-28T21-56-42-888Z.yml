@@ -1,0 +1,60 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e8]:
+      - text: Welcome to
+      - text: PostHog Cloud!
+    - generic [ref=e10]:
+      - link "PostHog Cloud" [ref=e12] [cursor=pointer]:
+        - /url: https://posthog.com?utm_campaign=in-product&utm_tag=login-header
+        - img "PostHog Cloud" [ref=e13]
+      - generic [ref=e15]:
+        - heading "Log in" [level=2] [ref=e16]
+        - generic [ref=e17]:
+          - generic [ref=e18]:
+            - generic [ref=e19]:
+              - text: Data region
+              - button "Data region" [ref=e21] [cursor=pointer]: (what is this?)
+            - button "United States" [ref=e22] [cursor=pointer]:
+              - generic [ref=e23]:
+                - generic [ref=e25]: United States
+                - img [ref=e27]
+          - generic [ref=e29]:
+            - generic [ref=e30]: Email
+            - textbox "email@yourcompany.com" [active] [ref=e32]
+          - generic [ref=e33]:
+            - generic [ref=e35]:
+              - generic [ref=e36]: Password
+              - link "Forgot your password?" [ref=e38] [cursor=pointer]:
+                - /url: "#"
+            - generic [ref=e39]:
+              - textbox "••••••••••" [ref=e40]
+              - button "Show password" [ref=e41] [cursor=pointer]:
+                - img [ref=e44]
+          - button "Log in" [ref=e46] [cursor=pointer]:
+            - generic [ref=e48]: Log in
+        - generic [ref=e49]:
+          - text: Don't have an account?
+          - link "Create an account" [ref=e51] [cursor=pointer]:
+            - /url: "#"
+        - separator [ref=e52]
+        - generic [ref=e53]:
+          - paragraph [ref=e54]: Or log in with
+          - generic [ref=e55]:
+            - link "Google" [ref=e56] [cursor=pointer]:
+              - /url: /login/google-oauth2/
+              - button "Google" [ref=e58]:
+                - img [ref=e61]
+            - link "GitHub" [ref=e66] [cursor=pointer]:
+              - /url: /login/github/
+              - button "GitHub" [ref=e68]:
+                - img [ref=e71]
+            - link "GitLab" [ref=e73] [cursor=pointer]:
+              - /url: /login/gitlab/
+              - button "GitLab" [ref=e75]:
+                - img [ref=e78]
+            - button "Passkey" [ref=e84] [cursor=pointer]:
+              - img "Passkey" [ref=e87]
+  - button "Report an issue" [ref=e90] [cursor=pointer]:
+    - generic [ref=e91]:
+      - img [ref=e93]
+      - generic [ref=e96]: Report an issue

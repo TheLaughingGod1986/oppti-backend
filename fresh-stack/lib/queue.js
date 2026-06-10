@@ -1,14 +1,89 @@
 const crypto = require('crypto');
 const logger = require('./logger');
 
-function createQueue({ redis, jobHandler, concurrency = 2, ttlSeconds = 60 * 60 * 24 * 7, queueKey = 'alttext:queue' }) {
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function normalizeItemIdentifier(item, index) {
+  const attachmentId = item.attachment_id
+    ?? item.attachmentId
+    ?? item.image_id
+    ?? item.imageId
+    ?? null;
+
+  const id = item.id ?? attachmentId ?? `item-${index}`;
+  const idString = String(id);
+  const attachmentIdString = attachmentId === null || attachmentId === undefined ? null : String(attachmentId);
+
+  return {
+    id: idString,
+    attachment_id: attachmentIdString,
+    attachmentId: attachmentIdString,
+    image_id: attachmentIdString,
+    imageId: attachmentIdString
+  };
+}
+
+function buildBulkJobRecord(jobId, items, context, siteKey, acceptedAtMs, options = {}) {
+  const type = options.type || 'bulk_alt_text';
+  return {
+    jobId,
+    type,
+    status: 'accepted',
+    results: [],
+    errors: [],
+    total: items.length,
+    completed: 0,
+    failed: 0,
+    siteKey,
+    priority: context.priority || 'normal',
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+    batchAcceptedAt: nowIso(),
+    batchProcessingStartedAt: null,
+    batchCompletedAt: null,
+    firstItemStartedAt: null,
+    progress: 0,
+    items: items.map((item, i) => ({
+      ...normalizeItemIdentifier(item, i),
+      index: i,
+      status: 'queued',
+      stage: 'queued',
+      altText: null,
+      title: null,
+      meta: null,
+      error: null,
+      errorCode: null,
+      success: null,
+      timings: {}
+    })),
+    timings: {
+      request_received_at: nowIso(),
+      accepted_at_ms: acceptedAtMs
+    }
+  };
+}
+
+function createQueue({
+  redis,
+  jobHandler,
+  concurrency = 2,
+  ttlSeconds = 60 * 60 * 24 * 7,
+  queueKey = 'alttext:queue',
+  bulkDispatchMode = 'immediate',
+  bulkRunner = null
+}) {
   const jobStore = new Map();
   const jobQueue = [];
   let activeWorkers = 0;
   let redisWorkersStarted = false;
 
   async function setJobRecord(jobId, record) {
-    record.updatedAt = new Date().toISOString();
+    record.updatedAt = nowIso();
+    if (record.total > 0) {
+      record.progress = Math.min(1, (record.completed + record.failed) / record.total);
+    }
     if (redis) {
       await redis.set(`alttext:job:${jobId}`, JSON.stringify(record), 'EX', ttlSeconds);
     } else {
@@ -58,32 +133,62 @@ function createQueue({ redis, jobHandler, concurrency = 2, ttlSeconds = 60 * 60 
   async function redisWorkerLoop() {
     while (true) {
       try {
-        const res = await redis.brpop(queueKey, 5);
+        const res = await redis.brpop(queueKey, 2);
         if (!res) continue;
         const [, payload] = res;
         const job = JSON.parse(payload);
         await jobHandler(job);
       } catch (err) {
         logger.error('[jobs] worker error', err.message);
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 300));
       }
     }
   }
 
-  async function createJob(items, context, siteKey) {
+  /**
+   * Bulk alt-text job: persists record, then either runs immediately on this process
+   * (default) or enqueues for a worker (redis / multi-instance).
+   */
+  async function createJob(items, context, siteKey, meta = {}) {
     const jobId = crypto.randomUUID();
-    const jobRecord = {
-      status: 'queued',
-      results: [],
-      errors: [],
-      total: items.length,
-      completed: 0,
-      failed: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
+    const acceptedAtMs = Date.now();
+    const { licenseKey, userInfo, jobType } = meta;
+    const type = jobType || 'bulk_alt_text';
+
+    const jobRecord = buildBulkJobRecord(jobId, items, context, siteKey, acceptedAtMs, { type });
     await setJobRecord(jobId, jobRecord);
-    await enqueueJob({ jobId, items, context, siteKey });
+
+    const job = {
+      jobId,
+      type,
+      items,
+      context,
+      siteKey,
+      licenseKey: licenseKey || null,
+      userInfo: userInfo || {},
+      acceptedAtMs
+    };
+
+    const runBulk = async () => {
+      if (!bulkRunner) {
+        logger.error('[bulk] bulkRunner not configured', { jobId });
+        return;
+      }
+      try {
+        await bulkRunner(job);
+      } catch (err) {
+        logger.error('[bulk] bulkRunner threw', { jobId, error: err.message });
+      }
+    };
+
+    if (bulkDispatchMode === 'redis' && redis) {
+      await enqueueJob(job);
+    } else {
+      setImmediate(() => {
+        runBulk();
+      });
+    }
+
     return jobId;
   }
 
@@ -91,8 +196,9 @@ function createQueue({ redis, jobHandler, concurrency = 2, ttlSeconds = 60 * 60 
     createJob,
     getJobRecord,
     setJobRecord,
-    startRedisWorkers
+    startRedisWorkers,
+    enqueueJob
   };
 }
 
-module.exports = { createQueue };
+module.exports = { createQueue, buildBulkJobRecord, normalizeItemIdentifier };

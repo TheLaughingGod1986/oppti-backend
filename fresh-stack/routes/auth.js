@@ -4,14 +4,384 @@ const jwt = require('jsonwebtoken');
 const { z } = require('zod');
 const crypto = require('crypto');
 const logger = require('../lib/logger');
+const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { sendPasswordResetEmail, isAvailable: isEmailAvailable } = require('../lib/email');
+const { buildAnonymousContext } = require('../lib/anonymousIdentity');
+const { buildSiteIdentity } = require('../lib/siteIdentity');
+const { getAnonymousTrialContinuity } = require('../services/anonymousTrial');
+const { buildEntitlementState } = require('../services/entitlementState');
+const { getQuotaStatus } = require('../services/quota');
+const {
+  ensureSiteMembership,
+  fetchAccountByLicenseKey,
+  recordSiteAudit,
+  resolveCanonicalSite,
+  syncLegacySitePointers
+} = require('../services/siteQuota');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const { trackAccountCreated } = require('../../src/services/loops');
+
+const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = '30d';
 
 // Generate UUID v4
 function generateUUID() {
   return crypto.randomUUID();
+}
+
+function maskEmail(email) {
+  if (!email || typeof email !== 'string') return null;
+  return email.replace(/(.{2}).*(@.*)/, '$1***$2');
+}
+
+function buildAuthSiteContext(body = {}) {
+  return buildSiteIdentity({
+    siteHash: body.site_id || body.siteId || body.siteHash || body.installId || null,
+    installUuid: body.install_uuid || body.installUuid || body.site_id || body.siteId || body.installId || null,
+    siteUrl: body.site_url || body.siteUrl || null,
+    siteFingerprint: body.site_fingerprint || body.siteFingerprint || body.fingerprint || null,
+    // Allow localhost/dev installs to register/login and link context.
+    // This does not grant production quota (generation endpoints still block dev
+    // hosts outside explicit trial mode).
+    allowDevelopment: true
+  });
+}
+
+function redactLicenseKey(licenseKey) {
+  if (!licenseKey) return null;
+  return `${String(licenseKey).slice(0, 8)}...`;
+}
+
+function buildAuthWriteTrace({
+  connectionSource,
+  requestId,
+  email,
+  siteIdentity
+}) {
+  const isRegister = connectionSource === 'register';
+
+  return {
+    event: `${connectionSource}_write_verification`,
+    request_id: requestId || null,
+    email: maskEmail(email),
+    site_identity: {
+      is_valid: Boolean(siteIdentity?.isValid),
+      site_hash: siteIdentity?.siteHash || null,
+      site_url: siteIdentity?.siteUrl || null,
+      site_fingerprint_present: Boolean(siteIdentity?.siteFingerprint)
+    },
+    license_write: {
+      attempted: isRegister,
+      operation: isRegister ? 'insert' : 'none',
+      success: null,
+      error: null
+    },
+    site_resolution: {
+      attempted: Boolean(siteIdentity?.isValid),
+      success: null,
+      matched_by: null,
+      created: null,
+      error: null
+    },
+    site_write: {
+      attempted: false,
+      success: null,
+      error: null
+    },
+    site_membership: {
+      attempted: false,
+      success: null,
+      action: null,
+      error: null
+    },
+    loops_account_created: {
+      attempted: isRegister && Boolean(process.env.LOOPS_API_KEY),
+      success: isRegister && !process.env.LOOPS_API_KEY ? false : null,
+      skipped: isRegister ? !process.env.LOOPS_API_KEY : true,
+      error: isRegister && !process.env.LOOPS_API_KEY ? 'LOOPS_DISABLED' : null
+    },
+    user_id: null,
+    license_key_prefix: null,
+    site_id: null,
+    final_state: 'started'
+  };
+}
+
+function emitAuthWriteTrace(connectionSource, trace) {
+  const prefix = connectionSource === 'register' ? 'signup' : 'login';
+  const hasFailure = Boolean(
+    trace?.license_write?.error
+    || trace?.site_resolution?.error
+    || trace?.site_write?.error
+    || trace?.site_membership?.error
+    || (connectionSource === 'register' && trace?.loops_account_created?.attempted && trace?.loops_account_created?.success === false)
+  );
+  const level = trace?.final_state === 'success' && !hasFailure
+    ? 'info'
+    : hasFailure ? 'error' : 'warn';
+
+  logger[level](`[${prefix}] ${connectionSource}_write_verification`, trace);
+}
+
+async function fireLoopsAccountCreated({ email, requestId }) {
+  const trace = {
+    attempted: Boolean(process.env.LOOPS_API_KEY),
+    success: null,
+    skipped: !process.env.LOOPS_API_KEY,
+    error: !process.env.LOOPS_API_KEY ? 'LOOPS_DISABLED' : null
+  };
+
+  if (!process.env.LOOPS_API_KEY) {
+    logger.info('[signup] account_created_loops_skipped', {
+      email: maskEmail(email),
+      request_id: requestId || null,
+      reason: 'LOOPS_API_KEY missing'
+    });
+    return trace;
+  }
+
+  try {
+    await trackAccountCreated({ email, firstName: '', isWooCommerce: false, imagesUnprocessed: 0 });
+    trace.success = true;
+    trace.error = null;
+    logger.info('[signup] account_created_loops_succeeded', {
+      email: maskEmail(email),
+      request_id: requestId || null
+    });
+    return trace;
+  } catch (error) {
+    trace.success = false;
+    trace.error = error.message;
+    logger.error('[signup] account_created_loops_failed', {
+      email: maskEmail(email),
+      request_id: requestId || null,
+      error: error.message,
+      status: error.status || null
+    });
+    return trace;
+  }
+}
+
+async function attachSiteContextForAccount({
+  supabase,
+  account,
+  siteIdentity,
+  requestId,
+  connectionSource
+}) {
+  const trace = {
+    site_resolution: {
+      attempted: Boolean(siteIdentity?.isValid),
+      success: null,
+      matched_by: null,
+      created: null,
+      error: null
+    },
+    site_write: {
+      attempted: false,
+      success: null,
+      error: null
+    },
+    site_membership: {
+      attempted: false,
+      success: null,
+      action: null,
+      error: null
+    },
+    legacy_site_pointer_sync: null,
+    legacy_license_pointer_sync: null
+  };
+
+  if (!supabase || !account || !siteIdentity?.isValid) {
+    return { site: null, sharedSite: false, existingAccount: null, error: null, trace };
+  }
+
+  logger.info('[site] attach_site_context_started', {
+    connection_source: connectionSource,
+    request_id: requestId || null,
+    account_id: account.id || null,
+    license_key_prefix: redactLicenseKey(account.license_key),
+    site_hash: siteIdentity.siteHash || null,
+    site_url: siteIdentity.siteUrl || null
+  });
+
+  const resolved = await resolveCanonicalSite(supabase, siteIdentity, {
+    createIfMissing: true,
+    legacyLicenseKey: account.license_key,
+    account,
+    requestId
+  });
+
+  trace.site_resolution.success = !resolved.error;
+  trace.site_resolution.matched_by = resolved.matchedBy || null;
+  trace.site_resolution.created = Boolean(resolved.created);
+  trace.site_resolution.error = resolved.error || null;
+  trace.site_write.attempted = Boolean(resolved.diagnostics?.site_write_attempted);
+  trace.site_write.success = resolved.diagnostics?.site_write_succeeded ?? null;
+  trace.site_write.error = resolved.diagnostics?.site_write_error || null;
+  trace.site_membership.attempted = Boolean(resolved.diagnostics?.membership?.attempted);
+  trace.site_membership.success = resolved.diagnostics?.membership?.success ?? null;
+  trace.site_membership.action = resolved.diagnostics?.membership?.action || null;
+  trace.site_membership.error = resolved.diagnostics?.membership?.error || null;
+
+  if (resolved.error) {
+    logger.error('[site] attach_site_context_failed', {
+      connection_source: connectionSource,
+      request_id: requestId || null,
+      account_id: account.id || null,
+      site_hash: siteIdentity.siteHash || null,
+      error: resolved.error,
+      site_write_error: resolved.diagnostics?.site_write_error || null
+    });
+    return { site: null, sharedSite: false, existingAccount: null, error: resolved.error, trace };
+  }
+
+  const site = resolved.site;
+  const sharedSite = Boolean(site?.license_key && site.license_key !== account.license_key);
+  const existingAccount = sharedSite
+    ? await fetchAccountByLicenseKey(supabase, site.license_key)
+    : null;
+
+  const membershipDiagnostics = {};
+  await ensureSiteMembership(supabase, {
+    siteId: site.id,
+    userId: account.id,
+    role: sharedSite ? 'member' : 'owner',
+    invitedByUserId: sharedSite ? existingAccount?.id || null : account.id,
+    diagnostics: membershipDiagnostics
+  });
+  trace.site_membership.attempted = Boolean(
+    membershipDiagnostics.membership?.attempted || trace.site_membership.attempted
+  );
+  trace.site_membership.success = membershipDiagnostics.membership?.success ?? trace.site_membership.success;
+  trace.site_membership.action = membershipDiagnostics.membership?.action || trace.site_membership.action;
+  trace.site_membership.error = membershipDiagnostics.membership?.error || trace.site_membership.error;
+
+  const pointerDiagnostics = {};
+  await syncLegacySitePointers(supabase, {
+    site,
+    account,
+    diagnostics: pointerDiagnostics
+  });
+  trace.legacy_site_pointer_sync = pointerDiagnostics.legacy_site_pointer_sync || null;
+  trace.legacy_license_pointer_sync = pointerDiagnostics.legacy_license_pointer_sync || null;
+
+  await recordSiteAudit(supabase, {
+    siteId: site.id,
+    actorUserId: account.id,
+    eventType: sharedSite ? `${connectionSource}_joined_existing_site` : `${connectionSource}_site_linked`,
+    severity: sharedSite ? 'warn' : 'info',
+    requestId,
+    metadata: {
+      site_hash: site.site_hash,
+      canonical_domain: site.canonical_domain,
+      existing_license_key: sharedSite ? site.license_key : null
+    }
+  });
+
+  logger.info('[site] attach_site_context_completed', {
+    connection_source: connectionSource,
+    request_id: requestId || null,
+    account_id: account.id || null,
+    site_id: site.id || null,
+    site_hash: site.site_hash || null,
+    shared_site: sharedSite,
+    matched_by: trace.site_resolution.matched_by,
+    created: trace.site_resolution.created,
+    site_write_success: trace.site_write.success,
+    site_membership_success: trace.site_membership.success
+  });
+
+  return {
+    site,
+    sharedSite,
+    existingAccount,
+    error: null,
+    trace
+  };
+}
+
+async function observeAnonymousSignupMerge({
+  supabase,
+  account,
+  site,
+  requestId,
+  connectionSource,
+  anonymousContext
+}) {
+  if (!supabase || !account?.id || !site?.id) {
+    return;
+  }
+
+  const continuity = await getAnonymousTrialContinuity(supabase, {
+    siteId: site.id,
+    siteHash: site.site_hash || null
+  });
+
+  logger.info('[Auth] Anonymous signup merge result', {
+    connection_source: connectionSource,
+    account_id: account.id,
+    site_id: site.id,
+    site_hash: site.site_hash || null,
+    anon_id: anonymousContext?.anonId || null,
+    anonymous_usage_found: continuity.hasAnonymousUsage,
+    anonymous_usage_used: continuity.used,
+    anonymous_usage_limit: continuity.limit,
+    anonymous_usage_source: continuity.source
+  });
+
+  if (!continuity.hasAnonymousUsage) {
+    return;
+  }
+
+  await recordSiteAudit(supabase, {
+    siteId: site.id,
+    actorUserId: account.id,
+    eventType: `${connectionSource}_anonymous_trial_merged`,
+    severity: 'info',
+    requestId,
+    metadata: {
+      site_hash: site.site_hash || null,
+      anon_id: anonymousContext?.anonId || null,
+      anonymous_usage_used: continuity.used,
+      anonymous_usage_limit: continuity.limit,
+      anonymous_usage_source: continuity.source
+    }
+  });
+}
+
+async function loadAuthEntitlementState({
+  supabase,
+  account,
+  site,
+  siteIdentity,
+  requestId
+} = {}) {
+  try {
+    const status = await getQuotaStatus(supabase, {
+      account,
+      licenseKey: account?.license_key || null,
+      siteHash: site?.site_hash || siteIdentity?.siteHash || null,
+      siteUrl: site?.site_url || siteIdentity?.siteUrl || null,
+      siteFingerprint: site?.site_fingerprint || siteIdentity?.siteFingerprint || null,
+      installUuid: site?.wp_install_uuid || siteIdentity?.wpInstallUuid || null,
+      requestId: requestId || null,
+      quotaMode: 'site'
+    });
+    if (status.error) {
+      return null;
+    }
+    return buildEntitlementState(status, {
+      isLoggedIn: true,
+      isTrial: false
+    });
+  } catch (error) {
+    logger.warn('[Auth] Entitlement state refresh unavailable', {
+      requestId: requestId || null,
+      error: error.message
+    });
+    return null;
+  }
 }
 
 function createAuthRouter({ supabase }) {
@@ -20,53 +390,105 @@ function createAuthRouter({ supabase }) {
   // Register new user
   // If site_id is provided, checks if site already has a license (for credit sharing)
   router.post('/register', async (req, res) => {
+    const sendRegisterResponse = (payload) => {
+      const code = payload?.code || payload?.error || null;
+      logger.info('[Auth] Register response', {
+        success: Boolean(payload?.success),
+        code,
+        requestId: req.id || null
+      });
+      return res.status(200).json(payload);
+    };
+
+    logger.info('[Auth] Register request received', {
+      email: req.body?.email ? maskEmail(req.body.email) : null,
+      hasPassword: Boolean(req.body?.password),
+      hasSiteId: Boolean(req.body?.site_id || req.body?.siteId || req.body?.siteHash || req.body?.installId),
+      requestId: req.id || null
+    });
     const schema = z.object({
       email: z.string().email(),
       password: z.string().min(8),
       name: z.string().optional(),
       site_id: z.string().optional(),
       site_url: z.string().optional(),
+      site_fingerprint: z.string().optional(),
+      anon_id: z.string().optional(),
+      install_uuid: z.string().optional(),
+      blog_id: z.number().optional(),
+      network_id: z.number().optional(),
+      is_multisite: z.boolean().optional(),
+      plugin_version: z.string().optional(),
+      wordpress_version: z.string().optional()
     });
 
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({
+      return sendRegisterResponse({
+        success: false,
         error: 'INVALID_REQUEST',
+        code: 'INVALID_REQUEST',
         message: 'Invalid request data',
         details: parsed.error.flatten(),
       });
     }
 
+    if (!supabase) {
+      return sendRegisterResponse({
+        success: false,
+        error: 'SERVICE_UNAVAILABLE',
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Service temporarily unavailable. Please try again later.',
+      });
+    }
+
     const { email, password, name, site_id, site_url } = parsed.data;
+    const registerTrace = buildAuthWriteTrace({
+      connectionSource: 'register',
+      requestId: req.id || null,
+      email,
+      siteIdentity: buildAuthSiteContext(parsed.data)
+    });
 
     try {
-      // If site_id provided, check if this site already has a license
-      // This enables credit sharing across all WordPress users on the same site
-      if (site_id) {
-        const { data: existingSite } = await supabase
-          .from('sites')
-          .select('license_key, site_url')
-          .eq('site_hash', site_id)
-          .eq('status', 'active')
-          .maybeSingle();
+      const siteIdentity = buildAuthSiteContext(parsed.data);
+      const anonymousContext = buildAnonymousContext({
+        req,
+        body: parsed.data,
+        siteIdentity
+      });
+      if (siteIdentity.isValid) {
+        const preflight = await resolveCanonicalSite(supabase, siteIdentity, {
+          createIfMissing: false,
+          legacyLicenseKey: null,
+          account: null,
+          requestId: req.id || null
+        });
 
-        if (existingSite) {
-          // Site already has a license - get that license for credit sharing
-          const { data: siteLicense } = await supabase
-            .from('licenses')
-            .select('*')
-            .eq('license_key', existingSite.license_key)
-            .single();
+        if (preflight.error === 'AMBIGUOUS_SITE_MATCH') {
+          registerTrace.site_resolution.success = false;
+          registerTrace.site_resolution.error = preflight.error;
+          registerTrace.final_state = 'ambiguous_site_match';
+          emitAuthWriteTrace('register', registerTrace);
+          return sendRegisterResponse({
+            success: false,
+            error: 'AMBIGUOUS_SITE_MATCH',
+            code: 'AMBIGUOUS_SITE_MATCH',
+            message: 'This site matched multiple existing records and needs manual review before it can be linked.'
+          });
+        }
 
-          if (siteLicense && siteLicense.plan === 'free') {
-            // Site already using free plan - return error
-            return res.status(409).json({
-              error: 'SITE_HAS_LICENSE',
-              message: 'This site is already connected to a free account. All users on this site share the same credits. Log in with the existing account or upgrade to a paid plan.',
-              code: 'free_plan_exists',
-              existing_email: siteLicense.email ? siteLicense.email.replace(/(.{2}).*(@.*)/, '$1***$2') : null,
-            });
-          }
+        if (preflight.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
+          registerTrace.site_resolution.success = false;
+          registerTrace.site_resolution.error = preflight.error;
+          registerTrace.final_state = 'development_site_not_allowed';
+          emitAuthWriteTrace('register', registerTrace);
+          return sendRegisterResponse({
+            success: false,
+            error: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+            code: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+            message: 'Development and localhost sites cannot claim production free quota.'
+          });
         }
       }
 
@@ -78,8 +500,13 @@ function createAuthRouter({ supabase }) {
         .maybeSingle();
 
       if (existing) {
-        return res.status(409).json({
+        logger.info('[Auth] Register rejected: user exists', { email, requestId: req.id || null });
+        registerTrace.final_state = 'user_exists';
+        emitAuthWriteTrace('register', registerTrace);
+        return sendRegisterResponse({
+          success: false,
           error: 'USER_EXISTS',
+          code: 'USER_EXISTS',
           message: 'An account with this email already exists',
         });
       }
@@ -108,36 +535,84 @@ function createAuthRouter({ supabase }) {
         .single();
 
       if (error) {
+        registerTrace.license_write.success = false;
+        registerTrace.license_write.error = serializeSupabaseError(error);
+        registerTrace.final_state = 'license_insert_failed';
+        emitAuthWriteTrace('register', registerTrace);
         logger.error('[Auth] Registration error:', error);
         logger.error('[Auth] Registration error details:', JSON.stringify(error, null, 2));
-        return res.status(500).json({
+        return sendRegisterResponse({
+          success: false,
           error: 'REGISTRATION_FAILED',
+          code: 'REGISTRATION_FAILED',
           message: 'Failed to create account',
           details: error.message || 'Unknown error'
         });
       }
 
-      // If site_id provided, link site to this license.
-      // Uses upsert so that if a trial site row already exists for this
-      // site_hash, we attach it to the new license instead of duplicating.
-      if (site_id) {
-        const { error: siteError } = await supabase
-          .from('sites')
-          .upsert({
-            license_key: user.license_key,
-            site_hash: site_id,
-            site_url: site_url || 'unknown',
-            status: 'active',
-            activated_at: new Date().toISOString(),
-            last_activity_at: new Date().toISOString()
-          }, { onConflict: 'site_hash' });
+      registerTrace.license_write.success = true;
+      registerTrace.license_write.error = null;
+      registerTrace.user_id = user.id;
+      registerTrace.license_key_prefix = redactLicenseKey(user.license_key);
+      registerTrace.loops_account_created = await fireLoopsAccountCreated({
+        email,
+        requestId: req.id || null
+      });
 
-        if (siteError) {
-          logger.warn('[Auth] Failed to link site record:', siteError);
-          // Don't fail registration, just log warning
-        } else {
-          logger.info('[Auth] Site linked to license', { site_id, license_key: user.license_key });
-        }
+      let siteLink = { site: null, sharedSite: false, existingAccount: null, error: null, trace: null };
+      if (siteIdentity.isValid) {
+        siteLink = await attachSiteContextForAccount({
+          supabase,
+          account: user,
+          siteIdentity,
+          requestId: req.id || null,
+          connectionSource: 'register'
+        });
+      }
+      registerTrace.site_resolution.success = siteLink.trace?.site_resolution?.success ?? registerTrace.site_resolution.success;
+      registerTrace.site_resolution.matched_by = siteLink.trace?.site_resolution?.matched_by || null;
+      registerTrace.site_resolution.created = siteLink.trace?.site_resolution?.created ?? null;
+      registerTrace.site_resolution.error = siteLink.trace?.site_resolution?.error || registerTrace.site_resolution.error;
+      registerTrace.site_write.attempted = siteLink.trace?.site_write?.attempted ?? false;
+      registerTrace.site_write.success = siteLink.trace?.site_write?.success ?? null;
+      registerTrace.site_write.error = siteLink.trace?.site_write?.error || null;
+      registerTrace.site_membership.attempted = siteLink.trace?.site_membership?.attempted ?? false;
+      registerTrace.site_membership.success = siteLink.trace?.site_membership?.success ?? null;
+      registerTrace.site_membership.action = siteLink.trace?.site_membership?.action || null;
+      registerTrace.site_membership.error = siteLink.trace?.site_membership?.error || null;
+      registerTrace.site_id = siteLink.site?.id || null;
+
+      if (siteLink.site) {
+        await observeAnonymousSignupMerge({
+          supabase,
+          account: user,
+          site: siteLink.site,
+          requestId: req.id || null,
+          connectionSource: 'register',
+          anonymousContext
+        });
+      }
+
+      if (siteLink.error === 'AMBIGUOUS_SITE_MATCH') {
+        registerTrace.final_state = 'ambiguous_site_match';
+        emitAuthWriteTrace('register', registerTrace);
+        return sendRegisterResponse({
+          success: false,
+          error: 'AMBIGUOUS_SITE_MATCH',
+          code: 'AMBIGUOUS_SITE_MATCH',
+          message: 'This site matched multiple existing records and needs manual review before it can be linked.'
+        });
+      }
+
+      if (siteLink.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
+        registerTrace.final_state = 'development_site_not_allowed';
+        emitAuthWriteTrace('register', registerTrace);
+        return sendRegisterResponse({
+          success: false,
+          error: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+          code: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+          message: 'Development and localhost sites cannot claim production free quota.'
+        });
       }
 
       // Generate JWT token
@@ -151,9 +626,25 @@ function createAuthRouter({ supabase }) {
         { expiresIn: JWT_EXPIRES_IN }
       );
 
-      return res.status(201).json({
+      logger.info('[Auth] Register successful', {
+        email: user.email,
+        userId: user.id,
+        shared_site: Boolean(siteLink.sharedSite),
+        requestId: req.id || null
+      });
+      registerTrace.final_state = 'success';
+      emitAuthWriteTrace('register', registerTrace);
+      const entitlementState = await loadAuthEntitlementState({
+        supabase,
+        account: user,
+        site: siteLink.site,
+        siteIdentity,
+        requestId: req.id || null
+      });
+
+      return sendRegisterResponse({
         success: true,
-        message: 'Account created successfully',
+        message: 'Account created. Your free monthly credits are now active.',
         data: {
           token,
           user: {
@@ -163,6 +654,10 @@ function createAuthRouter({ supabase }) {
             plan: user.plan,
             status: user.status,
           },
+          site: siteLink.site || null,
+          shared_site: siteLink.sharedSite,
+          existing_email: maskEmail(siteLink.existingAccount?.email || null),
+          ...(entitlementState ? { entitlement_state: entitlementState } : {})
         },
         // Keep top-level for backward compatibility
         token,
@@ -173,11 +668,20 @@ function createAuthRouter({ supabase }) {
           plan: user.plan,
           status: user.status,
         },
+        site: siteLink.site || null,
+        shared_site: siteLink.sharedSite,
+        existing_email: maskEmail(siteLink.existingAccount?.email || null),
+        ...(entitlementState ? { entitlement_state: entitlementState } : {})
       });
     } catch (err) {
+      registerTrace.final_state = 'server_error';
+      registerTrace.server_error = err.message;
+      emitAuthWriteTrace('register', registerTrace);
       logger.error('[Auth] Registration error:', err);
-      return res.status(500).json({
+      return sendRegisterResponse({
+        success: false,
         error: 'SERVER_ERROR',
+        code: 'SERVER_ERROR',
         message: 'An error occurred during registration',
       });
     }
@@ -188,18 +692,43 @@ function createAuthRouter({ supabase }) {
     const schema = z.object({
       email: z.string().email(),
       password: z.string(),
+      site_id: z.string().optional(),
+      site_url: z.string().optional(),
+      site_fingerprint: z.string().optional(),
+      anon_id: z.string().optional(),
+      install_uuid: z.string().optional(),
+      blog_id: z.number().optional(),
+      network_id: z.number().optional(),
+      is_multisite: z.boolean().optional(),
+      plugin_version: z.string().optional(),
+      wordpress_version: z.string().optional()
     });
 
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({
         error: 'INVALID_REQUEST',
+        code: 'INVALID_REQUEST',
         message: 'Invalid request data',
         details: parsed.error.flatten(),
       });
     }
 
+    if (!supabase) {
+      return res.status(503).json({
+        error: 'SERVICE_UNAVAILABLE',
+        code: 'SERVICE_UNAVAILABLE',
+        message: 'Service temporarily unavailable. Please try again later.',
+      });
+    }
+
     const { email, password } = parsed.data;
+    const loginTrace = buildAuthWriteTrace({
+      connectionSource: 'login',
+      requestId: req.id || null,
+      email,
+      siteIdentity: buildAuthSiteContext(parsed.data)
+    });
 
     try {
       // Find user by email
@@ -210,16 +739,22 @@ function createAuthRouter({ supabase }) {
         .maybeSingle();
 
       if (error || !user) {
+        loginTrace.final_state = 'invalid_credentials';
+        emitAuthWriteTrace('login', loginTrace);
         return res.status(401).json({
           error: 'INVALID_CREDENTIALS',
+          code: 'INVALID_CREDENTIALS',
           message: 'Invalid email or password',
         });
       }
 
       // Check if user has a password (not a license-only account)
       if (!user.password_hash) {
+        loginTrace.final_state = 'no_password';
+        emitAuthWriteTrace('login', loginTrace);
         return res.status(401).json({
           error: 'NO_PASSWORD',
+          code: 'NO_PASSWORD',
           message: 'This account uses license key authentication. Please contact your administrator for the license key.',
         });
       }
@@ -232,20 +767,88 @@ function createAuthRouter({ supabase }) {
           hasPasswordHash: !!user.password_hash,
           passwordHashLength: user.password_hash?.length || 0
         });
+        loginTrace.final_state = 'invalid_credentials';
+        emitAuthWriteTrace('login', loginTrace);
         return res.status(401).json({
           error: 'INVALID_CREDENTIALS',
+          code: 'INVALID_CREDENTIALS',
           message: 'Invalid email or password',
         });
       }
-      
+
       logger.info('[Auth] Login successful', { email, userId: user.id });
+      loginTrace.user_id = user.id;
+      loginTrace.license_key_prefix = redactLicenseKey(user.license_key);
 
       // Check account status
       if (user.status !== 'active') {
+        loginTrace.final_state = 'account_inactive';
+        emitAuthWriteTrace('login', loginTrace);
         return res.status(403).json({
           error: 'ACCOUNT_INACTIVE',
+          code: 'ACCOUNT_INACTIVE',
           message: 'Your account is not active',
           status: user.status,
+        });
+      }
+
+      const siteIdentity = buildAuthSiteContext(parsed.data);
+      const anonymousContext = buildAnonymousContext({
+        req,
+        body: parsed.data,
+        siteIdentity
+      });
+      let siteLink = { site: null, sharedSite: false, existingAccount: null, error: null, trace: null };
+      if (siteIdentity.isValid) {
+        siteLink = await attachSiteContextForAccount({
+          supabase,
+          account: user,
+          siteIdentity,
+          requestId: req.id || null,
+          connectionSource: 'login'
+        });
+      }
+      loginTrace.site_resolution.success = siteLink.trace?.site_resolution?.success ?? loginTrace.site_resolution.success;
+      loginTrace.site_resolution.matched_by = siteLink.trace?.site_resolution?.matched_by || null;
+      loginTrace.site_resolution.created = siteLink.trace?.site_resolution?.created ?? null;
+      loginTrace.site_resolution.error = siteLink.trace?.site_resolution?.error || loginTrace.site_resolution.error;
+      loginTrace.site_write.attempted = siteLink.trace?.site_write?.attempted ?? false;
+      loginTrace.site_write.success = siteLink.trace?.site_write?.success ?? null;
+      loginTrace.site_write.error = siteLink.trace?.site_write?.error || null;
+      loginTrace.site_membership.attempted = siteLink.trace?.site_membership?.attempted ?? false;
+      loginTrace.site_membership.success = siteLink.trace?.site_membership?.success ?? null;
+      loginTrace.site_membership.action = siteLink.trace?.site_membership?.action || null;
+      loginTrace.site_membership.error = siteLink.trace?.site_membership?.error || null;
+      loginTrace.site_id = siteLink.site?.id || null;
+
+      if (siteLink.site) {
+        await observeAnonymousSignupMerge({
+          supabase,
+          account: user,
+          site: siteLink.site,
+          requestId: req.id || null,
+          connectionSource: 'login',
+          anonymousContext
+        });
+      }
+
+      if (siteLink.error === 'AMBIGUOUS_SITE_MATCH') {
+        loginTrace.final_state = 'ambiguous_site_match';
+        emitAuthWriteTrace('login', loginTrace);
+        return res.status(409).json({
+          error: 'AMBIGUOUS_SITE_MATCH',
+          code: 'AMBIGUOUS_SITE_MATCH',
+          message: 'This site matched multiple existing records and needs manual review before it can be linked.'
+        });
+      }
+
+      if (siteLink.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
+        loginTrace.final_state = 'development_site_not_allowed';
+        emitAuthWriteTrace('login', loginTrace);
+        return res.status(403).json({
+          error: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+          code: 'DEVELOPMENT_SITE_NOT_ALLOWED',
+          message: 'Development and localhost sites cannot claim production free quota.'
         });
       }
 
@@ -259,6 +862,16 @@ function createAuthRouter({ supabase }) {
         JWT_SECRET,
         { expiresIn: JWT_EXPIRES_IN }
       );
+
+      loginTrace.final_state = 'success';
+      emitAuthWriteTrace('login', loginTrace);
+      const entitlementState = await loadAuthEntitlementState({
+        supabase,
+        account: user,
+        site: siteLink.site,
+        siteIdentity,
+        requestId: req.id || null
+      });
 
       return res.json({
         success: true,
@@ -272,6 +885,10 @@ function createAuthRouter({ supabase }) {
             plan: user.plan,
             status: user.status,
           },
+          site: siteLink.site || null,
+          shared_site: siteLink.sharedSite,
+          existing_email: maskEmail(siteLink.existingAccount?.email || null),
+          ...(entitlementState ? { entitlement_state: entitlementState } : {})
         },
         // Keep top-level for backward compatibility
         token,
@@ -282,11 +899,19 @@ function createAuthRouter({ supabase }) {
           plan: user.plan,
           status: user.status,
         },
+        site: siteLink.site || null,
+        shared_site: siteLink.sharedSite,
+        existing_email: maskEmail(siteLink.existingAccount?.email || null),
+        ...(entitlementState ? { entitlement_state: entitlementState } : {})
       });
     } catch (err) {
+      loginTrace.final_state = 'server_error';
+      loginTrace.server_error = err.message;
+      emitAuthWriteTrace('login', loginTrace);
       logger.error('[Auth] Login error:', err);
       return res.status(500).json({
         error: 'SERVER_ERROR',
+        code: 'SERVER_ERROR',
         message: 'An error occurred during login',
       });
     }
@@ -300,11 +925,20 @@ function createAuthRouter({ supabase }) {
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({
           error: 'UNAUTHORIZED',
+          code: 'UNAUTHORIZED',
           message: 'No authentication token provided',
         });
       }
 
       const token = authHeader.substring(7); // Remove 'Bearer '
+
+      if (!supabase) {
+        return res.status(503).json({
+          error: 'SERVICE_UNAVAILABLE',
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Service temporarily unavailable. Please try again later.',
+        });
+      }
 
       // Verify token
       let decoded;
@@ -313,6 +947,7 @@ function createAuthRouter({ supabase }) {
       } catch (err) {
         return res.status(401).json({
           error: 'INVALID_TOKEN',
+          code: 'INVALID_TOKEN',
           message: 'Invalid or expired token',
         });
       }
@@ -327,6 +962,7 @@ function createAuthRouter({ supabase }) {
       if (error || !user) {
         return res.status(404).json({
           error: 'USER_NOT_FOUND',
+          code: 'USER_NOT_FOUND',
           message: 'User account not found',
         });
       }
@@ -347,6 +983,7 @@ function createAuthRouter({ supabase }) {
       logger.error('[Auth] Get user error:', err);
       return res.status(500).json({
         error: 'SERVER_ERROR',
+        code: 'SERVER_ERROR',
         message: 'An error occurred',
       });
     }
@@ -373,6 +1010,7 @@ function createAuthRouter({ supabase }) {
       });
       return res.status(400).json({
         error: 'INVALID_REQUEST',
+        code: 'INVALID_REQUEST',
         message: 'Invalid email address',
       });
     }
@@ -518,6 +1156,7 @@ function createAuthRouter({ supabase }) {
       });
       return res.status(400).json({
         error: 'INVALID_REQUEST',
+        code: 'INVALID_REQUEST',
         message: 'Invalid request data. Password must be at least 8 characters.',
         details: parsed.error.flatten(),
       });
@@ -529,6 +1168,7 @@ function createAuthRouter({ supabase }) {
       if (!supabase) {
         return res.status(503).json({
           error: 'SERVICE_UNAVAILABLE',
+          code: 'SERVICE_UNAVAILABLE',
           message: 'Password reset service is not available. Database connection required.',
         });
       }
@@ -544,6 +1184,7 @@ function createAuthRouter({ supabase }) {
         // Don't reveal if email exists
         return res.status(400).json({
           error: 'INVALID_TOKEN',
+          code: 'INVALID_TOKEN',
           message: 'Invalid or expired reset token',
         });
       }
@@ -553,6 +1194,7 @@ function createAuthRouter({ supabase }) {
         logger.warn('[Auth] Invalid reset token', { email, tokenProvided: token.substring(0, 8) + '...' });
         return res.status(400).json({
           error: 'INVALID_TOKEN',
+          code: 'INVALID_TOKEN',
           message: 'Invalid or expired reset token',
         });
       }
@@ -565,6 +1207,7 @@ function createAuthRouter({ supabase }) {
           logger.warn('[Auth] Expired reset token', { email, expiresAt });
           return res.status(400).json({
             error: 'TOKEN_EXPIRED',
+            code: 'TOKEN_EXPIRED',
             message: 'Reset token has expired. Please request a new password reset.',
           });
         }
@@ -591,6 +1234,7 @@ function createAuthRouter({ supabase }) {
         });
         return res.status(500).json({
           error: 'UPDATE_FAILED',
+          code: 'UPDATE_FAILED',
           message: 'Failed to update password. Please try again.',
         });
       }
@@ -606,6 +1250,7 @@ function createAuthRouter({ supabase }) {
       logger.error('[Auth] Reset password error:', err);
       return res.status(500).json({
         error: 'SERVER_ERROR',
+        code: 'SERVER_ERROR',
         message: 'An error occurred while resetting your password',
       });
     }

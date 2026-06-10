@@ -1,13 +1,24 @@
 const express = require('express');
+const logger = require('../lib/logger');
+const { getPipelineDiagnostics } = require('../services/v2Diagnostics');
+const { buildDataIntegrityDiagnostics } = require('../services/dataIntegrityDiagnostics');
 
-function createAdminRouter({ redis, supabase, resultCache }) {
+function hasValidAdminKey(adminKey) {
+  const expectedAdminKey = process.env.ADMIN_KEY || process.env.ADMIN_SECRET;
+  return Boolean(expectedAdminKey && adminKey && adminKey === expectedAdminKey);
+}
+
+function getAdminKey(req) {
+  return req.header('X-Admin-Key') || req.header('X-Admin-Secret');
+}
+
+function createAdminRouter({ redis, supabase, resultCache, runtimeIdentityProvider = null }) {
   const router = express.Router();
-  const logger = require('../lib/logger');
 
   // Database cleanup - protected by admin key (cron job)
   router.post('/cleanup', async (req, res) => {
-    const adminKey = req.header('X-Admin-Key');
-    if (adminKey !== process.env.ADMIN_KEY && adminKey !== 'flush-cache-2026') {
+    const adminKey = getAdminKey(req);
+    if (!hasValidAdminKey(adminKey)) {
       return res.status(401).json({ error: 'Unauthorized', message: 'Invalid admin key' });
     }
     if (!supabase) {
@@ -44,10 +55,9 @@ function createAdminRouter({ redis, supabase, resultCache }) {
 
   // Flush alt text cache - protected by admin key only (no license required)
   router.post('/flush-cache', async (req, res) => {
-    const adminKey = req.header('X-Admin-Key');
+    const adminKey = getAdminKey(req);
 
-    // Simple admin key check
-    if (adminKey !== process.env.ADMIN_KEY && adminKey !== 'flush-cache-2026') {
+    if (!hasValidAdminKey(adminKey)) {
       return res.status(401).json({ error: 'Unauthorized', message: 'Invalid admin key' });
     }
 
@@ -80,9 +90,68 @@ function createAdminRouter({ redis, supabase, resultCache }) {
     }
   });
 
+  router.get('/diagnostics/pipeline', async (req, res) => {
+    const adminKey = getAdminKey(req);
+    if (!hasValidAdminKey(adminKey)) {
+      return res.status(401).json({ error: 'Unauthorized', message: 'Invalid admin key' });
+    }
+
+    try {
+      const diagnostics = await getPipelineDiagnostics(supabase, { days: 7 });
+      return res.json({
+        success: true,
+        diagnostics
+      });
+    } catch (error) {
+      logger.error('[admin] Pipeline diagnostics failed', {
+        error: error.message
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'DIAGNOSTICS_FAILED',
+        message: error.message
+      });
+    }
+  });
+
+  router.get('/diagnostics/data-integrity', async (req, res) => {
+    const adminKey = getAdminKey(req);
+    if (!hasValidAdminKey(adminKey)) {
+      return res.status(401).json({ error: 'Unauthorized', message: 'Invalid admin key' });
+    }
+
+    try {
+      const diagnostics = await buildDataIntegrityDiagnostics(supabase, {
+        days: 7,
+        runtimeIdentity: typeof runtimeIdentityProvider === 'function'
+          ? runtimeIdentityProvider()
+          : null
+      });
+      return res.json({
+        success: true,
+        diagnostics
+      });
+    } catch (error) {
+      logger.error('[admin] Data integrity diagnostics failed', {
+        error: error.message
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'DATA_INTEGRITY_DIAGNOSTICS_FAILED',
+        message: error.message
+      });
+    }
+  });
+
   // Health check
   router.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      runtime: typeof runtimeIdentityProvider === 'function'
+        ? runtimeIdentityProvider()
+        : null
+    });
   });
 
   return router;

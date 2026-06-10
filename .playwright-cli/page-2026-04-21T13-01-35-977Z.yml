@@ -1,0 +1,866 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - banner [ref=e4]:
+        - generic [ref=e5]:
+          - link "Render" [ref=e7] [cursor=pointer]:
+            - /url: /
+            - img "Render" [ref=e8]
+          - button "M My Workspace" [ref=e12] [cursor=pointer]:
+            - generic [ref=e13]:
+              - generic [ref=e14]: M
+              - generic "My Workspace" [ref=e15]
+              - img [ref=e16]
+        - generic [ref=e20]:
+          - navigation [ref=e21]:
+            - list [ref=e22]:
+              - listitem [ref=e23]:
+                - link "AI SEO Alt Text Wordpress Plugin" [ref=e24] [cursor=pointer]:
+                  - /url: /project/prj-d3r1hjc9c44c73d47e60
+                  - img [ref=e25]
+                  - generic [ref=e29]: AI SEO Alt Text Wordpress Plugin
+                - button [ref=e32] [cursor=pointer]:
+                  - img [ref=e33]
+                - text: /
+              - listitem [ref=e35]:
+                - link "Production" [ref=e36] [cursor=pointer]:
+                  - /url: /project/prj-d3r1hjc9c44c73d47e60/environment/evm-d3r1hjc9c44c73d47e6g
+                  - img [ref=e37]
+                  - generic [ref=e50]: Production
+                - button [ref=e53] [cursor=pointer]:
+                  - img [ref=e54]
+                - text: /
+              - listitem [ref=e56]:
+                - link "alttext-ai-backend" [ref=e57] [cursor=pointer]:
+                  - /url: /web/srv-d3r1hjggjchc73bnp39g
+                  - img [ref=e58]
+                  - generic [ref=e60]: alttext-ai-backend
+                - button [ref=e63] [cursor=pointer]:
+                  - img [ref=e64]
+          - button "Search Command + K" [ref=e67] [cursor=pointer]:
+            - img [ref=e69]
+            - text: Search
+            - generic [ref=e71]:
+              - img [ref=e72]
+              - generic [ref=e74]: Command
+              - generic [ref=e75]: +
+              - generic [ref=e76]: K
+              - generic [ref=e77]: K
+        - generic [ref=e78]:
+          - button "New" [ref=e80] [cursor=pointer]:
+            - generic [ref=e81]:
+              - img [ref=e82]
+              - generic [ref=e84]: New
+          - button "Upgrade" [ref=e86] [cursor=pointer]:
+            - generic [ref=e87]:
+              - img [ref=e88]
+              - generic [ref=e90]: Upgrade
+          - button "Help" [ref=e92] [cursor=pointer]:
+            - img "Help" [ref=e93]
+          - button "Gravatar for benoats@gmail.com" [ref=e98] [cursor=pointer]:
+            - img "Gravatar for benoats@gmail.com" [ref=e100]
+      - generic [ref=e101]:
+        - navigation [ref=e102]:
+          - separator [ref=e103]
+          - generic [ref=e104]:
+            - generic [ref=e105]:
+              - link "Environment" [ref=e106] [cursor=pointer]:
+                - /url: /project/prj-d3r1hjc9c44c73d47e60/environment/evm-d3r1hjc9c44c73d47e6g
+                - img [ref=e107]
+                - generic [ref=e109]: Environment
+              - generic [ref=e110]:
+                - img [ref=e111]
+                - generic [ref=e113]: alttext-ai-backend
+            - generic [ref=e114]:
+              - list [ref=e115]:
+                - listitem [ref=e116]:
+                  - link "Events" [ref=e117] [cursor=pointer]:
+                    - /url: /web/srv-d3r1hjggjchc73bnp39g/events
+                    - img [ref=e118]
+                    - generic [ref=e125]: Events
+                - listitem [ref=e126]:
+                  - link "Settings" [ref=e127] [cursor=pointer]:
+                    - /url: /web/srv-d3r1hjggjchc73bnp39g/settings
+                    - img [ref=e128]
+                    - generic [ref=e131]: Settings
+              - generic [ref=e132]:
+                - generic [ref=e133]: Monitor
+                - list "Monitor" [ref=e134]:
+                  - listitem [ref=e135]:
+                    - link "Logs" [ref=e136] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/logs
+                      - img [ref=e137]
+                      - generic [ref=e142]: Logs
+                  - listitem [ref=e143]:
+                    - link "Metrics" [ref=e144] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/metrics
+                      - img [ref=e145]
+                      - generic [ref=e147]: Metrics
+              - generic [ref=e148]:
+                - generic [ref=e149]: Manage
+                - list "Manage" [ref=e150]:
+                  - listitem [ref=e151]:
+                    - link "Environment" [ref=e152] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/env
+                      - img [ref=e153]
+                      - generic [ref=e157]: Environment
+                  - listitem [ref=e158]:
+                    - link "Shell" [ref=e159] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/shell
+                      - img [ref=e160]
+                      - generic [ref=e164]:
+                        - generic [ref=e165]: Shell
+                        - status [ref=e168]:
+                          - img [ref=e169]
+                  - listitem [ref=e171]:
+                    - link "Scaling" [ref=e172] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/scaling
+                      - img [ref=e173]
+                      - generic [ref=e178]:
+                        - generic [ref=e179]: Scaling
+                        - status [ref=e182]:
+                          - img [ref=e183]
+                  - listitem [ref=e185]:
+                    - link "Previews" [ref=e186] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/previews
+                      - img [ref=e187]
+                      - generic [ref=e191]: Previews
+                  - listitem [ref=e192]:
+                    - link "Disk" [ref=e193] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/disks
+                      - img [ref=e194]
+                      - generic [ref=e199]:
+                        - generic [ref=e200]: Disk
+                        - status [ref=e203]:
+                          - img [ref=e204]
+                  - listitem [ref=e206]:
+                    - link "One-Off Jobs" [ref=e207] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/jobs
+                      - img [ref=e208]
+                      - generic [ref=e214]:
+                        - generic [ref=e215]: One-Off Jobs
+                        - status [ref=e218]:
+                          - img [ref=e219]
+          - generic [ref=e221]:
+            - alert [ref=e222]:
+              - img [ref=e224]
+              - generic [ref=e228]:
+                - generic [ref=e229]:
+                  - generic [ref=e230]: "Workflows: Now in beta"
+                  - generic [ref=e231]:
+                    - text: Orchestrate your agents and background jobs with automatic retries and scale-to-zero.
+                    - link "Learn more" [ref=e232] [cursor=pointer]:
+                      - /url: https://render.com/docs/workflows
+                - link "Create Workflow" [ref=e234] [cursor=pointer]:
+                  - /url: /workflow/new
+              - button "Close notification" [ref=e235] [cursor=pointer]:
+                - img [ref=e236]
+            - generic [ref=e238]:
+              - button "Collapse items" [expanded] [ref=e239] [cursor=pointer]:
+                - img [ref=e240]
+              - list "Footer navigation" [ref=e242]:
+                - listitem [ref=e243]:
+                  - link "Changelog" [ref=e244] [cursor=pointer]:
+                    - /url: https://render.com/changelog
+                    - img [ref=e245]
+                    - generic [ref=e250]: Changelog
+                - listitem [ref=e251]:
+                  - link "Invite a friend" [ref=e252] [cursor=pointer]:
+                    - /url: /invites
+                    - img [ref=e253]
+                    - generic [ref=e255]: Invite a friend
+                - listitem [ref=e256]:
+                  - button "Contact support" [ref=e257] [cursor=pointer]:
+                    - img [ref=e258]
+                    - generic [ref=e262]: Contact support
+              - link "Render Status" [ref=e264] [cursor=pointer]:
+                - /url: https://status.render.com
+                - img [ref=e265]
+                - generic [ref=e267]: Render Status
+        - generic [ref=e269]:
+          - banner [ref=e271]:
+            - generic [ref=e272]:
+              - generic [ref=e273]:
+                - img [ref=e274]
+                - generic [ref=e276]: Web Service
+              - generic [ref=e277]:
+                - heading "alttext-ai-backend Node Free Upgrade your instance" [level=1] [ref=e279]:
+                  - generic [ref=e280]: alttext-ai-backend
+                  - generic [ref=e281]:
+                    - generic [ref=e282]: Node
+                    - link "Free" [ref=e283] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/plan
+                      - generic [ref=e284]: Free
+                    - link "Upgrade your instance" [ref=e285] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/plan
+                      - text: Upgrade your instance
+                      - img [ref=e287]
+                - generic [ref=e290]:
+                  - button "Connect" [ref=e291] [cursor=pointer]:
+                    - generic [ref=e292]: Connect
+                    - img [ref=e293]
+                  - button "Manual Deploy" [ref=e295] [cursor=pointer]:
+                    - generic [ref=e296]: Manual Deploy
+                    - img [ref=e297]
+            - generic [ref=e301]:
+              - generic [ref=e303]:
+                - generic [ref=e304]: "Service ID:"
+                - generic "Service ID:" [ref=e305]:
+                  - generic [ref=e306]: srv-d3r1hjggjchc73bnp39g
+                  - button "Copy" [ref=e309] [cursor=pointer]:
+                    - img [ref=e310]
+              - generic [ref=e313]:
+                - img "GitHub" [ref=e315]
+                - link "TheLaughingGod1986 / oppti-backend main" [ref=e317] [cursor=pointer]:
+                  - /url: https://github.com/TheLaughingGod1986/oppti-backend/tree/main
+                  - generic [ref=e318]:
+                    - generic [ref=e319]: TheLaughingGod1986 / oppti-backend
+                    - img [ref=e320]
+                    - generic [ref=e322]: main
+              - generic "Copy" [ref=e324]:
+                - link "https://alttext-ai-backend.onrender.com" [ref=e326] [cursor=pointer]:
+                  - /url: https://alttext-ai-backend.onrender.com
+                - button "Copy" [ref=e329] [cursor=pointer]:
+                  - img [ref=e330]
+          - main [ref=e333]:
+            - generic [ref=e341]:
+              - heading "Environment" [level=2] [ref=e342]
+              - button "Create environment group" [ref=e343] [cursor=pointer]:
+                - img [ref=e345]
+                - text: Create environment group
+            - generic [ref=e347]:
+              - generic [ref=e349]:
+                - generic [ref=e351]:
+                  - generic [ref=e352]:
+                    - heading "Environment Variables" [level=4] [ref=e354]
+                    - generic [ref=e355]:
+                      - text: Set environment-specific config and secrets (such as API keys), then read those values from your code.
+                      - link "Learn more." [ref=e356] [cursor=pointer]:
+                        - /url: https://render.com/docs/configure-environment-variables
+                  - generic [ref=e1238]:
+                    - button "Export" [ref=e1239] [cursor=pointer]:
+                      - generic [ref=e1240]: Export
+                      - img [ref=e1241]
+                    - button "Edit" [ref=e1243] [cursor=pointer]:
+                      - img [ref=e1245]
+                      - text: Edit
+                - generic [ref=e369]:
+                  - table [ref=e370]:
+                    - rowgroup [ref=e371]:
+                      - row "Key Value" [ref=e1248]:
+                        - columnheader "Key" [ref=e373]
+                        - columnheader "Value" [ref=e374]
+                    - rowgroup [ref=e375]:
+                      - row "Key ADMIN_KEY Value • • • • • • • • • • • • Show secret" [ref=e1249]:
+                        - rowheader "Key ADMIN_KEY" [ref=e1250]:
+                          - generic [ref=e1252]:
+                            - generic [ref=e1253]: Key
+                            - textbox "Key" [ref=e1255]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: ADMIN_KEY
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1256]:
+                          - generic [ref=e1257]:
+                            - generic [ref=e1258]:
+                              - generic [ref=e1259]: Value
+                              - generic [ref=e1260]:
+                                - textbox "Value" [ref=e1261]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1262] [cursor=pointer]:
+                              - img "Show secret" [ref=e1263]
+                      - row "Key ALLOWED_ORIGINS Value • • • • • • • • • • • • Show secret" [ref=e1266]:
+                        - rowheader "Key ALLOWED_ORIGINS" [ref=e1267]:
+                          - generic [ref=e1269]:
+                            - generic [ref=e1270]: Key
+                            - textbox "Key" [ref=e1272]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: ALLOWED_ORIGINS
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1273]:
+                          - generic [ref=e1274]:
+                            - generic [ref=e1275]:
+                              - generic [ref=e1276]: Value
+                              - generic [ref=e1277]:
+                                - textbox "Value" [ref=e1278]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1279] [cursor=pointer]:
+                              - img "Show secret" [ref=e1280]
+                      - row "Key ALTTEXT_AI_STRIPE_PRICE_AGENCY Value • • • • • • • • • • • • Show secret" [ref=e1283]:
+                        - rowheader "Key ALTTEXT_AI_STRIPE_PRICE_AGENCY" [ref=e1284]:
+                          - generic [ref=e1286]:
+                            - generic [ref=e1287]: Key
+                            - textbox "Key" [ref=e1289]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: ALTTEXT_AI_STRIPE_PRICE_AGENCY
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1290]:
+                          - generic [ref=e1291]:
+                            - generic [ref=e1292]:
+                              - generic [ref=e1293]: Value
+                              - generic [ref=e1294]:
+                                - textbox "Value" [ref=e1295]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1296] [cursor=pointer]:
+                              - img "Show secret" [ref=e1297]
+                      - row "Key ALTTEXT_AI_STRIPE_PRICE_CREDITS Value • • • • • • • • • • • • Show secret" [ref=e1300]:
+                        - rowheader "Key ALTTEXT_AI_STRIPE_PRICE_CREDITS" [ref=e1301]:
+                          - generic [ref=e1303]:
+                            - generic [ref=e1304]: Key
+                            - textbox "Key" [ref=e1306]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: ALTTEXT_AI_STRIPE_PRICE_CREDITS
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1307]:
+                          - generic [ref=e1308]:
+                            - generic [ref=e1309]:
+                              - generic [ref=e1310]: Value
+                              - generic [ref=e1311]:
+                                - textbox "Value" [ref=e1312]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1313] [cursor=pointer]:
+                              - img "Show secret" [ref=e1314]
+                      - row "Key ALTTEXT_AI_STRIPE_PRICE_PRO Value • • • • • • • • • • • • Show secret" [ref=e1317]:
+                        - rowheader "Key ALTTEXT_AI_STRIPE_PRICE_PRO" [ref=e1318]:
+                          - generic [ref=e1320]:
+                            - generic [ref=e1321]: Key
+                            - textbox "Key" [ref=e1323]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: ALTTEXT_AI_STRIPE_PRICE_PRO
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1324]:
+                          - generic [ref=e1325]:
+                            - generic [ref=e1326]:
+                              - generic [ref=e1327]: Value
+                              - generic [ref=e1328]:
+                                - textbox "Value" [ref=e1329]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1330] [cursor=pointer]:
+                              - img "Show secret" [ref=e1331]
+                      - row "Key ALTTEXT_OPENAI_API_KEY Value • • • • • • • • • • • • Show secret" [ref=e1334]:
+                        - rowheader "Key ALTTEXT_OPENAI_API_KEY" [ref=e1335]:
+                          - generic [ref=e1337]:
+                            - generic [ref=e1338]: Key
+                            - textbox "Key" [ref=e1340]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: ALTTEXT_OPENAI_API_KEY
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1341]:
+                          - generic [ref=e1342]:
+                            - generic [ref=e1343]:
+                              - generic [ref=e1344]: Value
+                              - generic [ref=e1345]:
+                                - textbox "Value" [ref=e1346]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1347] [cursor=pointer]:
+                              - img "Show secret" [ref=e1348]
+                      - row "Key EMAIL_BRAND_NAME Value • • • • • • • • • • • • Show secret" [ref=e1351]:
+                        - rowheader "Key EMAIL_BRAND_NAME" [ref=e1352]:
+                          - generic [ref=e1354]:
+                            - generic [ref=e1355]: Key
+                            - textbox "Key" [ref=e1357]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: EMAIL_BRAND_NAME
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1358]:
+                          - generic [ref=e1359]:
+                            - generic [ref=e1360]:
+                              - generic [ref=e1361]: Value
+                              - generic [ref=e1362]:
+                                - textbox "Value" [ref=e1363]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1364] [cursor=pointer]:
+                              - img "Show secret" [ref=e1365]
+                      - row "Key FRONTEND_URL Value • • • • • • • • • • • • Show secret" [ref=e1368]:
+                        - rowheader "Key FRONTEND_URL" [ref=e1369]:
+                          - generic [ref=e1371]:
+                            - generic [ref=e1372]: Key
+                            - textbox "Key" [ref=e1374]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: FRONTEND_URL
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1375]:
+                          - generic [ref=e1376]:
+                            - generic [ref=e1377]:
+                              - generic [ref=e1378]: Value
+                              - generic [ref=e1379]:
+                                - textbox "Value" [ref=e1380]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1381] [cursor=pointer]:
+                              - img "Show secret" [ref=e1382]
+                      - row "Key HOST Value • • • • • • • • • • • • Show secret" [ref=e1385]:
+                        - rowheader "Key HOST" [ref=e1386]:
+                          - generic [ref=e1388]:
+                            - generic [ref=e1389]: Key
+                            - textbox "Key" [ref=e1391]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: HOST
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1392]:
+                          - generic [ref=e1393]:
+                            - generic [ref=e1394]:
+                              - generic [ref=e1395]: Value
+                              - generic [ref=e1396]:
+                                - textbox "Value" [ref=e1397]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1398] [cursor=pointer]:
+                              - img "Show secret" [ref=e1399]
+                      - row "Key JWT_EXPIRES_IN Value • • • • • • • • • • • • Show secret" [ref=e1402]:
+                        - rowheader "Key JWT_EXPIRES_IN" [ref=e1403]:
+                          - generic [ref=e1405]:
+                            - generic [ref=e1406]: Key
+                            - textbox "Key" [ref=e1408]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: JWT_EXPIRES_IN
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1409]:
+                          - generic [ref=e1410]:
+                            - generic [ref=e1411]:
+                              - generic [ref=e1412]: Value
+                              - generic [ref=e1413]:
+                                - textbox "Value" [ref=e1414]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1415] [cursor=pointer]:
+                              - img "Show secret" [ref=e1416]
+                      - row "Key JWT_SECRET Value • • • • • • • • • • • • Show secret" [ref=e1419]:
+                        - rowheader "Key JWT_SECRET" [ref=e1420]:
+                          - generic [ref=e1422]:
+                            - generic [ref=e1423]: Key
+                            - textbox "Key" [ref=e1425]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: JWT_SECRET
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1426]:
+                          - generic [ref=e1427]:
+                            - generic [ref=e1428]:
+                              - generic [ref=e1429]: Value
+                              - generic [ref=e1430]:
+                                - textbox "Value" [ref=e1431]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1432] [cursor=pointer]:
+                              - img "Show secret" [ref=e1433]
+                      - row "Key LOOPS_API_KEY Value • • • • • • • • • • • • Show secret" [ref=e1436]:
+                        - rowheader "Key LOOPS_API_KEY" [ref=e1437]:
+                          - generic [ref=e1439]:
+                            - generic [ref=e1440]: Key
+                            - textbox "Key" [ref=e1442]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: LOOPS_API_KEY
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1443]:
+                          - generic [ref=e1444]:
+                            - generic [ref=e1445]:
+                              - generic [ref=e1446]: Value
+                              - generic [ref=e1447]:
+                                - textbox "Value" [ref=e1448]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1449] [cursor=pointer]:
+                              - img "Show secret" [ref=e1450]
+                      - row "Key NODE_ENV Value • • • • • • • • • • • • Show secret" [ref=e1453]:
+                        - rowheader "Key NODE_ENV" [ref=e1454]:
+                          - generic [ref=e1456]:
+                            - generic [ref=e1457]: Key
+                            - textbox "Key" [ref=e1459]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: NODE_ENV
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1460]:
+                          - generic [ref=e1461]:
+                            - generic [ref=e1462]:
+                              - generic [ref=e1463]: Value
+                              - generic [ref=e1464]:
+                                - textbox "Value" [ref=e1465]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1466] [cursor=pointer]:
+                              - img "Show secret" [ref=e1467]
+                      - row "Key OPENAI_MODEL Value • • • • • • • • • • • • Show secret" [ref=e1470]:
+                        - rowheader "Key OPENAI_MODEL" [ref=e1471]:
+                          - generic [ref=e1473]:
+                            - generic [ref=e1474]: Key
+                            - textbox "Key" [ref=e1476]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: OPENAI_MODEL
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1477]:
+                          - generic [ref=e1478]:
+                            - generic [ref=e1479]:
+                              - generic [ref=e1480]: Value
+                              - generic [ref=e1481]:
+                                - textbox "Value" [ref=e1482]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1483] [cursor=pointer]:
+                              - img "Show secret" [ref=e1484]
+                      - row "Key OPENAI_REVIEW_MODEL Value • • • • • • • • • • • • Show secret" [ref=e1487]:
+                        - rowheader "Key OPENAI_REVIEW_MODEL" [ref=e1488]:
+                          - generic [ref=e1490]:
+                            - generic [ref=e1491]: Key
+                            - textbox "Key" [ref=e1493]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: OPENAI_REVIEW_MODEL
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1494]:
+                          - generic [ref=e1495]:
+                            - generic [ref=e1496]:
+                              - generic [ref=e1497]: Value
+                              - generic [ref=e1498]:
+                                - textbox "Value" [ref=e1499]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1500] [cursor=pointer]:
+                              - img "Show secret" [ref=e1501]
+                      - row "Key PORT Value • • • • • • • • • • • • Show secret" [ref=e1504]:
+                        - rowheader "Key PORT" [ref=e1505]:
+                          - generic [ref=e1507]:
+                            - generic [ref=e1508]: Key
+                            - textbox "Key" [ref=e1510]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: PORT
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1511]:
+                          - generic [ref=e1512]:
+                            - generic [ref=e1513]:
+                              - generic [ref=e1514]: Value
+                              - generic [ref=e1515]:
+                                - textbox "Value" [ref=e1516]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1517] [cursor=pointer]:
+                              - img "Show secret" [ref=e1518]
+                      - row "Key POSTHOG_API_KEY Value • • • • • • • • • • • • Show secret" [ref=e1521]:
+                        - rowheader "Key POSTHOG_API_KEY" [ref=e1522]:
+                          - generic [ref=e1524]:
+                            - generic [ref=e1525]: Key
+                            - textbox "Key" [ref=e1527]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: POSTHOG_API_KEY
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1528]:
+                          - generic [ref=e1529]:
+                            - generic [ref=e1530]:
+                              - generic [ref=e1531]: Value
+                              - generic [ref=e1532]:
+                                - textbox "Value" [ref=e1533]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1534] [cursor=pointer]:
+                              - img "Show secret" [ref=e1535]
+                      - row "Key POSTHOG_HOST Value • • • • • • • • • • • • Show secret" [ref=e1538]:
+                        - rowheader "Key POSTHOG_HOST" [ref=e1539]:
+                          - generic [ref=e1541]:
+                            - generic [ref=e1542]: Key
+                            - textbox "Key" [ref=e1544]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: POSTHOG_HOST
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1545]:
+                          - generic [ref=e1546]:
+                            - generic [ref=e1547]:
+                              - generic [ref=e1548]: Value
+                              - generic [ref=e1549]:
+                                - textbox "Value" [ref=e1550]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1551] [cursor=pointer]:
+                              - img "Show secret" [ref=e1552]
+                      - row "Key RESEND_API_KEY Value • • • • • • • • • • • • Show secret" [ref=e1555]:
+                        - rowheader "Key RESEND_API_KEY" [ref=e1556]:
+                          - generic [ref=e1558]:
+                            - generic [ref=e1559]: Key
+                            - textbox "Key" [ref=e1561]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: RESEND_API_KEY
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1562]:
+                          - generic [ref=e1563]:
+                            - generic [ref=e1564]:
+                              - generic [ref=e1565]: Value
+                              - generic [ref=e1566]:
+                                - textbox "Value" [ref=e1567]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1568] [cursor=pointer]:
+                              - img "Show secret" [ref=e1569]
+                      - row "Key RESEND_AUDIENCE_ID Value • • • • • • • • • • • • Show secret" [ref=e1572]:
+                        - rowheader "Key RESEND_AUDIENCE_ID" [ref=e1573]:
+                          - generic [ref=e1575]:
+                            - generic [ref=e1576]: Key
+                            - textbox "Key" [ref=e1578]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: RESEND_AUDIENCE_ID
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1579]:
+                          - generic [ref=e1580]:
+                            - generic [ref=e1581]:
+                              - generic [ref=e1582]: Value
+                              - generic [ref=e1583]:
+                                - textbox "Value" [ref=e1584]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1585] [cursor=pointer]:
+                              - img "Show secret" [ref=e1586]
+                      - row "Key RESEND_CONTACT_EMAIL Value • • • • • • • • • • • • Show secret" [ref=e1589]:
+                        - rowheader "Key RESEND_CONTACT_EMAIL" [ref=e1590]:
+                          - generic [ref=e1592]:
+                            - generic [ref=e1593]: Key
+                            - textbox "Key" [ref=e1595]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: RESEND_CONTACT_EMAIL
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1596]:
+                          - generic [ref=e1597]:
+                            - generic [ref=e1598]:
+                              - generic [ref=e1599]: Value
+                              - generic [ref=e1600]:
+                                - textbox "Value" [ref=e1601]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1602] [cursor=pointer]:
+                              - img "Show secret" [ref=e1603]
+                      - row "Key RESEND_FROM_EMAIL Value • • • • • • • • • • • • Show secret" [ref=e1606]:
+                        - rowheader "Key RESEND_FROM_EMAIL" [ref=e1607]:
+                          - generic [ref=e1609]:
+                            - generic [ref=e1610]: Key
+                            - textbox "Key" [ref=e1612]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: RESEND_FROM_EMAIL
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1613]:
+                          - generic [ref=e1614]:
+                            - generic [ref=e1615]:
+                              - generic [ref=e1616]: Value
+                              - generic [ref=e1617]:
+                                - textbox "Value" [ref=e1618]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1619] [cursor=pointer]:
+                              - img "Show secret" [ref=e1620]
+                      - row "Key SEO_AI_META_STRIPE_PRICE_AGENCY Value • • • • • • • • • • • • Show secret" [ref=e1623]:
+                        - rowheader "Key SEO_AI_META_STRIPE_PRICE_AGENCY" [ref=e1624]:
+                          - generic [ref=e1626]:
+                            - generic [ref=e1627]: Key
+                            - textbox "Key" [ref=e1629]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: SEO_AI_META_STRIPE_PRICE_AGENCY
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1630]:
+                          - generic [ref=e1631]:
+                            - generic [ref=e1632]:
+                              - generic [ref=e1633]: Value
+                              - generic [ref=e1634]:
+                                - textbox "Value" [ref=e1635]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1636] [cursor=pointer]:
+                              - img "Show secret" [ref=e1637]
+                      - row "Key SEO_AI_META_STRIPE_PRICE_PRO Value • • • • • • • • • • • • Show secret" [ref=e1640]:
+                        - rowheader "Key SEO_AI_META_STRIPE_PRICE_PRO" [ref=e1641]:
+                          - generic [ref=e1643]:
+                            - generic [ref=e1644]: Key
+                            - textbox "Key" [ref=e1646]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: SEO_AI_META_STRIPE_PRICE_PRO
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1647]:
+                          - generic [ref=e1648]:
+                            - generic [ref=e1649]:
+                              - generic [ref=e1650]: Value
+                              - generic [ref=e1651]:
+                                - textbox "Value" [ref=e1652]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1653] [cursor=pointer]:
+                              - img "Show secret" [ref=e1654]
+                      - row "Key SEO_META_OPENAI_API_KEY Value • • • • • • • • • • • • Show secret" [ref=e1657]:
+                        - rowheader "Key SEO_META_OPENAI_API_KEY" [ref=e1658]:
+                          - generic [ref=e1660]:
+                            - generic [ref=e1661]: Key
+                            - textbox "Key" [ref=e1663]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: SEO_META_OPENAI_API_KEY
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1664]:
+                          - generic [ref=e1665]:
+                            - generic [ref=e1666]:
+                              - generic [ref=e1667]: Value
+                              - generic [ref=e1668]:
+                                - textbox "Value" [ref=e1669]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1670] [cursor=pointer]:
+                              - img "Show secret" [ref=e1671]
+                      - row "Key STRIPE_PUBLISHABLE_KEY Value • • • • • • • • • • • • Show secret" [ref=e1674]:
+                        - rowheader "Key STRIPE_PUBLISHABLE_KEY" [ref=e1675]:
+                          - generic [ref=e1677]:
+                            - generic [ref=e1678]: Key
+                            - textbox "Key" [ref=e1680]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: STRIPE_PUBLISHABLE_KEY
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1681]:
+                          - generic [ref=e1682]:
+                            - generic [ref=e1683]:
+                              - generic [ref=e1684]: Value
+                              - generic [ref=e1685]:
+                                - textbox "Value" [ref=e1686]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1687] [cursor=pointer]:
+                              - img "Show secret" [ref=e1688]
+                      - row "Key STRIPE_SECRET_KEY Value • • • • • • • • • • • • Show secret" [ref=e1691]:
+                        - rowheader "Key STRIPE_SECRET_KEY" [ref=e1692]:
+                          - generic [ref=e1694]:
+                            - generic [ref=e1695]: Key
+                            - textbox "Key" [ref=e1697]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: STRIPE_SECRET_KEY
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1698]:
+                          - generic [ref=e1699]:
+                            - generic [ref=e1700]:
+                              - generic [ref=e1701]: Value
+                              - generic [ref=e1702]:
+                                - textbox "Value" [ref=e1703]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1704] [cursor=pointer]:
+                              - img "Show secret" [ref=e1705]
+                      - row "Key STRIPE_WEBHOOK_SECRET Value • • • • • • • • • • • • Show secret" [ref=e1708]:
+                        - rowheader "Key STRIPE_WEBHOOK_SECRET" [ref=e1709]:
+                          - generic [ref=e1711]:
+                            - generic [ref=e1712]: Key
+                            - textbox "Key" [ref=e1714]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: STRIPE_WEBHOOK_SECRET
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1715]:
+                          - generic [ref=e1716]:
+                            - generic [ref=e1717]:
+                              - generic [ref=e1718]: Value
+                              - generic [ref=e1719]:
+                                - textbox "Value" [ref=e1720]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1721] [cursor=pointer]:
+                              - img "Show secret" [ref=e1722]
+                      - row "Key SUPABASE_ANON_KEY Value • • • • • • • • • • • • Show secret" [ref=e1725]:
+                        - rowheader "Key SUPABASE_ANON_KEY" [ref=e1726]:
+                          - generic [ref=e1728]:
+                            - generic [ref=e1729]: Key
+                            - textbox "Key" [ref=e1731]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: SUPABASE_ANON_KEY
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1732]:
+                          - generic [ref=e1733]:
+                            - generic [ref=e1734]:
+                              - generic [ref=e1735]: Value
+                              - generic [ref=e1736]:
+                                - textbox "Value" [ref=e1737]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1738] [cursor=pointer]:
+                              - img "Show secret" [ref=e1739]
+                      - row "Key SUPABASE_SERVICE_ROLE_KEY Value • • • • • • • • • • • • Show secret" [ref=e1742]:
+                        - rowheader "Key SUPABASE_SERVICE_ROLE_KEY" [ref=e1743]:
+                          - generic [ref=e1745]:
+                            - generic [ref=e1746]: Key
+                            - textbox "Key" [ref=e1748]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: SUPABASE_SERVICE_ROLE_KEY
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1749]:
+                          - generic [ref=e1750]:
+                            - generic [ref=e1751]:
+                              - generic [ref=e1752]: Value
+                              - generic [ref=e1753]:
+                                - textbox "Value" [ref=e1754]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1755] [cursor=pointer]:
+                              - img "Show secret" [ref=e1756]
+                      - row "Key SUPABASE_URL Value • • • • • • • • • • • • Show secret" [ref=e1759]:
+                        - rowheader "Key SUPABASE_URL" [ref=e1760]:
+                          - generic [ref=e1762]:
+                            - generic [ref=e1763]: Key
+                            - textbox "Key" [ref=e1765]:
+                              - /placeholder: NAME_OF_VARIABLE
+                              - text: SUPABASE_URL
+                        - cell "Value • • • • • • • • • • • • Show secret" [ref=e1766]:
+                          - generic [ref=e1767]:
+                            - generic [ref=e1768]:
+                              - generic [ref=e1769]: Value
+                              - generic [ref=e1770]:
+                                - textbox "Value" [ref=e1771]:
+                                  - /placeholder: ""
+                                - generic:
+                                  - generic: • • • • • • • • • • • •
+                            - button "Show secret" [ref=e1772] [cursor=pointer]:
+                              - img "Show secret" [ref=e1773]
+                  - button "Show more" [ref=e1777] [cursor=pointer]:
+                    - img [ref=e1779]
+                    - text: Show more
+              - generic [ref=e893]:
+                - generic [ref=e896]:
+                  - heading "Secret Files" [level=4] [ref=e898]
+                  - generic [ref=e900]:
+                    - generic [ref=e901]:
+                      - text: Store plaintext files containing secret data (such as a
+                      - code [ref=e902]: .env
+                      - text: file or a private key).
+                    - generic [ref=e903]:
+                      - text: Access during builds and at runtime from your app's root, or from
+                      - code [ref=e904]: /etc/secrets/<filename>
+                      - text: .
+                - generic [ref=e909]:
+                  - button "Add file" [ref=e910] [cursor=pointer]:
+                    - img [ref=e912]
+                    - text: Add file
+                  - button "More options" [ref=e914] [cursor=pointer]:
+                    - generic [ref=e915]: More options
+                    - img [ref=e916]
+              - generic [ref=e919]:
+                - generic [ref=e922]:
+                  - heading "Linked Environment Groups" [level=4] [ref=e924]
+                  - generic [ref=e925]: Environment groups are collections of environment variables and secret files that you can share across multiple services.
+                - generic [ref=e928]:
+                  - generic [ref=e929]: No environment groups available to link.
+                  - link "New Environment Group" [ref=e930] [cursor=pointer]:
+                    - /url: /new/env-group
+                    - img [ref=e932]
+                    - text: New Environment Group
+    - generic:
+      - generic:
+        - generic: "0 services selected:"
+        - generic:
+          - generic:
+            - button:
+              - generic:
+                - img
+              - generic: Move
+              - img
+      - generic:
+        - separator
+        - generic:
+          - generic:
+            - button:
+              - img
+  - alert [ref=e1783]:
+    - img [ref=e1785]
+    - generic [ref=e1790]: Updated environment variables for this service. Triggering a deploy.
+    - button "Close notification" [ref=e1791] [cursor=pointer]:
+      - img [ref=e1792]
+  - iframe [ref=e340]:
+    

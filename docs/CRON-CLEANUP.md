@@ -6,7 +6,7 @@ The backend exposes `POST /admin/cleanup` to prune old data. Call it from a cron
 
 ```
 POST /admin/cleanup
-X-Admin-Key: <ADMIN_KEY or flush-cache-2026>
+X-Admin-Key: <ADMIN_KEY>
 ```
 
 ## What it does

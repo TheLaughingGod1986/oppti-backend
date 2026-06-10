@@ -92,7 +92,10 @@ function createContactRouter({ redis }) {
         subject: z.string().min(1, 'Subject is required'),
         message: z.string().min(10, 'Message must be at least 10 characters'),
         wp_version: z.string().optional(),
-        plugin_version: z.string().optional()
+        plugin_version: z.string().optional(),
+        support_recipient: z.string().email('Invalid support recipient').optional(),
+        include_logs: z.union([z.string(), z.boolean()]).optional(),
+        diagnostic_bundle: z.string().max(20000).optional()
       });
 
       const parsed = schema.safeParse(req.body);
@@ -106,7 +109,7 @@ function createContactRouter({ redis }) {
         });
       }
 
-      const { name, email, subject, message, wp_version, plugin_version } = parsed.data;
+      const { name, email, subject, message, wp_version, plugin_version, support_recipient, include_logs, diagnostic_bundle } = parsed.data;
 
       // Additional email validation
       if (!isValidEmail(email)) {
@@ -128,9 +131,18 @@ function createContactRouter({ redis }) {
       // Optional headers (if user is authenticated)
       const licenseKey = req.header('X-License-Key') || null;
       const userId = req.header('X-WP-User-ID') || null;
+      const allowedRecipients = [
+        process.env.RESEND_CONTACT_EMAIL,
+        process.env.CONTACT_SUPPORT_EMAIL,
+        'benoats86@gmail.com'
+      ].filter(Boolean);
+      const recipient = support_recipient && allowedRecipients.includes(support_recipient)
+        ? support_recipient
+        : undefined;
 
       // Send email
       const emailResult = await sendContactEmail({
+        to: recipient,
         name,
         email,
         subject,
@@ -140,7 +152,9 @@ function createContactRouter({ redis }) {
         siteUrl,
         siteHash,
         licenseKey,
-        userId
+        userId,
+        includeLogs: include_logs === true || include_logs === '1',
+        diagnosticBundle: diagnostic_bundle
       });
 
       if (!emailResult.success) {

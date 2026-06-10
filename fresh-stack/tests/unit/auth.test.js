@@ -15,13 +15,181 @@ function createRes() {
   };
 }
 
+function createSupabaseMock(licenseRow = null) {
+  return {
+    from: (table) => {
+      if (table !== 'licenses') {
+        return {
+          select: () => ({
+            eq: () => ({
+              single: () => Promise.resolve({ data: null, error: null })
+            })
+          })
+        };
+      }
+
+      return {
+        select: () => ({
+          eq: () => ({
+            single: () => Promise.resolve({
+              data: licenseRow,
+              error: licenseRow ? null : new Error('not found')
+            })
+          })
+        })
+      };
+    }
+  };
+}
+
 describe('auth middleware', () => {
   test('rejects missing license and api token', async () => {
     const supabase = {};
     const mw = authMiddleware({ supabase });
-    const req = { header: () => null };
+    const req = { path: '/api/alt-text', method: 'POST', header: () => null };
     const res = createRes();
     await mw(req, res, () => {});
     expect(res.statusCode).toBe(401);
+  });
+
+  test('allows bulk job polling by returned job id without license headers', async () => {
+    const supabase = {};
+    const mw = authMiddleware({ supabase });
+    const req = {
+      path: '/api/jobs/58141ee0-fd90-42f7-8dca-1d6933e79067',
+      method: 'GET',
+      header: () => null
+    };
+    const res = createRes();
+    let nextCalled = false;
+
+    await mw(req, res, () => {
+      nextCalled = true;
+    });
+
+    expect(nextCalled).toBe(true);
+    expect(res.statusCode).toBe(200);
+  });
+
+  test('keeps bulk job creation protected without license headers', async () => {
+    const supabase = {};
+    const mw = authMiddleware({ supabase });
+    const req = { path: '/api/jobs', method: 'POST', header: () => null };
+    const res = createRes();
+    let nextCalled = false;
+
+    await mw(req, res, () => {
+      nextCalled = true;
+    });
+
+    expect(nextCalled).toBe(false);
+    expect(res.statusCode).toBe(401);
+  });
+
+  test('prefers real auth over trial headers', async () => {
+    const supabase = createSupabaseMock({
+      id: 'lic-1',
+      license_key: 'key-123',
+      plan: 'pro',
+      status: 'active'
+    });
+    const mw = authMiddleware({ supabase });
+    const req = {
+      header: (name) => {
+        if (name === 'X-License-Key') return 'key-123';
+        if (name === 'X-Trial-Mode') return 'true';
+        if (name === 'X-Trial-Site-Hash') return 'trial-site';
+        if (name === 'Authorization') return null;
+        if (name === 'X-API-Key') return null;
+        return null;
+      }
+    };
+    const res = createRes();
+    let nextCalled = false;
+
+    await mw(req, res, () => {
+      nextCalled = true;
+    });
+
+    expect(nextCalled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(req.trialMode).toBeUndefined();
+    expect(req.authMethod).toBe('license');
+    expect(req.license.license_key).toBe('key-123');
+  });
+
+  test('still allows anonymous trial requests', async () => {
+    const supabase = createSupabaseMock(null);
+    const mw = authMiddleware({ supabase });
+    const req = {
+      path: '/api/alt-text',
+      header: (name) => {
+        if (name === 'X-Trial-Mode') return 'true';
+        if (name === 'X-Trial-Site-Hash') return 'trial-site';
+        return null;
+      }
+    };
+    const res = createRes();
+    let nextCalled = false;
+
+    await mw(req, res, () => {
+      nextCalled = true;
+    });
+
+    expect(nextCalled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(req.trialMode).toBe(true);
+    expect(req.trialSiteHash).toBe('trial-site');
+    expect(req.authMethod).toBe('trial');
+  });
+
+  test('allows anonymous trial requests to trial-batch-plan', async () => {
+    const supabase = createSupabaseMock(null);
+    const mw = authMiddleware({ supabase });
+    const req = {
+      path: '/api/usage/trial-batch-plan',
+      header: (name) => {
+        if (name === 'X-Trial-Mode') return 'true';
+        if (name === 'X-Trial-Site-Hash') return 'plan-site';
+        return null;
+      }
+    };
+    const res = createRes();
+    let nextCalled = false;
+
+    await mw(req, res, () => {
+      nextCalled = true;
+    });
+
+    expect(nextCalled).toBe(true);
+    expect(req.trialMode).toBe(true);
+    expect(req.trialSiteHash).toBe('plan-site');
+  });
+
+  test('allows anonymous dashboard trial requests with persistent anon id', async () => {
+    const supabase = createSupabaseMock(null);
+    const mw = authMiddleware({ supabase });
+    const req = {
+      path: '/api/alt-text',
+      body: { anon_id: 'Anon-ABC-123' },
+      header: (name) => {
+        if (name === 'X-Site-Key') return 'trial-site';
+        return null;
+      }
+    };
+    const res = createRes();
+    let nextCalled = false;
+
+    await mw(req, res, () => {
+      nextCalled = true;
+    });
+
+    expect(nextCalled).toBe(true);
+    expect(req.trialMode).toBe(true);
+    expect(req.trialSiteHash).toBe('trial-site');
+    expect(req.anonId).toBe('anon-abc-123');
+    expect(req.anonymous).toEqual(expect.objectContaining({
+      anonId: 'anon-abc-123'
+    }));
   });
 });

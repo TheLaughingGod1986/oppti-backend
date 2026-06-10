@@ -26,7 +26,11 @@ function buildPrompt(context = {}) {
   if (context.caption) hints.push(`Caption: ${context.caption}`);
   if (context.pageTitle) hints.push(`Page: ${context.pageTitle}`);
   if (context.filename) hints.push(`File: ${context.filename}`);
+  if (context.tone || context.descriptionStyle) hints.push(`Requested style: ${context.tone || context.descriptionStyle}`);
   if (context.altTextSuggestion) hints.push(`User suggestion: ${context.altTextSuggestion}`);
+  if (context.customPrompt || context.additionalInstructions) {
+    hints.push(`Additional user instructions: ${context.customPrompt || context.additionalInstructions}`);
+  }
 
   if (hints.length) {
     lines.push('');
@@ -51,30 +55,45 @@ async function generateAltText({ image, context }) {
     ? `data:${image.mime_type};base64,${image.base64}`
     : image.url;
 
-  // Enhanced logging for debugging image processing
   const logger = require('./logger');
-  logger.info('[OpenAI] Image processing details', {
-    hasBase64: !!image.base64,
-    hasUrl: !!image.url,
-    imageSource: image.base64 ? 'base64' : (image.url ? 'url' : 'none'),
-    base64Preview: image.base64 ? image.base64.substring(0, 100) + '...' : null,
-    base64Length: image.base64 ? image.base64.length : 0,
-    imageUrl: image.url || null,
-    imageUrlPreview: image.url ? image.url.substring(0, 100) + '...' : null,
-    dimensions: image.width && image.height ? `${image.width}x${image.height}` : 'unknown',
-    mimeType: image.mime_type || 'unknown',
-    filename: image.filename || 'unknown',
-    dataUrlPreview: imageUrl ? imageUrl.substring(0, 150) + '...' : null,
-    dataUrlLength: imageUrl ? imageUrl.length : 0,
-    dataUrlStartsWith: imageUrl ? imageUrl.substring(0, 30) : null
-  });
-  
-  // CRITICAL: Verify we're using the correct image source
-  if (image.base64 && image.url) {
-    logger.warn('[OpenAI] WARNING: Both base64 and URL provided - base64 will be used, URL ignored', {
-      base64Length: image.base64.length,
-      url: image.url
+  const tsStart = Date.now();
+  const isProdLogging = process.env.NODE_ENV === 'production';
+
+  if (!isProdLogging) {
+    logger.info('[OpenAI] Image processing details', {
+      hasBase64: !!image.base64,
+      hasUrl: !!image.url,
+      imageSource: image.base64 ? 'base64' : (image.url ? 'url' : 'none'),
+      base64Preview: image.base64 ? image.base64.substring(0, 100) + '...' : null,
+      base64Length: image.base64 ? image.base64.length : 0,
+      imageUrl: image.url || null,
+      imageUrlPreview: image.url ? image.url.substring(0, 100) + '...' : null,
+      dimensions: image.width && image.height ? `${image.width}x${image.height}` : 'unknown',
+      mimeType: image.mime_type || 'unknown',
+      filename: image.filename || 'unknown',
+      dataUrlPreview: imageUrl ? imageUrl.substring(0, 150) + '...' : null,
+      dataUrlLength: imageUrl ? imageUrl.length : 0,
+      dataUrlStartsWith: imageUrl ? imageUrl.substring(0, 30) : null
     });
+  } else {
+    logger.info('[OpenAI] alt_text_request_started', {
+      model: modelUsed,
+      status: 'started'
+    });
+  }
+
+  if (image.base64 && image.url) {
+    if (!isProdLogging) {
+      logger.warn('[OpenAI] WARNING: Both base64 and URL provided - base64 will be used, URL ignored', {
+        base64Length: image.base64.length,
+        url: image.url
+      });
+    } else {
+      logger.warn('[OpenAI] Both base64 and URL provided - base64 will be used, URL ignored', {
+        model: modelUsed,
+        status: 'input_normalized'
+      });
+    }
   }
   
   if (!image.base64 && !image.url) {
@@ -83,19 +102,20 @@ async function generateAltText({ image, context }) {
 
   if (!apiKey) {
     logger.error('[OpenAI] Missing API key - check OPENAI_API_KEY or ALTTEXT_OPENAI_API_KEY in .env.local');
-    return {
-      altText: fallbackAltText(context),
-      usage: null,
-      meta: { usedFallback: true, reason: 'Missing OpenAI API key' }
-    };
+    const configError = new Error('OpenAI API key is not configured. Set ALTTEXT_OPENAI_API_KEY or OPENAI_API_KEY.');
+    configError.code = 'BACKEND_CONFIG_ERROR';
+    configError.isRetryable = false;
+    throw configError;
   }
   
-  // Log API key status (first few chars only for security)
-  logger.debug('[OpenAI] Using API key', { 
-    keyPrefix: apiKey.substring(0, 10) + '...',
-    keyLength: apiKey.length,
-    model: preferredModel
-  });
+  if (!isProdLogging) {
+    // Log API key shape only outside production, and never the full key.
+    logger.debug('[OpenAI] Using API key', {
+      keyPrefix: apiKey.substring(0, 10) + '...',
+      keyLength: apiKey.length,
+      model: preferredModel
+    });
+  }
 
   try {
     let response;
@@ -162,27 +182,54 @@ async function generateAltText({ image, context }) {
 
     const choice = response.data?.choices?.[0];
     const altText = choice?.message?.content?.trim();
+    const latencyMs = Date.now() - tsStart;
+    const usage = response.data?.usage || null;
 
-    // Log the full response for debugging
-    logger.info('[OpenAI] Raw AI response received', {
-      model: modelUsed,
-      fullResponse: JSON.stringify(response.data),
-      choiceContent: choice?.message?.content,
-      usage: response.data?.usage,
-      imageSourceUsed: image.base64 ? 'base64' : (image.url ? 'url' : 'none')
-    });
-
-    if (altText) {
-      logger.info('[OpenAI] Alt text generated', { 
+    if (!isProdLogging) {
+      logger.info('[OpenAI] Raw AI response received', {
         model: modelUsed,
-        altTextLength: altText.length,
-        altTextPreview: altText.substring(0, 50) + (altText.length > 50 ? '...' : '')
+        fullResponse: JSON.stringify(response.data),
+        choiceContent: choice?.message?.content,
+        usage,
+        imageSourceUsed: image.base64 ? 'base64' : (image.url ? 'url' : 'none')
       });
     } else {
-      logger.error('[OpenAI] Empty alt text response', { 
+      logger.info('[OpenAI] alt_text_completed', {
         model: modelUsed,
-        response: JSON.stringify(response.data).substring(0, 200)
+        latencyMs,
+        promptTokens: usage?.prompt_tokens ?? null,
+        completionTokens: usage?.completion_tokens ?? null,
+        totalTokens: usage?.total_tokens ?? null,
+        outputLength: typeof choice?.message?.content === 'string' ? choice.message.content.length : 0,
+        status: 'completed'
       });
+    }
+
+    if (altText) {
+      if (!isProdLogging) {
+        logger.info('[OpenAI] Alt text generated', {
+          model: modelUsed,
+          altTextLength: altText.length,
+          altTextPreview: altText.substring(0, 50) + (altText.length > 50 ? '...' : '')
+        });
+      } else {
+        logger.info('[OpenAI] alt_text_output_metrics', {
+          model: modelUsed,
+          outputLength: altText.length,
+          status: 'completed'
+        });
+      }
+    } else {
+      logger.error('[OpenAI] Empty alt text response', isProdLogging
+        ? {
+          model: modelUsed,
+          latencyMs,
+          status: response.data?.error?.code || response.status || 'empty_output'
+        }
+        : {
+          model: modelUsed,
+          responsePreview: JSON.stringify(response.data).substring(0, 200)
+        });
     }
 
     return {
@@ -193,30 +240,48 @@ async function generateAltText({ image, context }) {
   } catch (error) {
     const message = error?.response?.data?.error?.message || error.message || 'OpenAI request failed';
     const errorCode = error?.response?.data?.error?.code || error?.response?.status || 'UNKNOWN';
-    
-    // Check for API key errors specifically
+    const httpStatus = error?.response?.status || null;
     const isApiKeyError = /incorrect.*api.*key|invalid.*api.*key|authentication.*failed/i.test(message);
-    
-    logger.error('[OpenAI] Alt text generation failed', {
-      error: message,
-      code: errorCode,
-      status: error?.response?.status,
-      model: modelUsed,
-      hasApiKey: !!apiKey,
-      apiKeyPrefix: apiKey ? apiKey.substring(0, 10) + '...' : 'missing',
-      isApiKeyError: isApiKeyError
-    });
-    
-    // If it's an API key error, log it prominently
+    const isRateLimit = httpStatus === 429;
+    const isServerError = httpStatus >= 500;
+
+    const failMeta = isProdLogging
+      ? {
+        code: errorCode,
+        status: httpStatus,
+        model: modelUsed,
+        isApiKeyError,
+        isRateLimit,
+        isServerError
+      }
+      : {
+        error: message,
+        code: errorCode,
+        status: httpStatus,
+        model: modelUsed,
+        hasApiKey: !!apiKey,
+        apiKeyPrefix: apiKey ? apiKey.substring(0, 10) + '...' : 'missing',
+        isApiKeyError,
+        isRateLimit,
+        isServerError
+      };
+    logger.error('[OpenAI] Alt text generation failed', failMeta);
+
     if (isApiKeyError) {
-      logger.error('[OpenAI] CRITICAL: Invalid or missing OpenAI API key. Please check your .env.local file and ensure OPENAI_API_KEY is set correctly.');
+      logger.error('[OpenAI] CRITICAL: OpenAI rejected or missing API key (credentials error). Verify OPENAI_API_KEY / ALTTEXT_OPENAI_API_KEY in environment.');
     }
-    
-    return {
-      altText: fallbackAltText(context),
-      usage: null,
-      meta: { usedFallback: true, reason: message, errorCode, isApiKeyError }
-    };
+
+    // Throw a structured error so callers can decide how to handle it.
+    // Previously this silently returned fallback text, which burned trial
+    // credits on placeholder text and masked upstream failures.
+    const genError = new Error(message);
+    genError.code = isApiKeyError ? 'BACKEND_CONFIG_ERROR'
+      : isRateLimit ? 'UPSTREAM_RATE_LIMITED'
+      : isServerError ? 'UPSTREAM_GENERATION_ERROR'
+      : 'GENERATION_FAILED';
+    genError.httpStatus = httpStatus;
+    genError.isRetryable = isRateLimit || isServerError;
+    throw genError;
   }
 }
 
@@ -225,6 +290,280 @@ function fallbackAltText(context = {}) {
   return `${base}: concise descriptive alt text placeholder`;
 }
 
+function getReviewApiKey(service = 'alttext-ai') {
+  if (service === 'seo-ai-meta') {
+    return process.env.OPENAI_REVIEW_API_KEY
+      || process.env.SEO_META_OPENAI_API_KEY
+      || process.env.OPENAI_API_KEY
+      || null;
+  }
+
+  return process.env.OPENAI_REVIEW_API_KEY
+    || process.env.ALTTEXT_OPENAI_API_KEY
+    || process.env.OPENAI_API_KEY
+    || null;
+}
+
+function buildReviewPrompt(altText, image = {}, context = {}) {
+  const lines = [
+    'Evaluate whether the provided alternative text accurately describes the attached image.',
+    'Respond only with a JSON object with keys: score, status, grade, summary, issues.',
+    'Use score as an integer from 0 to 100.',
+    'Use status as one of: great, good, review, critical.',
+    'Keep summary under 120 characters.',
+    `Alt text candidate: "${altText}".`
+  ];
+
+  if (image.title) lines.push(`Media title: ${image.title}`);
+  if (image.caption) lines.push(`Caption: ${image.caption}`);
+  if (image.filename) lines.push(`Filename: ${image.filename}`);
+  if (image.width && image.height) lines.push(`Dimensions: ${image.width}x${image.height}px`);
+  if (context.title) lines.push(`Page title: ${context.title}`);
+  if (context.pageTitle) lines.push(`Page title: ${context.pageTitle}`);
+  if (context.post_title) lines.push(`Page title: ${context.post_title}`);
+  if (context.caption) lines.push(`Page caption: ${context.caption}`);
+
+  return lines.join('\n');
+}
+
+function tryParseJson(payload) {
+  try {
+    return JSON.parse(payload);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function parseReviewResponse(content) {
+  if (!content || typeof content !== 'string') {
+    return null;
+  }
+
+  const direct = tryParseJson(content.trim());
+  if (direct) {
+    return direct;
+  }
+
+  const match = content.match(/\{[\s\S]*\}/);
+  return match ? tryParseJson(match[0]) : null;
+}
+
+function clampScore(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  return Math.min(100, Math.max(0, Math.round(numeric)));
+}
+
+function normalizeReviewStatus(status, score) {
+  const lookup = {
+    great: 'great',
+    excellent: 'great',
+    good: 'good',
+    ok: 'review',
+    needs_review: 'review',
+    review: 'review',
+    poor: 'critical',
+    critical: 'critical',
+    fail: 'critical'
+  };
+
+  if (typeof status === 'string') {
+    const key = status.toLowerCase().replace(/[^a-z]/g, '_');
+    if (lookup[key]) {
+      return lookup[key];
+    }
+  }
+
+  if (typeof score === 'number' && Number.isFinite(score)) {
+    if (score >= 90) return 'great';
+    if (score >= 75) return 'good';
+    if (score >= 55) return 'review';
+    return 'critical';
+  }
+
+  return 'review';
+}
+
+function gradeFromStatus(status) {
+  switch (status) {
+    case 'great':
+      return 'Excellent';
+    case 'good':
+      return 'Strong';
+    case 'review':
+      return 'Needs review';
+    default:
+      return 'Critical';
+  }
+}
+
+function shouldSkipReviewForImageError(error) {
+  const status = error?.response?.status;
+  const message = error?.response?.data?.error?.message || error?.message || '';
+
+  if (!status) {
+    return false;
+  }
+
+  return (status === 400 || status === 422)
+    && /image_url|unable to load image|failed to download image|fetch/i.test(message);
+}
+
+async function reviewAltText({ altText, image = null, context = {}, service = 'alttext-ai' }) {
+  if (!altText || typeof altText !== 'string') {
+    return null;
+  }
+
+  const base64Data = image?.base64 || image?.image_base64 || null;
+  const hasUsableUrl = typeof image?.url === 'string' && /^https:\/\//i.test(image.url);
+  const imageUrl = base64Data
+    ? `data:${image?.mime_type || 'image/jpeg'};base64,${base64Data}`
+    : (hasUsableUrl ? image.url : null);
+
+  if (!imageUrl) {
+    return null;
+  }
+
+  const apiKey = getReviewApiKey(service);
+  if (!apiKey) {
+    const configError = new Error('OpenAI review API key is not configured.');
+    configError.code = 'BACKEND_CONFIG_ERROR';
+    configError.httpStatus = 500;
+    throw configError;
+  }
+
+  const model = process.env.OPENAI_REVIEW_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const prompt = buildReviewPrompt(altText, image, context);
+  const logger = require('./logger');
+  const isProdLogging = process.env.NODE_ENV === 'production';
+  const tsStart = Date.now();
+
+  try {
+    const response = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model,
+        temperature: 0,
+        max_tokens: 220,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an accessibility QA reviewer. Evaluate how accurately candidate alt text matches the attached image. Return valid JSON only.'
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: imageUrl, detail: 'auto' } }
+            ]
+          }
+        ]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 60000
+      }
+    );
+
+    const content = response.data?.choices?.[0]?.message?.content?.trim() || '';
+    const parsed = parseReviewResponse(content);
+    const usage = response.data?.usage || null;
+
+    logger.info('[OpenAI] Review response received', isProdLogging
+      ? {
+        model,
+        latencyMs: Date.now() - tsStart,
+        promptTokens: usage?.prompt_tokens ?? null,
+        completionTokens: usage?.completion_tokens ?? null,
+        totalTokens: usage?.total_tokens ?? null,
+        outputLength: content.length,
+        status: parsed ? 'completed' : 'unparseable'
+      }
+      : {
+        model,
+        imageSource: base64Data ? 'base64' : 'url',
+        parsed: Boolean(parsed)
+      });
+
+    if (!parsed) {
+      return null;
+    }
+
+    const score = clampScore(parsed.score);
+    const status = normalizeReviewStatus(parsed.status, score);
+    const issues = Array.isArray(parsed.issues)
+      ? parsed.issues
+          .filter((item) => typeof item === 'string' && item.trim() !== '')
+          .map((item) => item.trim())
+          .slice(0, 6)
+      : [];
+
+    return {
+      score,
+      status,
+      grade: typeof parsed.grade === 'string' && parsed.grade.trim()
+        ? parsed.grade.trim()
+        : gradeFromStatus(status),
+      summary: typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 120) : '',
+      issues,
+      model,
+      usage
+    };
+  } catch (error) {
+    if (shouldSkipReviewForImageError(error)) {
+      logger.warn('[OpenAI] Review skipped because image could not be fetched', isProdLogging
+        ? {
+          status: error?.response?.status || null,
+          model
+        }
+        : {
+          status: error?.response?.status || null,
+          message: error?.response?.data?.error?.message || error.message
+        });
+      return null;
+    }
+
+    const message = error?.response?.data?.error?.message || error.message || 'OpenAI review request failed';
+    const httpStatus = error?.response?.status || null;
+    const isApiKeyError = /incorrect.*api.*key|invalid.*api.*key|authentication.*failed/i.test(message);
+    const isRateLimit = httpStatus === 429;
+    const isServerError = httpStatus >= 500;
+
+    logger.error('[OpenAI] Review generation failed', isProdLogging
+      ? {
+        status: httpStatus,
+        model,
+        isApiKeyError,
+        isRateLimit,
+        isServerError
+      }
+      : {
+        error: message,
+        status: httpStatus,
+        model,
+        isApiKeyError,
+        isRateLimit,
+        isServerError
+      });
+
+    const reviewError = new Error(message);
+    reviewError.code = isApiKeyError ? 'BACKEND_CONFIG_ERROR'
+      : isRateLimit ? 'UPSTREAM_RATE_LIMITED'
+      : isServerError ? 'UPSTREAM_GENERATION_ERROR'
+      : 'REVIEW_ERROR';
+    reviewError.httpStatus = httpStatus;
+    throw reviewError;
+  }
+}
+
 module.exports = {
-  generateAltText
+  generateAltText,
+  reviewAltText,
+  buildPrompt
 };

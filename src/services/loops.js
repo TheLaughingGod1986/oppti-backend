@@ -1,0 +1,92 @@
+const logger = require('../../fresh-stack/lib/logger');
+
+const LOOPS_API_KEY = process.env.LOOPS_API_KEY;
+const LOOPS_BASE = 'https://app.loops.so/api/v1';
+const PLUGIN_USERS_LIST_ID = 'cmn7g83oddsuu0izg27ia6tgv';
+const LOOPS_TIMEOUT_MS = Number(process.env.LOOPS_TIMEOUT_MS || 5000);
+
+async function loopsRequest(method, path, body) {
+  if (!LOOPS_API_KEY) {
+    logger.info('[signup] Loops request skipped', {
+      path,
+      method,
+      reason: 'LOOPS_API_KEY missing'
+    });
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LOOPS_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(`${LOOPS_BASE}${path}`, {
+      method,
+      headers: {
+        'Authorization': `Bearer ${LOOPS_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+      body: JSON.stringify(body),
+    });
+
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const error = new Error(`Loops ${method} ${path} failed with status ${res.status}`);
+      error.status = res.status;
+      error.payload = payload;
+      throw error;
+    }
+
+    logger.info('[signup] Loops request succeeded', {
+      path,
+      method,
+      status: res.status
+    });
+    return payload;
+  } catch (err) {
+    logger.error('[signup] Loops request failed', {
+      path,
+      method,
+      error: err.message,
+      status: err.status || null
+    });
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function loopsPost(path, body) {
+  await loopsRequest('POST', path, body);
+}
+
+async function trackAccountCreated({ email, firstName, isWooCommerce, imagesUnprocessed }) {
+  const mailingLists = { [PLUGIN_USERS_LIST_ID]: true };
+  const created = await loopsRequest('POST', '/contacts/create', {
+    email, firstName: firstName || '', userGroup: 'plugin_user', source: 'plugin_signup', mailingLists,
+  });
+  // If contact already existed (409), contacts/create won't apply mailingLists — update to ensure list membership
+  if (created && !created.id && created.message?.toLowerCase().includes('already')) {
+    await loopsRequest('PUT', '/contacts/update', { email, mailingLists });
+  }
+  await loopsPost('/events/send', {
+    email, eventName: 'account_created', plan: 'free', generationsCount: 0,
+    imagesUnprocessed: imagesUnprocessed || 0, woocommerce: isWooCommerce || false,
+  });
+}
+
+async function trackGenerationMilestone({ email, generationsCount, imagesUnprocessed }) {
+  if (generationsCount % 5 !== 0) return;
+  await loopsPost('/events/send', { email, eventName: 'generation_completed', generationsCount, imagesUnprocessed, lastGenerationAt: new Date().toISOString() });
+}
+
+async function trackCreditsExhausted({ email, imagesUnprocessed }) {
+  await loopsPost('/events/send', { email, eventName: 'credits_exhausted', imagesUnprocessed, plan: 'free' });
+}
+
+async function trackPlanUpgraded({ email, planName }) {
+  await loopsRequest('PUT', '/contacts/update', { email, plan: planName });
+  await loopsPost('/events/send', { email, eventName: 'plan_upgraded', plan: planName });
+}
+
+module.exports = { trackAccountCreated, trackGenerationMilestone, trackCreditsExhausted, trackPlanUpgraded };

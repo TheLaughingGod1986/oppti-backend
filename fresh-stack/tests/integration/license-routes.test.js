@@ -2,10 +2,26 @@
  * Route-level tests for /license endpoints, focused on ensuring license
  * responses never expose sensitive columns (password_hash, reset tokens,
  * stripe ids) to clients holding only a license key.
+ *
+ * The license service is mocked so these tests pin down the route-layer
+ * serialisation regardless of how the activation flow evolves.
  */
 
 const express = require('express');
 const request = require('supertest');
+
+jest.mock('../../services/license', () => {
+  const actual = jest.requireActual('../../services/license');
+  return {
+    ...actual,
+    validateLicense: jest.fn(),
+    activateLicense: jest.fn(),
+    deactivateLicense: jest.fn(),
+    transferLicense: jest.fn()
+  };
+});
+
+const licenseService = require('../../services/license');
 const { createLicenseRouter } = require('../../routes/license');
 
 const SENSITIVE_FIELDS = [
@@ -35,48 +51,12 @@ const FULL_LICENSE_ROW = {
   stripe_subscription_id: 'sub_secret'
 };
 
-function createSupabaseMock(licenseRow) {
-  return {
-    from: (table) => {
-      if (table === 'licenses') {
-        return {
-          select: () => ({
-            eq: () => ({
-              single: () => Promise.resolve({ data: licenseRow, error: licenseRow ? null : new Error('not found') }),
-              maybeSingle: () => Promise.resolve({ data: licenseRow, error: null })
-            })
-          })
-        };
-      }
-      if (table === 'sites') {
-        return {
-          select: () => ({
-            eq: () => ({
-              eq: () => Promise.resolve({ data: [], error: null }),
-              maybeSingle: () => Promise.resolve({ data: null, error: null })
-            })
-          }),
-          upsert: (payload) => ({
-            select: () => ({
-              single: () => Promise.resolve({ data: payload, error: null })
-            })
-          }),
-          update: () => ({
-            eq: () => ({
-              eq: () => Promise.resolve({ error: null })
-            })
-          })
-        };
-      }
-      return {};
-    }
-  };
-}
+const SITE = { id: 'site-row-1', site_hash: 'site-1', site_url: 'https://example.com' };
 
-function buildApp(licenseRow) {
+function buildApp() {
   const app = express();
   app.use(express.json());
-  app.use('/license', createLicenseRouter({ supabase: createSupabaseMock(licenseRow) }));
+  app.use('/license', createLicenseRouter({ supabase: {} }));
   return app;
 }
 
@@ -87,8 +67,14 @@ function expectNoSensitiveFields(obj) {
 }
 
 describe('license routes response sanitisation', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   test('POST /license/validate returns only public license fields', async () => {
-    const res = await request(buildApp(FULL_LICENSE_ROW))
+    licenseService.validateLicense.mockResolvedValue({ license: FULL_LICENSE_ROW, limits: {} });
+
+    const res = await request(buildApp())
       .post('/license/validate')
       .send({ license_key: 'key-123' });
 
@@ -101,7 +87,9 @@ describe('license routes response sanitisation', () => {
   });
 
   test('POST /license/activate does not leak sensitive license fields', async () => {
-    const res = await request(buildApp(FULL_LICENSE_ROW))
+    licenseService.activateLicense.mockResolvedValue({ license: FULL_LICENSE_ROW, site: SITE, limits: {} });
+
+    const res = await request(buildApp())
       .post('/license/activate')
       .send({ license_key: 'key-123', site_id: 'site-1', site_url: 'https://example.com' });
 
@@ -113,7 +101,9 @@ describe('license routes response sanitisation', () => {
   });
 
   test('POST /license/transfer does not leak sensitive license fields', async () => {
-    const res = await request(buildApp(FULL_LICENSE_ROW))
+    licenseService.transferLicense.mockResolvedValue({ license: FULL_LICENSE_ROW, site: SITE, limits: {} });
+
+    const res = await request(buildApp())
       .post('/license/transfer')
       .send({
         license_key: 'key-123',
@@ -129,7 +119,14 @@ describe('license routes response sanitisation', () => {
   });
 
   test('POST /license/deactivate with expired license returns error without license row', async () => {
-    const res = await request(buildApp({ ...FULL_LICENSE_ROW, status: 'expired' }))
+    licenseService.deactivateLicense.mockResolvedValue({
+      error: 'LICENSE_EXPIRED',
+      status: 410,
+      message: 'License expired',
+      license: { ...FULL_LICENSE_ROW, status: 'expired' }
+    });
+
+    const res = await request(buildApp())
       .post('/license/deactivate')
       .send({ license_key: 'key-123', site_id: 'site-1' });
 
@@ -139,7 +136,14 @@ describe('license routes response sanitisation', () => {
   });
 
   test('POST /license/transfer with suspended license returns error without license row', async () => {
-    const res = await request(buildApp({ ...FULL_LICENSE_ROW, status: 'suspended' }))
+    licenseService.transferLicense.mockResolvedValue({
+      error: 'LICENSE_SUSPENDED',
+      status: 403,
+      message: 'License suspended or cancelled',
+      license: { ...FULL_LICENSE_ROW, status: 'suspended' }
+    });
+
+    const res = await request(buildApp())
       .post('/license/transfer')
       .send({ license_key: 'key-123', old_site_id: 'site-1', new_site_id: 'site-2' });
 

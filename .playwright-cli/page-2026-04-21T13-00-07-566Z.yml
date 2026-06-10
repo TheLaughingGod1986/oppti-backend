@@ -1,0 +1,55 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "Render" [ref=e5] [cursor=pointer]:
+      - /url: https://render.com/
+      - img "Render" [ref=e6]
+  - generic [ref=e16]:
+    - heading "Sign In to Render" [level=1] [ref=e17]
+    - generic [ref=e19]:
+      - generic [ref=e20]:
+        - generic [ref=e21]:
+          - generic [ref=e22]:
+            - button "GitHub GitHub" [ref=e23] [cursor=pointer]:
+              - generic [ref=e24]:
+                - img "GitHub" [ref=e25]
+                - generic [ref=e27]: GitHub
+            - generic [ref=e29]: Last used
+          - button "GitLab" [ref=e31] [cursor=pointer]:
+            - generic [ref=e32]:
+              - img [ref=e33]
+              - generic [ref=e39]: GitLab
+          - button "Bitbucket" [ref=e41] [cursor=pointer]:
+            - generic [ref=e42]:
+              - img [ref=e43]
+              - generic [ref=e47]: Bitbucket
+          - button "Google" [ref=e49] [cursor=pointer]:
+            - generic [ref=e50]:
+              - img [ref=e51]
+              - generic [ref=e56]: Google
+        - generic [ref=e57]: or
+      - generic [ref=e58]:
+        - generic [ref=e59]:
+          - generic [ref=e60]:
+            - generic [ref=e61]: Email
+            - textbox "Email" [ref=e63]:
+              - /placeholder: your@email.com
+          - generic [ref=e64]:
+            - generic [ref=e65]: Password
+            - generic [ref=e66]:
+              - textbox "Password" [ref=e67]:
+                - /placeholder: correct horse battery staple
+              - button "Show password" [ref=e68] [cursor=pointer]:
+                - img [ref=e69]
+        - button "Sign in" [ref=e72] [cursor=pointer]
+      - generic [ref=e73]:
+        - paragraph [ref=e74]:
+          - link "Sign in with SSO" [ref=e75] [cursor=pointer]:
+            - /url: /login/sso
+        - generic [ref=e76]:
+          - text: Need an account?
+          - link "Sign up" [ref=e77] [cursor=pointer]:
+            - /url: /register
+        - generic [ref=e78]:
+          - text: Forgot your password?
+          - link "Reset it" [ref=e79] [cursor=pointer]:
+            - /url: /password-reset

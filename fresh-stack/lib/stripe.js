@@ -2,11 +2,12 @@ let stripeClient = null;
 
 function getStripe() {
   if (stripeClient) return stripeClient;
-  if (!process.env.STRIPE_SECRET_KEY) return null;
+  const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+  if (!stripeSecretKey) return null;
   // Lazy load stripe to avoid dependency issues in tests
   // eslint-disable-next-line global-require
   const Stripe = require('stripe');
-  stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2022-11-15' });
+  stripeClient = new Stripe(stripeSecretKey, { apiVersion: '2022-11-15' });
   return stripeClient;
 }
 

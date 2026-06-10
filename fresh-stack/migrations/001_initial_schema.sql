@@ -42,14 +42,6 @@ BEGIN
                  WHERE table_name = 'licenses' AND column_name = 'stripe_subscription_id') THEN
     ALTER TABLE licenses ADD COLUMN stripe_subscription_id VARCHAR(255);
   END IF;
-
-  -- Add plan_type if missing (alias for plan)
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                 WHERE table_name = 'licenses' AND column_name = 'plan_type') THEN
-    ALTER TABLE licenses ADD COLUMN plan_type VARCHAR(50);
-    -- Copy plan to plan_type if plan exists
-    UPDATE licenses SET plan_type = plan WHERE plan_type IS NULL;
-  END IF;
 END $$;
 
 -- Create indexes (only if columns exist)

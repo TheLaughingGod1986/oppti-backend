@@ -1,0 +1,592 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - banner [ref=e4]:
+        - generic [ref=e5]:
+          - link "Render" [ref=e7] [cursor=pointer]:
+            - /url: /
+            - img "Render" [ref=e8]
+          - button "M My Workspace" [ref=e12] [cursor=pointer]:
+            - generic [ref=e13]:
+              - generic [ref=e14]: M
+              - generic "My Workspace" [ref=e15]
+              - img [ref=e16]
+        - generic [ref=e20]:
+          - navigation [ref=e21]:
+            - list [ref=e22]:
+              - listitem [ref=e23]:
+                - link "AI SEO Alt Text Wordpress Plugin" [ref=e420] [cursor=pointer]:
+                  - /url: /project/prj-d3r1hjc9c44c73d47e60
+                  - img [ref=e421]
+                  - generic [ref=e425]: AI SEO Alt Text Wordpress Plugin
+                - button [ref=e426] [cursor=pointer]:
+                  - img [ref=e427]
+                - text: /
+              - listitem [ref=e429]:
+                - link "Production" [ref=e430] [cursor=pointer]:
+                  - /url: /project/prj-d3r1hjc9c44c73d47e60/environment/evm-d3r1hjc9c44c73d47e6g
+                  - img [ref=e431]
+                  - generic [ref=e444]: Production
+                - button [ref=e447] [cursor=pointer]:
+                  - img [ref=e448]
+                - text: /
+              - listitem [ref=e450]:
+                - button "alttext-ai-backend" [ref=e453] [cursor=pointer]:
+                  - generic [ref=e454]:
+                    - img [ref=e455]
+                    - generic [ref=e457]:
+                      - generic [ref=e458]: alttext-ai-backend
+                      - img [ref=e459]
+          - button "Search Command + K" [ref=e31] [cursor=pointer]:
+            - img [ref=e33]
+            - text: Search
+            - generic [ref=e35]:
+              - img [ref=e36]
+              - generic [ref=e38]: Command
+              - generic [ref=e39]: +
+              - generic [ref=e40]: K
+              - generic [ref=e41]: K
+        - generic [ref=e42]:
+          - button "New" [ref=e44] [cursor=pointer]:
+            - generic [ref=e45]:
+              - img [ref=e46]
+              - generic [ref=e48]: New
+          - button "Upgrade" [ref=e50] [cursor=pointer]:
+            - generic [ref=e51]:
+              - img [ref=e52]
+              - generic [ref=e54]: Upgrade
+          - button "Help" [ref=e56] [cursor=pointer]:
+            - img "Help" [ref=e57]
+          - button "Gravatar for benoats@gmail.com" [ref=e62] [cursor=pointer]:
+            - img "Gravatar for benoats@gmail.com" [ref=e64]
+      - generic [ref=e65]:
+        - navigation [ref=e66]:
+          - separator [ref=e67]
+          - generic [ref=e68]:
+            - generic [ref=e253]:
+              - link "Environment" [ref=e461] [cursor=pointer]:
+                - /url: /project/prj-d3r1hjc9c44c73d47e60/environment/evm-d3r1hjc9c44c73d47e6g
+                - img [ref=e255]
+                - generic [ref=e257]: Environment
+              - generic [ref=e258]:
+                - img [ref=e462]
+                - generic [ref=e263]: alttext-ai-backend
+            - generic [ref=e69]:
+              - list [ref=e464]:
+                - listitem [ref=e465]:
+                  - link "Events" [ref=e466] [cursor=pointer]:
+                    - /url: /web/srv-d3r1hjggjchc73bnp39g/events
+                    - img [ref=e467]
+                    - generic [ref=e474]: Events
+                - listitem [ref=e475]:
+                  - link "Settings" [ref=e476] [cursor=pointer]:
+                    - /url: /web/srv-d3r1hjggjchc73bnp39g/settings
+                    - img [ref=e477]
+                    - generic [ref=e480]: Settings
+              - generic [ref=e481]:
+                - generic [ref=e482]: Monitor
+                - list "Monitor" [ref=e483]:
+                  - listitem [ref=e484]:
+                    - link "Logs" [ref=e485] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/logs
+                      - img [ref=e486]
+                      - generic [ref=e491]: Logs
+                  - listitem [ref=e492]:
+                    - link "Metrics" [ref=e493] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/metrics
+                      - img [ref=e494]
+                      - generic [ref=e496]: Metrics
+              - generic [ref=e273]:
+                - generic [ref=e274]: Manage
+                - list "Manage" [ref=e275]:
+                  - listitem [ref=e497]:
+                    - link "Environment" [ref=e498] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/env
+                      - img [ref=e499]
+                      - generic [ref=e503]: Environment
+                  - listitem [ref=e504]:
+                    - link "Shell" [ref=e505] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/shell
+                      - img [ref=e506]
+                      - generic [ref=e510]:
+                        - generic [ref=e511]: Shell
+                        - status [ref=e514]:
+                          - img [ref=e515]
+                  - listitem [ref=e517]:
+                    - link "Scaling" [ref=e518] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/scaling
+                      - img [ref=e519]
+                      - generic [ref=e524]:
+                        - generic [ref=e525]: Scaling
+                        - status [ref=e528]:
+                          - img [ref=e529]
+                  - listitem [ref=e531]:
+                    - link "Previews" [ref=e532] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/previews
+                      - img [ref=e533]
+                      - generic [ref=e537]: Previews
+                  - listitem [ref=e538]:
+                    - link "Disk" [ref=e539] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/disks
+                      - img [ref=e540]
+                      - generic [ref=e545]:
+                        - generic [ref=e546]: Disk
+                        - status [ref=e549]:
+                          - img [ref=e550]
+                  - listitem [ref=e552]:
+                    - link "One-Off Jobs" [ref=e553] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/jobs
+                      - img [ref=e554]
+                      - generic [ref=e560]:
+                        - generic [ref=e561]: One-Off Jobs
+                        - status [ref=e564]:
+                          - img [ref=e565]
+          - generic [ref=e146]:
+            - alert [ref=e147]:
+              - img [ref=e149]
+              - generic [ref=e153]:
+                - generic [ref=e154]:
+                  - generic [ref=e155]: "Workflows: Now in beta"
+                  - generic [ref=e156]:
+                    - text: Orchestrate your agents and background jobs with automatic retries and scale-to-zero.
+                    - link "Learn more" [ref=e157] [cursor=pointer]:
+                      - /url: https://render.com/docs/workflows
+                - link "Create Workflow" [ref=e159] [cursor=pointer]:
+                  - /url: /workflow/new
+              - button "Close notification" [ref=e160] [cursor=pointer]:
+                - img [ref=e161]
+            - generic [ref=e163]:
+              - button "Collapse items" [expanded] [ref=e164] [cursor=pointer]:
+                - img [ref=e165]
+              - list "Footer navigation" [ref=e167]:
+                - listitem [ref=e168]:
+                  - link "Changelog" [ref=e169] [cursor=pointer]:
+                    - /url: https://render.com/changelog
+                    - img [ref=e170]
+                    - generic [ref=e175]: Changelog
+                - listitem [ref=e176]:
+                  - link "Invite a friend" [ref=e177] [cursor=pointer]:
+                    - /url: /invites
+                    - img [ref=e178]
+                    - generic [ref=e180]: Invite a friend
+                - listitem [ref=e181]:
+                  - button "Contact support" [ref=e182] [cursor=pointer]:
+                    - img [ref=e183]
+                    - generic [ref=e187]: Contact support
+              - link "Render Status" [ref=e189] [cursor=pointer]:
+                - /url: https://status.render.com
+                - img [ref=e190]
+                - generic [ref=e192]: Render Status
+        - generic [ref=e567]:
+          - banner [ref=e569]:
+            - generic [ref=e570]:
+              - generic [ref=e571]:
+                - img [ref=e572]
+                - generic [ref=e574]: Web Service
+              - generic [ref=e575]:
+                - heading "alttext-ai-backend Node Free Upgrade your instance" [level=1] [ref=e577]:
+                  - generic [ref=e578]: alttext-ai-backend
+                  - generic [ref=e579]:
+                    - generic [ref=e580]: Node
+                    - link "Free" [ref=e581] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/plan
+                      - generic [ref=e582]: Free
+                    - link "Upgrade your instance" [ref=e583] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/plan
+                      - text: Upgrade your instance
+                      - img [ref=e585]
+                - generic [ref=e588]:
+                  - button "Connect" [ref=e589] [cursor=pointer]:
+                    - generic [ref=e590]: Connect
+                    - img [ref=e591]
+                  - button "Manual Deploy" [ref=e593] [cursor=pointer]:
+                    - generic [ref=e594]: Manual Deploy
+                    - img [ref=e595]
+            - generic [ref=e599]:
+              - generic [ref=e601]:
+                - generic [ref=e602]: "Service ID:"
+                - generic "Service ID:" [ref=e603]:
+                  - generic [ref=e604]: srv-d3r1hjggjchc73bnp39g
+                  - button "Copy" [ref=e607] [cursor=pointer]:
+                    - img [ref=e608]
+              - generic [ref=e611]:
+                - img "GitHub" [ref=e613]
+                - link "TheLaughingGod1986 / oppti-backend main" [ref=e615] [cursor=pointer]:
+                  - /url: https://github.com/TheLaughingGod1986/oppti-backend/tree/main
+                  - generic [ref=e616]:
+                    - generic [ref=e617]: TheLaughingGod1986 / oppti-backend
+                    - img [ref=e618]
+                    - generic [ref=e620]: main
+              - generic "Copy" [ref=e622]:
+                - link "https://alttext-ai-backend.onrender.com" [ref=e624] [cursor=pointer]:
+                  - /url: https://alttext-ai-backend.onrender.com
+                - button "Copy" [ref=e627] [cursor=pointer]:
+                  - img [ref=e628]
+          - main [ref=e631]:
+            - generic [ref=e632]:
+              - alert [ref=e633]:
+                - generic [ref=e635]:
+                  - img [ref=e637]
+                  - generic [ref=e641]:
+                    - generic [ref=e643]: Your free instance will spin down with inactivity, which can delay requests by 50 seconds or more.
+                    - link "Upgrade now" [ref=e645] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/plan
+              - button "Filter events 31" [ref=e647] [cursor=pointer]:
+                - img [ref=e649]
+                - generic [ref=e651]:
+                  - text: Filter events
+                  - generic [ref=e652]: "31"
+                - img [ref=e653]
+              - generic [ref=e655]:
+                - list [ref=e656]:
+                  - listitem [ref=e657]:
+                    - generic [ref=e658]:
+                      - img [ref=e661]
+                      - generic [ref=e663]:
+                        - generic [ref=e664]:
+                          - generic [ref=e665]:
+                            - link "Deploy" [ref=e666] [cursor=pointer]:
+                              - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d7jmb0l7vvec73991cag
+                            - text: live
+                          - text: for
+                          - link "01f7ae2" [ref=e668] [cursor=pointer]:
+                            - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/01f7ae2262e9dab984026b478116a47975cec43b
+                          - text: ":"
+                          - generic [ref=e669]: Add operator data integrity CLI
+                        - generic [ref=e670]: April 21, 2026 at 12:56 PM
+                  - listitem [ref=e671]:
+                    - generic [ref=e672]:
+                      - img [ref=e675]
+                      - generic [ref=e678]:
+                        - generic [ref=e679]:
+                          - generic [ref=e680]:
+                            - generic [ref=e681]:
+                              - link "Deploy" [ref=e682] [cursor=pointer]:
+                                - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d7jmb0l7vvec73991cag
+                              - text: started
+                            - text: for
+                            - link "01f7ae2" [ref=e684] [cursor=pointer]:
+                              - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/01f7ae2262e9dab984026b478116a47975cec43b
+                            - text: ":"
+                            - generic [ref=e685]: Add operator data integrity CLI
+                          - generic [ref=e686]: New commit via Auto-Deploy
+                        - generic [ref=e687]: April 21, 2026 at 12:54 PM
+                  - listitem [ref=e688]:
+                    - generic [ref=e689]:
+                      - img [ref=e692]
+                      - generic [ref=e694]:
+                        - generic [ref=e695]:
+                          - generic [ref=e696]:
+                            - link "Deploy" [ref=e697] [cursor=pointer]:
+                              - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d7jm60cvikkc73btb3h0
+                            - text: live
+                          - text: for
+                          - link "36a1881" [ref=e699] [cursor=pointer]:
+                            - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/36a1881a3651eb6f9b1a904e7f4d5daeec982f08
+                          - text: ":"
+                          - generic [ref=e700]: Add backend runtime visibility diagnostics
+                        - generic [ref=e701]: April 21, 2026 at 12:44 PM
+                    - link "Rollback" [ref=e703] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d7jm60cvikkc73btb3h0/rollback
+                      - img [ref=e705]
+                      - text: Rollback
+                  - listitem [ref=e707]:
+                    - generic [ref=e708]:
+                      - img [ref=e711]
+                      - generic [ref=e714]:
+                        - generic [ref=e715]:
+                          - generic [ref=e716]:
+                            - generic [ref=e717]:
+                              - link "Deploy" [ref=e718] [cursor=pointer]:
+                                - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d7jm60cvikkc73btb3h0
+                              - text: started
+                            - text: for
+                            - link "36a1881" [ref=e720] [cursor=pointer]:
+                              - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/36a1881a3651eb6f9b1a904e7f4d5daeec982f08
+                            - text: ":"
+                            - generic [ref=e721]: Add backend runtime visibility diagnostics
+                          - generic [ref=e722]: New commit via Auto-Deploy
+                        - generic [ref=e723]: April 21, 2026 at 12:44 PM
+                  - listitem [ref=e724]:
+                    - generic [ref=e725]:
+                      - img [ref=e728]
+                      - generic [ref=e730]:
+                        - generic [ref=e731]:
+                          - generic [ref=e732]:
+                            - link "Deploy" [ref=e733] [cursor=pointer]:
+                              - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d7jls9l7vvec7398pn2g
+                            - text: live
+                          - text: for
+                          - link "4b4f8c0" [ref=e735] [cursor=pointer]:
+                            - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/4b4f8c0aa29530bccc51b5f1d9db9cd424d9e5b4
+                          - text: ":"
+                          - generic [ref=e736]: Avoid localhost site collisions
+                        - generic [ref=e737]: April 21, 2026 at 12:24 PM
+                    - link "Rollback" [ref=e739] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d7jls9l7vvec7398pn2g/rollback
+                      - img [ref=e741]
+                      - text: Rollback
+                  - listitem [ref=e743]:
+                    - generic [ref=e744]:
+                      - img [ref=e747]
+                      - generic [ref=e750]:
+                        - generic [ref=e751]:
+                          - generic [ref=e752]:
+                            - generic [ref=e753]:
+                              - link "Deploy" [ref=e754] [cursor=pointer]:
+                                - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d7jls9l7vvec7398pn2g
+                              - text: started
+                            - text: for
+                            - link "4b4f8c0" [ref=e756] [cursor=pointer]:
+                              - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/4b4f8c0aa29530bccc51b5f1d9db9cd424d9e5b4
+                            - text: ":"
+                            - generic [ref=e757]: Avoid localhost site collisions
+                          - generic [ref=e758]: New commit via Auto-Deploy
+                        - generic [ref=e759]: April 21, 2026 at 12:23 PM
+                  - listitem [ref=e760]:
+                    - generic [ref=e761]:
+                      - img [ref=e764]
+                      - generic [ref=e766]:
+                        - generic [ref=e767]:
+                          - generic [ref=e768]:
+                            - link "Deploy" [ref=e769] [cursor=pointer]:
+                              - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d7jlpgn41pts73etnlh0
+                            - text: live
+                          - text: for
+                          - link "683b384" [ref=e771] [cursor=pointer]:
+                            - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/683b384249e8c7172d54acd0b3661bbfc056893e
+                          - text: ":"
+                          - generic [ref=e772]: Fix legacy site-linking fallback
+                        - generic [ref=e773]: April 21, 2026 at 12:18 PM
+                    - link "Rollback" [ref=e775] [cursor=pointer]:
+                      - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d7jlpgn41pts73etnlh0/rollback
+                      - img [ref=e777]
+                      - text: Rollback
+                  - listitem [ref=e779]:
+                    - generic [ref=e780]:
+                      - img [ref=e783]
+                      - generic [ref=e786]:
+                        - generic [ref=e787]:
+                          - generic [ref=e788]:
+                            - generic [ref=e789]:
+                              - link "Deploy" [ref=e790] [cursor=pointer]:
+                                - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d7jlpgn41pts73etnlh0
+                              - text: started
+                            - text: for
+                            - link "683b384" [ref=e792] [cursor=pointer]:
+                              - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/683b384249e8c7172d54acd0b3661bbfc056893e
+                            - text: ":"
+                            - generic [ref=e793]: Fix legacy site-linking fallback
+                          - generic [ref=e794]: New commit via Auto-Deploy
+                        - generic [ref=e795]: April 21, 2026 at 12:17 PM
+                  - listitem [ref=e796]:
+                    - generic [ref=e797]:
+                      - img [ref=e800]
+                      - generic [ref=e802]:
+                        - generic [ref=e803]:
+                          - generic [ref=e804]:
+                            - link "Deploy" [ref=e805] [cursor=pointer]:
+                              - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d78gdfhaae7s738aa1rg
+                            - text: live
+                          - text: for
+                          - link "bb3ebf4" [ref=e807] [cursor=pointer]:
+                            - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/bb3ebf43652eca366c23164c7172f743c8fad5db
+                          - text: ":"
+                          - generic [ref=e808]: "fix(backend): plugin API surface, billing/plans, review, bulk jobs - Billing: catalog cache, early /billing/plans + /api/billing/plans, skip rate limit, Redis timeouts - Review: explicit /api/review mount, structured logs; JSON 404 for unmatched /api/* - Jobs: bulk processor + queue wiring; integration tests (api-surface, jobs-bulk) - env.example: Redis and billing cache TTL vars Made-with: Cursor"
+                        - generic [ref=e809]: April 4, 2026 at 1:41 PM
+                  - listitem [ref=e810]:
+                    - generic [ref=e811]:
+                      - img [ref=e814]
+                      - generic [ref=e817]:
+                        - generic [ref=e818]:
+                          - generic [ref=e819]:
+                            - generic [ref=e820]:
+                              - link "Deploy" [ref=e821] [cursor=pointer]:
+                                - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d78gdfhaae7s738aa1rg
+                              - text: started
+                            - text: for
+                            - link "bb3ebf4" [ref=e823] [cursor=pointer]:
+                              - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/bb3ebf43652eca366c23164c7172f743c8fad5db
+                            - text: ":"
+                            - generic [ref=e824]: "fix(backend): plugin API surface, billing/plans, review, bulk jobs - Billing: catalog cache, early /billing/plans + /api/billing/plans, skip rate limit, Redis timeouts - Review: explicit /api/review mount, structured logs; JSON 404 for unmatched /api/* - Jobs: bulk processor + queue wiring; integration tests (api-surface, jobs-bulk) - env.example: Redis and billing cache TTL vars Made-with: Cursor"
+                          - generic [ref=e825]: New commit via Auto-Deploy
+                        - generic [ref=e826]: April 4, 2026 at 1:40 PM
+                  - listitem [ref=e827]:
+                    - generic [ref=e828]:
+                      - img [ref=e831]
+                      - generic [ref=e833]:
+                        - generic [ref=e834]:
+                          - generic [ref=e835]:
+                            - link "Deploy" [ref=e836] [cursor=pointer]:
+                              - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d77sds7gi27c73a1ot20
+                            - text: live
+                          - text: for
+                          - link "4a6057c" [ref=e838] [cursor=pointer]:
+                            - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/4a6057cc063733e214ad25b6cb4894e8ea8dfce8
+                          - text: ":"
+                          - generic [ref=e839]: "Merge branch 'codex/restore-v2-quota-review-diagnostics' into main Resolve conflicts: keep trial_generation contract on alt-text/usage, dynamic getAnonymousTrialLimit() for RPC, trial-batch-plan tests. Made-with: Cursor"
+                        - generic [ref=e840]: April 3, 2026 at 2:57 PM
+                  - listitem [ref=e841]:
+                    - generic [ref=e842]:
+                      - img [ref=e845]
+                      - generic [ref=e848]:
+                        - generic [ref=e849]:
+                          - generic [ref=e850]:
+                            - generic [ref=e851]:
+                              - link "Deploy" [ref=e852] [cursor=pointer]:
+                                - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d77sds7gi27c73a1ot20
+                              - text: started
+                            - text: for
+                            - link "4a6057c" [ref=e854] [cursor=pointer]:
+                              - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/4a6057cc063733e214ad25b6cb4894e8ea8dfce8
+                            - text: ":"
+                            - generic [ref=e855]: "Merge branch 'codex/restore-v2-quota-review-diagnostics' into main Resolve conflicts: keep trial_generation contract on alt-text/usage, dynamic getAnonymousTrialLimit() for RPC, trial-batch-plan tests. Made-with: Cursor"
+                          - generic [ref=e856]: New commit via Auto-Deploy
+                        - generic [ref=e857]: April 3, 2026 at 2:56 PM
+                  - listitem [ref=e858]:
+                    - generic [ref=e859]:
+                      - img [ref=e862]
+                      - generic [ref=e864]:
+                        - generic [ref=e865]:
+                          - generic [ref=e866]:
+                            - link "Deploy" [ref=e867] [cursor=pointer]:
+                              - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d77euovdiees73b23vr0
+                            - text: live
+                          - text: for
+                          - link "bcee50f" [ref=e869] [cursor=pointer]:
+                            - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/bcee50f479fbd42af5067361ad8e417b13a9ba82
+                          - text: ":"
+                          - generic [ref=e870]: Restore V2 quota flow and review tooling (#7)
+                        - generic [ref=e871]: April 2, 2026 at 11:37 PM
+                  - listitem [ref=e872]:
+                    - generic [ref=e873]:
+                      - img [ref=e876]
+                      - generic [ref=e879]:
+                        - generic [ref=e880]:
+                          - generic [ref=e881]:
+                            - generic [ref=e882]:
+                              - link "Deploy" [ref=e883] [cursor=pointer]:
+                                - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d77euovdiees73b23vr0
+                              - text: started
+                            - text: for
+                            - link "bcee50f" [ref=e885] [cursor=pointer]:
+                              - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/bcee50f479fbd42af5067361ad8e417b13a9ba82
+                            - text: ":"
+                            - generic [ref=e886]: Restore V2 quota flow and review tooling (#7)
+                          - generic [ref=e887]: New commit via Auto-Deploy
+                        - generic [ref=e888]: April 2, 2026 at 11:36 PM
+                  - listitem [ref=e889]:
+                    - generic [ref=e890]:
+                      - img [ref=e893]
+                      - generic [ref=e895]:
+                        - generic [ref=e896]:
+                          - generic [ref=e897]:
+                            - link "Deploy" [ref=e898] [cursor=pointer]:
+                              - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d777gsqa214c7397h81g
+                            - text: live
+                          - text: for
+                          - link "ae6cf3d" [ref=e900] [cursor=pointer]:
+                            - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/ae6cf3d8584936c3001073176455b0f915565e7e
+                          - text: ":"
+                          - generic [ref=e901]: Add persistent anonymous trial support
+                        - generic [ref=e902]: April 2, 2026 at 3:10 PM
+                  - listitem [ref=e903]:
+                    - generic [ref=e904]:
+                      - img [ref=e907]
+                      - generic [ref=e910]:
+                        - generic [ref=e911]:
+                          - generic [ref=e912]:
+                            - generic [ref=e913]:
+                              - link "Deploy" [ref=e914] [cursor=pointer]:
+                                - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d777gsqa214c7397h81g
+                              - text: started
+                            - text: for
+                            - link "ae6cf3d" [ref=e916] [cursor=pointer]:
+                              - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/ae6cf3d8584936c3001073176455b0f915565e7e
+                            - text: ":"
+                            - generic [ref=e917]: Add persistent anonymous trial support
+                          - generic [ref=e918]: New commit via Auto-Deploy
+                        - generic [ref=e919]: April 2, 2026 at 3:08 PM
+                  - listitem [ref=e920]:
+                    - generic [ref=e921]:
+                      - img [ref=e924]
+                      - generic [ref=e926]:
+                        - generic [ref=e927]:
+                          - generic [ref=e928]:
+                            - link "Deploy" [ref=e929] [cursor=pointer]:
+                              - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d760dpogjchc73dsule0
+                            - text: live
+                          - text: for
+                          - link "d135b6f" [ref=e931] [cursor=pointer]:
+                            - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/d135b6f663edee5f8ab9339ab6a69796574aceba
+                          - text: ":"
+                          - generic [ref=e932]: "fix: pass pre-built siteIdentity through quota layer to preserve allowDevelopment The route-level allowDevelopment flag (which permits localhost/dev sites for trial and authenticated requests) was lost because reserveGenerationQuota and getQuotaStatus rebuilt siteIdentity from scratch internally. This caused DEVELOPMENT_SITE_NOT_ALLOWED (403) for every localhost request, which the plugin translated into \"Authentication required. Please log in to continue.\" Both quota functions now accept an optional pre-built siteIdentity parameter. When provided, they use it directly instead of rebuilding — preserving the allowDevelopment flag set at the route level. Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+                        - generic [ref=e933]: March 31, 2026 at 6:41 PM
+                  - listitem [ref=e934]:
+                    - generic [ref=e935]:
+                      - img [ref=e938]
+                      - generic [ref=e941]:
+                        - generic [ref=e942]:
+                          - generic [ref=e943]:
+                            - generic [ref=e944]:
+                              - link "Deploy" [ref=e945] [cursor=pointer]:
+                                - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d760dpogjchc73dsule0
+                              - text: started
+                            - text: for
+                            - link "d135b6f" [ref=e947] [cursor=pointer]:
+                              - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/d135b6f663edee5f8ab9339ab6a69796574aceba
+                            - text: ":"
+                            - generic [ref=e948]: "fix: pass pre-built siteIdentity through quota layer to preserve allowDevelopment The route-level allowDevelopment flag (which permits localhost/dev sites for trial and authenticated requests) was lost because reserveGenerationQuota and getQuotaStatus rebuilt siteIdentity from scratch internally. This caused DEVELOPMENT_SITE_NOT_ALLOWED (403) for every localhost request, which the plugin translated into \"Authentication required. Please log in to continue.\" Both quota functions now accept an optional pre-built siteIdentity parameter. When provided, they use it directly instead of rebuilding — preserving the allowDevelopment flag set at the route level. Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+                          - generic [ref=e949]: New commit via Auto-Deploy
+                        - generic [ref=e950]: March 31, 2026 at 6:39 PM
+                  - listitem [ref=e951]:
+                    - generic [ref=e952]:
+                      - img [ref=e955]
+                      - generic [ref=e957]:
+                        - generic [ref=e958]:
+                          - generic [ref=e959]:
+                            - link "Deploy" [ref=e960] [cursor=pointer]:
+                              - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d75vamea2pns73895uag
+                            - text: live
+                          - text: for
+                          - link "d49139f" [ref=e962] [cursor=pointer]:
+                            - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/d49139f71e95634a47af161de11ba28814ca2c49
+                          - text: ":"
+                          - generic [ref=e963]: "chore: log how site-based auth resolves Add explicit logs for successful site-based auth resolution (matchedBy + site_hash) to debug remaining inline generation auth_required failures. Made-with: Cursor"
+                        - generic [ref=e964]: March 31, 2026 at 5:26 PM
+                  - listitem [ref=e965]:
+                    - generic [ref=e966]:
+                      - img [ref=e969]
+                      - generic [ref=e972]:
+                        - generic [ref=e973]:
+                          - generic [ref=e974]:
+                            - generic [ref=e975]:
+                              - link "Deploy" [ref=e976] [cursor=pointer]:
+                                - /url: /web/srv-d3r1hjggjchc73bnp39g/deploys/dep-d75vamea2pns73895uag
+                              - text: started
+                            - text: for
+                            - link "d49139f" [ref=e978] [cursor=pointer]:
+                              - /url: https://github.com/TheLaughingGod1986/oppti-backend/commit/d49139f71e95634a47af161de11ba28814ca2c49
+                            - text: ":"
+                            - generic [ref=e979]: "chore: log how site-based auth resolves Add explicit logs for successful site-based auth resolution (matchedBy + site_hash) to debug remaining inline generation auth_required failures. Made-with: Cursor"
+                          - generic [ref=e980]: New commit via Auto-Deploy
+                        - generic [ref=e981]: March 31, 2026 at 5:24 PM
+                - img "Loading..." [ref=e983]
+    - generic:
+      - generic:
+        - generic: "0 services selected:"
+        - generic:
+          - generic:
+            - button:
+              - generic:
+                - img
+              - generic: Move
+              - img
+      - generic:
+        - separator
+        - generic:
+          - generic:
+            - button:
+              - img
+  - iframe [ref=e240]:
+    

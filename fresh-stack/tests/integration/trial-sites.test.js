@@ -10,6 +10,16 @@
  *  - Concurrency: parallel inserts for same hash produce exactly one row.
  */
 
+jest.mock('../../lib/logger', () => ({
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+  getRecentEntries: jest.fn().mockReturnValue([]),
+  clearRecentEntries: jest.fn()
+}));
+
+const logger = require('../../lib/logger');
 const { findOrCreateTrialSite } = require('../../services/site');
 
 // ---------------------------------------------------------------------------
@@ -29,6 +39,11 @@ function createSiteStoreMock() {
     const chain = {
       select: () => chain,
       eq: (col, val) => { filters.push({ col, val }); return chain; },
+      then: (resolve, reject) => {
+        if (pendingOp) return pendingOp(filters).then(resolve, reject);
+        const matches = rows.filter(r => filters.every(f => r[f.col] === f.val));
+        return Promise.resolve({ data: matches, error: null }).then(resolve, reject);
+      },
       maybeSingle: () => {
         if (pendingOp) return pendingOp(filters);
         const match = rows.find(r => filters.every(f => r[f.col] === f.val));
@@ -101,6 +116,10 @@ function createSiteStoreMock() {
 // ---------------------------------------------------------------------------
 
 describe('findOrCreateTrialSite', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   test('creates a new site row for a new trial site_hash', async () => {
     const mock = createSiteStoreMock();
 
@@ -117,8 +136,16 @@ describe('findOrCreateTrialSite', () => {
     expect(mock.rows).toHaveLength(1);
     expect(mock.rows[0].site_hash).toBe('abc123');
     expect(mock.rows[0].site_url).toBe('https://example.com');
-    // Trial sites have no license_key.
-    expect(mock.rows[0].license_key).toBeUndefined();
+    // Trial sites have no linked account/license yet.
+    expect(mock.rows[0].license_key).toBeNull();
+    expect(logger.info).toHaveBeenCalledWith(
+      '[Site] Trial site created',
+      expect.objectContaining({
+        site_hash: 'abc123',
+        site_url: 'https://example.com',
+        created: true
+      })
+    );
   });
 
   test('does NOT duplicate sites for the same site_hash', async () => {
@@ -185,6 +212,12 @@ describe('findOrCreateTrialSite', () => {
     expect(r3.error).toBeTruthy();
 
     expect(mock.rows).toHaveLength(0);
+    expect(logger.error).toHaveBeenCalledWith(
+      '[Site] Trial site identity invalid',
+      expect.objectContaining({
+        error: expect.any(String)
+      })
+    );
   });
 
   test('sanitizes inputs to safe lengths', async () => {
@@ -197,6 +230,60 @@ describe('findOrCreateTrialSite', () => {
     expect(mock.rows[0].site_hash.length).toBeLessThanOrEqual(255);
     expect(mock.rows[0].site_url.length).toBeLessThanOrEqual(500);
   });
+
+  test('logs a failure when site creation cannot be persisted', async () => {
+    const failingSupabase = {
+      from(table) {
+        if (table !== 'sites') {
+          return {
+            select: () => ({
+              eq: () => ({
+                then: (resolve, reject) => Promise.resolve({ data: [], error: null }).then(resolve, reject)
+              })
+            })
+          };
+        }
+
+        return {
+          select() {
+            return {
+              eq() {
+                return {
+                  then(resolve, reject) {
+                    return Promise.resolve({ data: [], error: null }).then(resolve, reject);
+                  }
+                };
+              }
+            };
+          },
+          insert() {
+            return {
+              select() {
+                return {
+                  single: async () => ({ data: null, error: { message: 'insert failed', code: 'XX000' } })
+                };
+              }
+            };
+          }
+        };
+      }
+    };
+
+    const result = await findOrCreateTrialSite(failingSupabase, {
+      siteHash: 'cannot-persist',
+      siteUrl: 'https://example.com'
+    });
+
+    expect(result.error).toBeTruthy();
+    expect(logger.error).toHaveBeenCalledWith(
+      '[Site] Trial site resolve failed',
+      expect.objectContaining({
+        site_hash: 'cannot-persist',
+        site_url: 'https://example.com',
+        error: 'SITE_CREATE_FAILED'
+      })
+    );
+  });
 });
 
 describe('Registration links existing trial site', () => {
@@ -206,7 +293,7 @@ describe('Registration links existing trial site', () => {
     // Simulate trial: site row exists with no license.
     await findOrCreateTrialSite(mock, { siteHash: 'reg-hash', siteUrl: 'https://trial.com' });
     expect(mock.rows).toHaveLength(1);
-    expect(mock.rows[0].license_key).toBeUndefined();
+    expect(mock.rows[0].license_key).toBeNull();
 
     // Simulate registration upsert (mirrors auth.js upsert call).
     const supabase = mock;
@@ -235,7 +322,7 @@ describe('License activation links existing trial site', () => {
     // Simulate trial site.
     await findOrCreateTrialSite(mock, { siteHash: 'activate-hash' });
     expect(mock.rows).toHaveLength(1);
-    expect(mock.rows[0].license_key).toBeUndefined();
+    expect(mock.rows[0].license_key).toBeNull();
 
     // Simulate activateLicense upsert (mirrors license.js line 130-134).
     await mock

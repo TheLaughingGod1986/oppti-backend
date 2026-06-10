@@ -2,10 +2,31 @@
  * Lightweight integration-style test using mocked Supabase client.
  */
 
+jest.mock('../../services/siteQuota', () => ({
+  ensureSiteMembership: jest.fn().mockResolvedValue({
+    id: 'membership-1',
+    site_id: 'site-1',
+    user_id: 'lic-1',
+    role: 'owner'
+  }),
+  recordSiteAudit: jest.fn().mockResolvedValue(undefined),
+  resolveCanonicalSite: jest.fn().mockResolvedValue({
+    site: {
+      id: 'site-1',
+      site_hash: 'site-1',
+      site_url: 'https://example.com',
+      license_key: 'key-123'
+    },
+    matchedBy: 'created',
+    created: true,
+    error: null
+  }),
+  syncLegacySitePointers: jest.fn().mockResolvedValue(undefined)
+}));
+
 const { activateLicense } = require('../../services/license');
 
 function createSupabaseMock() {
-  const sites = [];
   return {
     from: (table) => {
       if (table === 'licenses') {
@@ -22,25 +43,6 @@ function createSupabaseMock() {
                   data: { id: 'lic-1', license_key: 'key-123', plan: 'pro', status: 'active', billing_day_of_month: 1 },
                   error: null
                 })
-            })
-          })
-        };
-      }
-      if (table === 'sites') {
-        return {
-          select: () => ({
-            eq: (field) => ({
-              eq: () => Promise.resolve({ data: [], error: null }),
-              maybeSingle: () => Promise.resolve({ data: null, error: null }),
-              single: () => Promise.resolve({ data: null, error: null })
-            })
-          }),
-          upsert: (payload) => ({
-            select: () => ({
-              single: () => {
-                sites.push(payload);
-                return Promise.resolve({ data: payload, error: null });
-              }
             })
           })
         };

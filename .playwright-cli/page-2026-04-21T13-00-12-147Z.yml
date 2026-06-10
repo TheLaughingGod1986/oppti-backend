@@ -1,0 +1,137 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - link "Render" [ref=e7] [cursor=pointer]:
+          - /url: /
+          - img "Render" [ref=e8]
+        - button "M My Workspace" [ref=e12] [cursor=pointer]:
+          - generic [ref=e13]:
+            - generic [ref=e14]: M
+            - generic "My Workspace" [ref=e15]
+            - img [ref=e16]
+      - generic [ref=e20]:
+        - navigation [ref=e21]:
+          - list [ref=e22]:
+            - listitem [ref=e23]:
+              - generic [ref=e24]:
+                - img [ref=e25]
+                - generic [ref=e29]: Projects
+        - button "Search Command + K" [ref=e31] [cursor=pointer]:
+          - img [ref=e33]
+          - text: Search
+          - generic [ref=e35]:
+            - img [ref=e36]
+            - generic [ref=e38]: Command
+            - generic [ref=e39]: +
+            - generic [ref=e40]: K
+            - generic [ref=e41]: K
+      - generic [ref=e42]:
+        - button "New" [ref=e44] [cursor=pointer]:
+          - generic [ref=e45]:
+            - img [ref=e46]
+            - generic [ref=e48]: New
+        - button "Help" [ref=e50] [cursor=pointer]:
+          - img "Help" [ref=e51]
+        - button "Gravatar for benoats@gmail.com" [ref=e56] [cursor=pointer]:
+          - img "Gravatar for benoats@gmail.com" [ref=e58]
+    - generic [ref=e59]:
+      - navigation [ref=e60]:
+        - separator [ref=e61]
+        - generic [ref=e63]:
+          - list [ref=e64]:
+            - listitem [ref=e65]:
+              - link "Projects" [ref=e66] [cursor=pointer]:
+                - /url: /
+                - img [ref=e67]
+                - generic [ref=e71]: Projects
+            - listitem [ref=e72]:
+              - link "Blueprints" [ref=e73] [cursor=pointer]:
+                - /url: /blueprints
+                - img [ref=e74]
+                - generic [ref=e79]: Blueprints
+            - listitem [ref=e80]:
+              - link "Environment Groups" [ref=e81] [cursor=pointer]:
+                - /url: /env-groups
+                - img [ref=e82]
+                - generic [ref=e88]: Environment Groups
+          - generic [ref=e89]:
+            - generic [ref=e90]: Integrations
+            - list "Integrations" [ref=e91]:
+              - listitem [ref=e92]:
+                - link "Observability" [ref=e93] [cursor=pointer]:
+                  - /url: /observability
+                  - img [ref=e94]
+                  - generic [ref=e96]: Observability
+              - listitem [ref=e97]:
+                - link "Webhooks" [ref=e98] [cursor=pointer]:
+                  - /url: /webhooks
+                  - img [ref=e99]
+                  - generic [ref=e103]: Webhooks
+              - listitem [ref=e104]:
+                - link "Notifications" [ref=e105] [cursor=pointer]:
+                  - /url: /notifications
+                  - img [ref=e106]
+                  - generic [ref=e116]: Notifications
+          - generic [ref=e117]:
+            - generic [ref=e118]: Networking
+            - list "Networking" [ref=e119]:
+              - listitem [ref=e120]:
+                - link "Private Links" [ref=e121] [cursor=pointer]:
+                  - /url: /private-links
+                  - img [ref=e122]
+                  - generic [ref=e124]: Private Links
+          - generic [ref=e125]:
+            - generic [ref=e126]: Workspace
+            - list "Workspace" [ref=e127]:
+              - listitem [ref=e128]:
+                - link "Billing" [ref=e129] [cursor=pointer]:
+                  - /url: /billing
+                  - img [ref=e130]
+                  - generic [ref=e133]: Billing
+              - listitem [ref=e134]:
+                - link "Settings" [ref=e135] [cursor=pointer]:
+                  - /url: /w/settings
+                  - img [ref=e136]
+                  - generic [ref=e139]: Settings
+        - generic [ref=e141]:
+          - button "Collapse items" [expanded] [ref=e142] [cursor=pointer]:
+            - img [ref=e143]
+          - list "Footer navigation" [ref=e145]:
+            - listitem [ref=e146]:
+              - link "Changelog" [ref=e147] [cursor=pointer]:
+                - /url: https://render.com/changelog
+                - img [ref=e148]
+                - generic [ref=e153]: Changelog
+            - listitem [ref=e154]:
+              - link "Invite a friend" [ref=e155] [cursor=pointer]:
+                - /url: /invites
+                - img [ref=e156]
+                - generic [ref=e158]: Invite a friend
+            - listitem [ref=e159]:
+              - button "Contact support" [ref=e160] [cursor=pointer]:
+                - img [ref=e161]
+                - generic [ref=e165]: Contact support
+          - link "Render Status" [ref=e167] [cursor=pointer]:
+            - /url: https://status.render.com
+            - img [ref=e168]
+            - generic [ref=e170]: Render Status
+      - generic [ref=e173]:
+        - img "Loading..." [ref=e174]
+        - generic [ref=e177]: Loading...
+  - generic:
+    - generic:
+      - generic: "0 services selected:"
+      - generic:
+        - generic:
+          - button:
+            - generic:
+              - img
+            - generic: Move
+            - img
+    - generic:
+      - separator
+      - generic:
+        - generic:
+          - button:
+            - img

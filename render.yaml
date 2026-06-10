@@ -26,11 +26,17 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: POSTHOG_API_KEY
+        sync: false
+      - key: POSTHOG_HOST
+        sync: false
       - key: ALTTEXT_AI_STRIPE_PRICE_PRO
         sync: false
       - key: ALTTEXT_AI_STRIPE_PRICE_AGENCY
         sync: false
       - key: ALTTEXT_AI_STRIPE_PRICE_CREDITS
+        sync: false
+      - key: JWT_SECRET
         sync: false
 
       # OpenAI (required)
@@ -46,6 +52,8 @@ services:
       - key: RESEND_FROM_EMAIL
         sync: false
       - key: RESEND_CONTACT_EMAIL
+        sync: false
+      - key: ADMIN_KEY
         sync: false
       - key: ALT_API_TOKEN
         sync: false
