@@ -1,5 +1,5 @@
 const express = require('express');
-const { validateLicense, activateLicense, deactivateLicense, transferLicense, getLicenseDetails } = require('../services/license');
+const { validateLicense, activateLicense, deactivateLicense, transferLicense, sanitizeLicense } = require('../services/license');
 const { setSiteQuota, getSites, deactivateSite } = require('../services/site');
 
 /**
@@ -39,7 +39,7 @@ function createLicenseRouter({ supabase }) {
         code: result.error
       });
     }
-    return res.json({ valid: true, license: result.license });
+    return res.json({ valid: true, license: sanitizeLicense(result.license) });
   });
 
   router.post('/activate', async (req, res) => {
@@ -73,7 +73,7 @@ function createLicenseRouter({ supabase }) {
     return res.json({
       success: true,
       message: 'License activated successfully',
-      license: result.license,
+      license: sanitizeLicense(result.license),
       site: result.site,
       organization,
       data: { organization, site: result.site }
@@ -84,7 +84,9 @@ function createLicenseRouter({ supabase }) {
     const { license_key, site_id } = normalizeDeactivateBody(req.body);
     const result = await deactivateLicense(supabase, { licenseKey: license_key, siteHash: site_id });
     if (result.error) {
-      return res.status(result.status || 400).json(result);
+      const safe = { ...result };
+      delete safe.license;
+      return res.status(result.status || 400).json(safe);
     }
     return res.json({ success: true, message: 'License deactivated successfully' });
   });
@@ -100,9 +102,11 @@ function createLicenseRouter({ supabase }) {
       newSiteName: new_site_name
     });
     if (result.error) {
-      return res.status(result.status || 400).json(result);
+      const safe = { ...result };
+      delete safe.license;
+      return res.status(result.status || 400).json(safe);
     }
-    return res.json({ success: true, message: 'License transferred', license: result.license, site: result.site });
+    return res.json({ success: true, message: 'License transferred', license: sanitizeLicense(result.license), site: result.site });
   });
 
   router.get('/sites', async (req, res) => {

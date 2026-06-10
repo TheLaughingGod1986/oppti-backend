@@ -14,6 +14,35 @@ function getLimits(plan = 'free') {
   return PLAN_LIMITS[plan] || PLAN_LIMITS.free;
 }
 
+// Allowlist of license fields safe to return to API clients. Everything else
+// on a licenses row (password_hash, password reset tokens, stripe ids) must
+// stay server-side — routes must serialise licenses through sanitizeLicense.
+const PUBLIC_LICENSE_FIELDS = [
+  'id',
+  'license_key',
+  'email',
+  'plan',
+  'status',
+  'max_sites',
+  'billing_anchor_date',
+  'billing_cycle',
+  'billing_day_of_month',
+  'tokens_remaining',
+  'reset_date',
+  'expires_at',
+  'created_at',
+  'updated_at'
+];
+
+function sanitizeLicense(license) {
+  if (!license) return null;
+  const safe = {};
+  for (const field of PUBLIC_LICENSE_FIELDS) {
+    if (field in license) safe[field] = license[field];
+  }
+  return safe;
+}
+
 /**
  * Fetch a license by key and ensure status is acceptable.
  */
@@ -194,5 +223,6 @@ module.exports = {
   deactivateLicense,
   transferLicense,
   getLicenseDetails,
-  getLimits
+  getLimits,
+  sanitizeLicense
 };
