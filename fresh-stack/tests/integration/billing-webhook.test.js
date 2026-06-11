@@ -40,6 +40,7 @@ function normalizeSiteSubscription(subscription = {}) {
     stripe_customer_id: null,
     stripe_subscription_id: null,
     status: 'active',
+    canceled_at: null,
     ...subscription
   };
 }
@@ -140,6 +141,7 @@ function createSupabaseMock({
               eq(column, value) {
                 const existing = findSite(column, value);
                 if (existing) Object.assign(existing, payload);
+                updates.push({ table, column, value, payload });
                 return {
                   then: (resolve, reject) => Promise.resolve({ data: null, error: null }).then(resolve, reject)
                 };
@@ -150,46 +152,97 @@ function createSupabaseMock({
       }
 
       if (table === 'site_subscriptions') {
+        const createSelectChain = (initialRows) => {
+          const state = {
+            rows: initialRows.slice()
+          };
+
+          const chain = {
+            eq(column, value) {
+              state.rows = state.rows.filter((row) => row[column] === value);
+              return chain;
+            },
+            in(column, values) {
+              state.rows = state.rows.filter((row) => values.includes(row[column]));
+              return chain;
+            },
+            order(column, { ascending = true } = {}) {
+              state.rows = state.rows.slice().sort((left, right) => {
+                if (left[column] === right[column]) return 0;
+                if (left[column] == null) return ascending ? 1 : -1;
+                if (right[column] == null) return ascending ? -1 : 1;
+                return ascending
+                  ? String(left[column]).localeCompare(String(right[column]))
+                  : String(right[column]).localeCompare(String(left[column]));
+              });
+              return chain;
+            },
+            limit(count) {
+              state.rows = state.rows.slice(0, count);
+              return Promise.resolve({ data: state.rows, error: null });
+            },
+            maybeSingle: jest.fn().mockImplementation(async () => ({
+              data: state.rows[0] || null,
+              error: null
+            })),
+            single: jest.fn().mockImplementation(async () => ({
+              data: state.rows[0] || null,
+              error: null
+            })),
+            then(resolve, reject) {
+              return Promise.resolve({ data: state.rows, error: null }).then(resolve, reject);
+            }
+          };
+
+          return chain;
+        };
+
         return {
           select() {
+            return createSelectChain(siteSubscriptionRows);
+          },
+          update(payload) {
             const state = {
-              rows: siteSubscriptionRows.slice()
+              rows: siteSubscriptionRows.slice(),
+              filters: []
             };
-
             const chain = {
               eq(column, value) {
                 state.rows = state.rows.filter((row) => row[column] === value);
+                state.filters.push({ column, value });
                 return chain;
               },
-              in(column, values) {
-                state.rows = state.rows.filter((row) => values.includes(row[column]));
-                return chain;
-              },
-              order(column, { ascending = true } = {}) {
-                state.rows = state.rows.slice().sort((left, right) => {
-                  if (left[column] === right[column]) return 0;
-                  if (left[column] == null) return ascending ? 1 : -1;
-                  if (right[column] == null) return ascending ? -1 : 1;
-                  return ascending
-                    ? String(left[column]).localeCompare(String(right[column]))
-                    : String(right[column]).localeCompare(String(left[column]));
-                });
-                return chain;
-              },
-              limit(count) {
-                state.rows = state.rows.slice(0, count);
-                return Promise.resolve({ data: state.rows, error: null });
-              },
-              maybeSingle: jest.fn().mockImplementation(async () => ({
-                data: state.rows[0] || null,
-                error: null
-              })),
-              single: jest.fn().mockImplementation(async () => ({
-                data: state.rows[0] || null,
-                error: null
-              })),
-              then(resolve, reject) {
-                return Promise.resolve({ data: state.rows, error: null }).then(resolve, reject);
+              select() {
+                return {
+                  maybeSingle: jest.fn().mockImplementation(async () => {
+                    const existing = state.rows[0] || null;
+                    updates.push({
+                      table,
+                      column: state.filters[0]?.column || null,
+                      value: state.filters[0]?.value || null,
+                      payload
+                    });
+                    if (existing) Object.assign(existing, payload);
+                    return {
+                      data: existing ? { ...existing } : null,
+                      error: null
+                    };
+                  }),
+                  single: jest.fn().mockImplementation(async () => {
+                    const existing = state.rows[0] || null;
+                    updates.push({
+                      table,
+                      column: state.filters[0]?.column || null,
+                      value: state.filters[0]?.value || null,
+                      payload
+                    });
+                    if (existing) Object.assign(existing, payload);
+                    return {
+                      data: existing ? { ...existing } : null,
+                      error: null
+                    };
+                  })
+                };
               }
             };
 
@@ -279,6 +332,7 @@ function createApp({ supabase = null, stripeClient = null, webhookSecret = 'test
       getStripe: () => stripeClient,
       webhookSecret,
       priceIds: priceIds || {
+        starter: 'price_starter',
         pro: 'price_pro',
         agency: 'price_agency',
         credits: 'price_credits'
@@ -995,6 +1049,264 @@ describe('POST /billing/webhook', () => {
     }));
 
     infoSpy.mockRestore();
+  });
+
+  test('reconciles active customer.subscription.updated events and preserves scheduled cancellation state', async () => {
+    const supabase = createSupabaseMock({
+      enableBillingRpc: true,
+      accounts: [
+        {
+          id: 'account_sub_updated',
+          email: 'sub-updated@example.com',
+          license_key: 'lic_sub_updated',
+          stripe_customer_id: 'cus_sub_updated',
+          stripe_subscription_id: 'sub_updated',
+          plan: 'pro'
+        }
+      ],
+      sites: [
+        {
+          id: 'site_sub_updated',
+          site_hash: 'site_hash_sub_updated',
+          license_key: 'lic_sub_updated'
+        }
+      ]
+    });
+
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_sub_updated',
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_updated',
+          status: 'active',
+          customer: 'cus_sub_updated',
+          livemode: false,
+          current_period_start: 1780272000,
+          current_period_end: 1782864000,
+          cancel_at_period_end: true,
+          metadata: {
+            account_id: 'account_sub_updated',
+            site_id: 'site_sub_updated',
+            license_key: 'lic_sub_updated'
+          },
+          items: {
+            data: [{
+              price: {
+                id: 'price_pro',
+                product: 'prod_pro',
+                recurring: { interval: 'month' }
+              }
+            }]
+          }
+        }
+      }
+    });
+
+    const app = createApp({ supabase });
+    const res = await sendWebhook(app, 'evt_sub_updated');
+
+    expect(res.status).toBe(200);
+    expect(supabase.rpc).toHaveBeenCalledWith('bbai_apply_site_billing_event', expect.objectContaining({
+      p_stripe_event_id: 'evt_sub_updated',
+      p_site_id: 'site_sub_updated',
+      p_plan_id: 'pro',
+      p_subscription_status: 'active',
+      p_stripe_customer_id: 'cus_sub_updated',
+      p_stripe_subscription_id: 'sub_updated'
+    }));
+    expect(supabase.siteSubscriptions[0]).toEqual(expect.objectContaining({
+      site_id: 'site_sub_updated',
+      plan_id: 'pro',
+      stripe_customer_id: 'cus_sub_updated',
+      stripe_subscription_id: 'sub_updated',
+      status: 'active',
+      cancel_at_period_end: true
+    }));
+    expect(supabase.updates).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: 'licenses',
+        payload: expect.objectContaining({ plan: 'free' })
+      })
+    ]));
+  });
+
+  test('reconciles Starter subscriptions with starter plan id', async () => {
+    const supabase = createSupabaseMock({
+      enableBillingRpc: true,
+      accounts: [
+        {
+          id: 'account_starter_sub',
+          email: 'starter-sub@example.com',
+          license_key: 'lic_starter_sub',
+          stripe_customer_id: 'cus_starter_sub',
+          stripe_subscription_id: 'sub_starter',
+          plan: 'free'
+        }
+      ],
+      sites: [
+        {
+          id: 'site_starter_sub',
+          site_hash: 'site_hash_starter_sub',
+          license_key: 'lic_starter_sub'
+        }
+      ]
+    });
+
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_starter_sub_updated',
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_starter',
+          status: 'active',
+          customer: 'cus_starter_sub',
+          livemode: false,
+          current_period_start: 1780272000,
+          current_period_end: 1782864000,
+          metadata: {
+            account_id: 'account_starter_sub',
+            site_id: 'site_starter_sub',
+            license_key: 'lic_starter_sub'
+          },
+          items: {
+            data: [{
+              price: {
+                id: 'price_starter',
+                product: 'prod_starter',
+                recurring: { interval: 'month' }
+              }
+            }]
+          }
+        }
+      }
+    });
+
+    const app = createApp({ supabase });
+    const res = await sendWebhook(app, 'evt_starter_sub_updated');
+
+    expect(res.status).toBe(200);
+    expect(supabase.rpc).toHaveBeenCalledWith('bbai_apply_site_billing_event', expect.objectContaining({
+      p_stripe_event_id: 'evt_starter_sub_updated',
+      p_site_id: 'site_starter_sub',
+      p_plan_id: 'starter',
+      p_billing_interval: 'month',
+      p_subscription_status: 'active',
+      p_stripe_customer_id: 'cus_starter_sub',
+      p_stripe_subscription_id: 'sub_starter'
+    }));
+    expect(supabase.siteSubscriptions[0]).toEqual(expect.objectContaining({
+      site_id: 'site_starter_sub',
+      plan_id: 'starter',
+      stripe_customer_id: 'cus_starter_sub',
+      stripe_subscription_id: 'sub_starter',
+      status: 'active'
+    }));
+  });
+
+  test('downgrades stale paid pointers when customer.subscription.deleted is received', async () => {
+    const supabase = createSupabaseMock({
+      accounts: [
+        {
+          id: 'account_sub_deleted',
+          email: 'sub-deleted@example.com',
+          license_key: 'lic_sub_deleted',
+          stripe_customer_id: 'cus_sub_deleted',
+          stripe_subscription_id: 'sub_deleted',
+          plan: 'pro',
+          billing_cycle: 'monthly'
+        }
+      ],
+      sites: [
+        {
+          id: 'site_sub_deleted',
+          site_hash: 'site_hash_sub_deleted',
+          license_key: 'lic_sub_deleted',
+          quota_limit: 1000,
+          status: 'active'
+        }
+      ],
+      siteSubscriptions: [
+        {
+          id: 'site_sub_row_deleted',
+          site_id: 'site_sub_deleted',
+          plan_id: 'pro',
+          stripe_customer_id: 'cus_sub_deleted',
+          stripe_subscription_id: 'sub_deleted',
+          status: 'active'
+        }
+      ]
+    });
+
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_sub_deleted',
+      type: 'customer.subscription.deleted',
+      data: {
+        object: {
+          id: 'sub_deleted',
+          status: 'canceled',
+          customer: 'cus_sub_deleted',
+          livemode: false,
+          current_period_start: 1780272000,
+          current_period_end: 1782864000,
+          canceled_at: 1780358400,
+          metadata: {
+            account_id: 'account_sub_deleted',
+            site_id: 'site_sub_deleted',
+            license_key: 'lic_sub_deleted'
+          },
+          items: {
+            data: [{
+              price: {
+                id: 'price_pro',
+                product: 'prod_pro',
+                recurring: { interval: 'month' }
+              }
+            }]
+          }
+        }
+      }
+    });
+
+    const app = createApp({ supabase });
+    const res = await sendWebhook(app, 'evt_sub_deleted');
+
+    expect(res.status).toBe(200);
+    expect(supabase.siteSubscriptions[0]).toEqual(expect.objectContaining({
+      status: 'canceled',
+      cancel_at_period_end: false,
+      canceled_at: '2026-06-02T00:00:00.000Z'
+    }));
+    expect(supabase.updates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: 'licenses',
+        column: 'id',
+        value: 'account_sub_deleted',
+        payload: {
+          plan: 'free',
+          billing_cycle: 'monthly',
+          stripe_subscription_id: null
+        }
+      }),
+      expect.objectContaining({
+        table: 'sites',
+        column: 'id',
+        value: 'site_sub_deleted',
+        payload: {
+          quota_limit: 50,
+          status: 'active'
+        }
+      }),
+      expect.objectContaining({
+        table: 'site_subscriptions',
+        column: 'stripe_subscription_id',
+        value: 'sub_deleted',
+        payload: expect.objectContaining({
+          status: 'canceled',
+          plan_id: 'pro'
+        })
+      })
+    ]));
   });
 
   test('falls back to legacy license billing when V2 site billing reconciliation fails', async () => {

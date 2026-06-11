@@ -13,6 +13,7 @@ function loadConfig() {
     supabaseServiceRoleKey: getEnv('SUPABASE_SERVICE_ROLE_KEY'),
     stripeSecretKey: getEnv('STRIPE_SECRET_KEY'),
     stripePrices: {
+      starter: getEnv('ALTTEXT_AI_STRIPE_PRICE_STARTER_MONTHLY') || getEnv('STRIPE_PRICE_STARTER_MONTHLY'),
       pro: getEnv('ALTTEXT_AI_STRIPE_PRICE_PRO'),
       agency: getEnv('ALTTEXT_AI_STRIPE_PRICE_AGENCY'),
       credits: getEnv('ALTTEXT_AI_STRIPE_PRICE_CREDITS')

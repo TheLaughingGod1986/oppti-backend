@@ -9,57 +9,61 @@ const DEFAULT_TTL_MS = Number(process.env.BILLING_PLANS_CACHE_TTL_MS || 15 * 60 
 function buildPlansList(priceIds = {}) {
   return [
     {
+      id: 'starter',
+      name: 'Starter',
+      badge: 'Best for small sites',
+      price: 4.99,
+      currency: 'gbp',
+      interval: 'month',
+      quota: 100,
+      sites: 1,
+      description: 'Get 100 monthly images for smaller WordPress sites.',
+      features: [
+        '100 monthly images',
+        'Great for small business websites',
+        'Cancel anytime'
+      ],
+      cta: 'Upgrade to Starter',
+      priceId: priceIds.starter,
+      trialDays: 0,
+      scope: 'site'
+    },
+    {
       id: 'pro',
-      name: 'Pro Plan',
-      price: 14.99,
-      currency: 'usd',
+      name: 'Growth',
+      badge: 'Best value',
+      price: 12.99,
+      currency: 'gbp',
       interval: 'month',
       quota: 1000,
       sites: 1,
+      description: 'Get 1,000 monthly images, bulk processing, and Autopilot.',
       features: [
-        '1,000 AI-generated alt texts per month',
-        'WCAG-compliant descriptions',
-        'Bulk generate for media library',
-        'Priority email support',
-        'Use on one WordPress site'
+        '1,000 monthly images',
+        'Bulk processing',
+        'Autopilot for new uploads',
+        'Cancel anytime'
       ],
+      cta: 'Upgrade to Growth',
       priceId: priceIds.pro,
       trialDays: 0,
       scope: 'site'
     },
     {
-      id: 'agency',
-      name: 'Agency Plan',
-      price: 59.99,
-      currency: 'usd',
-      interval: 'month',
-      quota: 10000,
-      sites: 'unlimited',
-      features: [
-        '10,000 AI-generated alt texts per month',
-        'WCAG 2.1 AA for all client sites',
-        'Bulk generate across multiple sites',
-        'Dedicated account manager and priority support',
-        'Use on unlimited WordPress sites'
-      ],
-      priceId: priceIds.agency,
-      trialDays: 0,
-      scope: 'shared'
-    },
-    {
       id: 'credits',
-      name: 'Credit Pack',
-      price: 11.99,
-      currency: 'usd',
+      name: 'Buy 100 extra credits',
+      badge: 'Alternative',
+      price: 9.99,
+      currency: 'gbp',
       interval: 'one-time',
       quota: 100,
       sites: 'any',
+      description: 'Need a quick top-up without a subscription?',
       features: [
-        '100 credits for alt text generation',
-        'Credits never expire',
-        'No subscription required',
-        'Use on any WordPress site'
+        '100 extra credits',
+        'No subscription required'
       ],
+      cta: 'Buy more credits',
       priceId: priceIds.credits,
       trialDays: 0,
       scope: 'site'
@@ -78,6 +82,7 @@ let cache = {
  */
 function getBillingPlansJson(priceIds = {}) {
   const key = JSON.stringify({
+    starter: priceIds.starter || null,
     pro: priceIds.pro || null,
     agency: priceIds.agency || null,
     credits: priceIds.credits || null

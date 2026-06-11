@@ -33,7 +33,7 @@ function buildApiTestApp() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
-  const priceIds = { pro: 'price_pro', agency: 'price_agency', credits: 'price_credits' };
+  const priceIds = { starter: 'price_starter', pro: 'price_pro', agency: 'price_agency', credits: 'price_credits' };
 
   app.get('/api/billing/plans', (req, res) => {
     res.json(getBillingPlansJson(priceIds));
@@ -118,8 +118,23 @@ describe('API surface (plugin contracts)', () => {
 
 describe('billingPlansCatalog', () => {
   test('getBillingPlansJson returns stable shape', () => {
-    const j = getBillingPlansJson({ pro: 'x', agency: 'y', credits: 'z' });
+    const j = getBillingPlansJson({ starter: 's', pro: 'x', agency: 'y', credits: 'z' });
     expect(j.success).toBe(true);
-    expect(j.plans[0].priceId).toBe('x');
+    expect(j.plans.map((plan) => plan.id)).toEqual(['starter', 'pro', 'credits']);
+    expect(j.plans[0]).toEqual(expect.objectContaining({
+      id: 'starter',
+      price: 4.99,
+      currency: 'gbp',
+      quota: 100,
+      priceId: 's'
+    }));
+    expect(j.plans[1]).toEqual(expect.objectContaining({
+      id: 'pro',
+      name: 'Growth',
+      price: 12.99,
+      currency: 'gbp',
+      quota: 1000,
+      priceId: 'x'
+    }));
   });
 });

@@ -165,6 +165,7 @@ function createApp({ supabase, stripeClient, license, user }) {
     supabase,
     getStripe: () => stripeClient,
     priceIds: {
+      starter: 'price_starter',
       pro: 'price_pro',
       agency: 'price_agency',
       credits: 'price_credits'
@@ -343,6 +344,73 @@ describe('POST /billing/checkout', () => {
           billing_interval: 'one_time',
           purchase_type: 'credit_top_up',
           source: 'app'
+        })
+      }
+    }), expect.objectContaining({
+      idempotencyKey: expect.stringMatching(/^checkout:/)
+    }));
+  });
+
+  test('uses the Starter Stripe price and starter plan metadata', async () => {
+    const stripeClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn().mockResolvedValue({
+            id: 'cs_starter',
+            url: 'https://stripe.test/starter'
+          })
+        }
+      }
+    };
+
+    const supabase = createSupabaseMock({
+      siteRecord: {
+        id: 'site_starter',
+        site_hash: 'site_hash_starter',
+        license_key: 'lic_starter'
+      }
+    });
+
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: {
+        id: 'account_starter',
+        email: 'starter@example.com',
+        license_key: 'lic_starter',
+        plan: 'free'
+      }
+    });
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_starter')
+      .send({
+        priceId: 'price_starter',
+        successUrl: 'https://app.example.com/success',
+        cancelUrl: 'https://app.example.com/cancel'
+      });
+
+    expect(res.status).toBe(200);
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'subscription',
+      customer_email: 'starter@example.com',
+      line_items: [{ price: 'price_starter', quantity: 1 }],
+      metadata: expect.objectContaining({
+        account_id: 'account_starter',
+        license_key: 'lic_starter',
+        site_id: 'site_starter',
+        site_hash: 'site_hash_starter',
+        plan: 'starter',
+        current_plan: 'free',
+        billing_interval: 'month',
+        purchase_type: 'new_purchase',
+        target_plan: 'starter'
+      }),
+      subscription_data: {
+        metadata: expect.objectContaining({
+          plan: 'starter',
+          billing_interval: 'month'
         })
       }
     }), expect.objectContaining({

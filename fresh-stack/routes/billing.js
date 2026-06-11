@@ -14,8 +14,9 @@ const { getBillingPlansJson, buildPlansList } = require('../services/billingPlan
 
 const ACCOUNT_SELECT = 'id, email, license_key, stripe_customer_id, stripe_subscription_id, plan, billing_cycle';
 const SITE_SELECT = 'id, site_hash, license_key, site_url, site_name, status';
-const SITE_SUBSCRIPTION_SELECT = 'id, site_id, plan_id, stripe_customer_id, stripe_subscription_id, status, billing_interval, current_period_start, current_period_end, cancel_at_period_end';
+const SITE_SUBSCRIPTION_SELECT = 'id, site_id, plan_id, stripe_customer_id, stripe_subscription_id, status, billing_interval, current_period_start, current_period_end, cancel_at_period_end, canceled_at';
 const ACTIVE_BILLING_STATUSES = ['active', 'trialing', 'past_due'];
+const INACTIVE_BILLING_STATUSES = ['canceled', 'incomplete_expired', 'unpaid'];
 const ZERO_DECIMAL_CURRENCIES = new Set([
   'bif', 'clp', 'djf', 'gnf', 'jpy', 'kmf', 'krw', 'mga', 'pyg',
   'rwf', 'ugx', 'vnd', 'vuv', 'xaf', 'xof', 'xpf'
@@ -291,6 +292,14 @@ function resolveCommercialPlan({ metadata, context, accountPlan }) {
   );
 }
 
+function resolveCheckoutBillingInterval(selectedPlan, selectedPlanId) {
+  if (selectedPlan?.interval === 'month') return 'month';
+  if (selectedPlan?.interval === 'year') return 'year';
+  if (selectedPlan?.interval === 'one-time') return 'one_time';
+  if (selectedPlanId && selectedPlanId !== 'credits') return 'month';
+  return undefined;
+}
+
 function resolveCurrentPlan({ metadata, accountPlan }) {
   return normalizePlanValue(
     extractMetadataValue(metadata, ['current_plan', 'currentPlan', 'current_plan_type', 'currentPlanType'])
@@ -311,6 +320,13 @@ function getPriceContextFromLineItem(lineItem, priceIds) {
     recurringInterval,
     plan: resolvePlanFromPriceId(priceIds, priceId)
   };
+}
+
+function getPriceContextFromSubscription(subscription, priceIds) {
+  const firstItem = Array.isArray(subscription?.items?.data)
+    ? subscription.items.data[0]
+    : null;
+  return getPriceContextFromLineItem(firstItem, priceIds);
 }
 
 function mergeCommercialContext(...contexts) {
@@ -1421,6 +1437,238 @@ async function buildInvoiceSucceededPayload({ supabase, stripeClient, invoice, p
   };
 }
 
+async function buildSubscriptionStatusPayload({ supabase, subscription, priceIds, stripeEventType }) {
+  const metadata = mergeStripeMetadata(subscription?.metadata);
+  const stripeCustomerId = normalizeStripeId(subscription?.customer);
+  const stripeSubscriptionId = normalizeStripeId(subscription);
+  const customerEmail = typeof subscription?.customer === 'object' && !subscription.customer.deleted
+    ? subscription.customer.email
+    : null;
+  const identity = await resolveIdentityContext({
+    supabase,
+    metadata,
+    email: customerEmail || extractMetadataValue(metadata, ['email']),
+    stripeCustomerId,
+    stripeSubscriptionId
+  });
+  const context = getPriceContextFromSubscription(subscription, priceIds);
+  const plan = resolveCommercialPlan({
+    metadata,
+    context,
+    accountPlan: identity.account?.plan || null
+  });
+  const billingPeriod = inferBillingPeriod({
+    paymentMode: null,
+    recurringInterval: context.recurringInterval,
+    billingCycle: identity.account?.billing_cycle || null,
+    purchaseType: 'renewal',
+    plan
+  });
+
+  logger.info('[billing] subscription webhook enrichment resolved', {
+    stripeEventType,
+    stripeSubscriptionId,
+    status: subscription?.status || null,
+    source: context.source,
+    plan,
+    priceId: context.priceId,
+    productId: context.productId
+  });
+
+  return {
+    account: identity.account,
+    site: identity.site,
+    eventProperties: {
+      source: 'stripe_webhook',
+      stripe_event_type: stripeEventType,
+      plan,
+      price_id: context.priceId,
+      product_id: context.productId,
+      stripe_customer_id: stripeCustomerId,
+      stripe_subscription_id: stripeSubscriptionId,
+      site_id: identity.siteId,
+      site_hash: identity.siteHash,
+      email: identity.email,
+      account_id: identity.account?.id || identity.accountId || null,
+      user_id: identity.userId || identity.account?.id || null,
+      license_key: identity.licenseKey,
+      license_key_present: Boolean(identity.licenseKey),
+      livemode: Boolean(subscription?.livemode),
+      billing_period: billingPeriod,
+      purchase_type: 'renewal',
+      subscription_status: subscription?.status || null,
+      cancel_at_period_end: Boolean(subscription?.cancel_at_period_end)
+    },
+    subscription: {
+      status: subscription?.status || null,
+      cancel_at_period_end: Boolean(subscription?.cancel_at_period_end),
+      current_period_start: subscription?.current_period_start
+        ? new Date(subscription.current_period_start * 1000).toISOString()
+        : null,
+      current_period_end: subscription?.current_period_end
+        ? new Date(subscription.current_period_end * 1000).toISOString()
+        : null,
+      canceled_at: subscription?.canceled_at
+        ? new Date(subscription.canceled_at * 1000).toISOString()
+        : null
+    }
+  };
+}
+
+async function syncCanceledSubscriptionPointers(supabase, { account, site, stripeSubscriptionId }) {
+  const updates = {};
+
+  if (account?.id && account.stripe_subscription_id === stripeSubscriptionId) {
+    const { error } = await supabase
+      .from('licenses')
+      .update({
+        plan: 'free',
+        billing_cycle: 'monthly',
+        stripe_subscription_id: null
+      })
+      .eq('id', account.id)
+      .select(ACCOUNT_SELECT)
+      .single();
+
+    updates.license = {
+      attempted: true,
+      success: !error,
+      error: error?.message || null
+    };
+  }
+
+  if (site?.id) {
+    const { error } = await supabase
+      .from('sites')
+      .update({
+        quota_limit: 50,
+        status: 'active'
+      })
+      .eq('id', site.id);
+
+    updates.site = {
+      attempted: true,
+      success: !error,
+      error: error?.message || null
+    };
+  }
+
+  return updates;
+}
+
+async function updateSiteSubscriptionStatus(supabase, stripeSubscriptionId, eventProperties, subscription) {
+  const status = subscription?.status || 'active';
+  const inactive = INACTIVE_BILLING_STATUSES.includes(status);
+  const updatePayload = {
+    status,
+    cancel_at_period_end: Boolean(subscription?.cancel_at_period_end),
+    current_period_start: subscription?.current_period_start || null,
+    current_period_end: subscription?.current_period_end || null
+  };
+
+  if (eventProperties?.plan) {
+    updatePayload.plan_id = eventProperties.plan;
+  }
+  if (eventProperties?.stripe_customer_id) {
+    updatePayload.stripe_customer_id = eventProperties.stripe_customer_id;
+  }
+  if (subscription?.canceled_at || inactive) {
+    updatePayload.canceled_at = subscription?.canceled_at || new Date().toISOString();
+  }
+
+  const { data, error } = await supabase
+    .from('site_subscriptions')
+    .update(updatePayload)
+    .eq('stripe_subscription_id', stripeSubscriptionId)
+    .select(SITE_SUBSCRIPTION_SELECT)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`site subscription status update failed: ${error.message}`);
+  }
+
+  return data || null;
+}
+
+async function reconcileSubscriptionStatus({
+  supabase,
+  stripeEventId,
+  account,
+  site,
+  eventProperties,
+  subscription
+}) {
+  const stripeSubscriptionId = eventProperties?.stripe_subscription_id || null;
+  const status = subscription?.status || 'active';
+  const active = ACTIVE_BILLING_STATUSES.includes(status);
+  const inactive = INACTIVE_BILLING_STATUSES.includes(status);
+  const trace = {
+    stripe_event_id: stripeEventId,
+    stripe_event_type: eventProperties?.stripe_event_type || null,
+    account_id: account?.id || null,
+    site_id: site?.id || null,
+    site_hash: site?.site_hash || eventProperties?.site_hash || null,
+    plan: eventProperties?.plan || null,
+    subscription_status: status,
+    subscriptions_written: false,
+    licenses_updated: false,
+    billing_info_source: 'site_subscriptions'
+  };
+
+  if (!supabase || !stripeSubscriptionId) {
+    trace.billing_info_source = 'unresolved';
+    return trace;
+  }
+
+  if (active && site?.id && eventProperties?.plan) {
+    const entitlementTrace = await reconcileSiteEntitlement({
+      supabase,
+      stripeEventId,
+      account,
+      site,
+      eventProperties,
+      subscriptionStatus: status,
+      currentPeriodStart: subscription.current_period_start,
+      currentPeriodEnd: subscription.current_period_end
+    });
+    const siteSubscription = await updateSiteSubscriptionStatus(
+      supabase,
+      stripeSubscriptionId,
+      eventProperties,
+      subscription
+    );
+    return {
+      ...trace,
+      ...entitlementTrace,
+      subscriptions_written: Boolean(entitlementTrace.subscriptions_written || siteSubscription),
+      subscription_status: status
+    };
+  }
+
+  let data = null;
+  try {
+    data = await updateSiteSubscriptionStatus(supabase, stripeSubscriptionId, eventProperties, subscription);
+  } catch (error) {
+    trace.billing_info_source = 'site_subscriptions_failed';
+    trace.site_subscription_update_error = error.message;
+    throw error;
+  }
+
+  trace.subscriptions_written = Boolean(data);
+
+  if (inactive) {
+    const pointerUpdates = await syncCanceledSubscriptionPointers(supabase, {
+      account,
+      site,
+      stripeSubscriptionId
+    });
+    trace.licenses_updated = Boolean(pointerUpdates.license?.success);
+    trace.canceled_pointer_updates = pointerUpdates;
+  }
+
+  return trace;
+}
+
 async function emitIdentity({ account, stripeCustomerId }) {
   if (!account?.id) {
     return;
@@ -1794,6 +2042,37 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
           logger.info('[billing] webhook_write_trace', billingTrace);
           break;
         }
+        case 'customer.subscription.updated':
+        case 'customer.subscription.deleted': {
+          const subscription = event.data?.object;
+          if (subscription) {
+            const payload = await buildSubscriptionStatusPayload({
+              supabase,
+              subscription,
+              priceIds,
+              stripeEventType: event.type
+            });
+            const entitlementTrace = await reconcileSubscriptionStatus({
+              supabase,
+              stripeEventId: event.id,
+              account: payload.account,
+              site: payload.site,
+              eventProperties: payload.eventProperties,
+              subscription: payload.subscription
+            });
+            billingTrace = {
+              ...billingTrace,
+              ...entitlementTrace,
+              account_id: payload.account?.id || null,
+              license_key_present: Boolean(payload.eventProperties.license_key),
+              license_key_prefix: maskSecret(payload.eventProperties.license_key || null),
+              site_id: payload.site?.id || null,
+              site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
+            };
+          }
+          logger.info('[billing] webhook_write_trace', billingTrace);
+          break;
+        }
         default:
           logger.debug('[billing] webhook event ignored', {
             stripeEventId: event.id,
@@ -1984,10 +2263,10 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         }
       }
 
-      // Enforce site limit for PRO: only 1 site per subscription.
+      // Enforce site limit for single-site subscription plans.
       // Existing subscriptions are handled above so repeated upgrade clicks do
       // not surface as a site-limit error.
-      if (priceId === priceIds.pro && supabase) {
+      if ((priceId === priceIds.pro || priceId === priceIds.starter) && supabase) {
         try {
           const siteLimitRecord = siteRecord ? { license_key: siteRecord.license_key } : null;
           if (siteLimitRecord?.license_key) {
@@ -1996,11 +2275,11 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
               .select('plan')
               .eq('license_key', siteLimitRecord.license_key)
               .single();
-            if (existingLicense?.plan === 'pro') {
+            if (normalizePlanValue(existingLicense?.plan) === selectedPlanId) {
               return res.status(403).json({
                 error: 'SITE_LIMIT_EXCEEDED',
-                message: 'Pro plan is limited to 1 site per subscription.',
-                plan: 'pro'
+                message: 'This subscription plan is limited to 1 site per subscription.',
+                plan: selectedPlanId
               });
             }
           }
@@ -2033,13 +2312,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         email: sanitizeStripeMetadataValue(account?.email, { lowercase: true }) || requestedAttribution.email,
         plan: selectedPlanId || undefined,
         current_plan: currentPlan || undefined,
-        billing_interval: selectedPlan?.interval === 'month'
-          ? 'month'
-          : selectedPlan?.interval === 'year'
-            ? 'year'
-            : selectedPlan?.interval === 'one-time'
-              ? 'one_time'
-              : undefined,
+        billing_interval: resolveCheckoutBillingInterval(selectedPlan, selectedPlanId),
         purchase_type: purchaseType !== 'unknown' ? purchaseType : undefined,
         trigger_feature: requestedAttribution.triggerFeature,
         trigger_location: requestedAttribution.triggerLocation,
