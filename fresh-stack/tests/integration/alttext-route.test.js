@@ -547,7 +547,7 @@ describe('POST /api/alt-text', () => {
     }));
     expect(res.body.total_limit).toBe(5);
     expect(res.body.limit).toBe(5);
-    expect(res.body.free_plan_offer).toBe(50);
+    expect(res.body.free_plan_offer).toBe(15);
     expect(supabase._state.trialUsage).toHaveLength(0);
     expect(usageService.recordUsage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       siteHash: 'site-anon-v2',

@@ -256,7 +256,7 @@ function createUsageRouter({ supabase }) {
           quota_state: quotaState,
           signup_required: false,
           upgrade_required: false,
-          free_plan_offer: 50,
+          free_plan_offer: 15,
           warning_threshold: status.warning_threshold,
           is_near_limit: status.is_near_limit
         },
@@ -271,7 +271,7 @@ function createUsageRouter({ supabase }) {
         reset_date: status.reset_date,
         signup_required: false,
         upgrade_required: false,
-        free_plan_offer: 50
+        free_plan_offer: 15
       }
     });
   });

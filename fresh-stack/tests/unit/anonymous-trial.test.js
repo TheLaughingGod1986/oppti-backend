@@ -20,7 +20,7 @@ describe('anonymous trial quota contract', () => {
       credits_remaining: 2,
       signup_required: false,
       upgrade_required: false,
-      free_plan_offer: 50,
+      free_plan_offer: 15,
       anon_id: 'anon-contract-1'
     }));
   });

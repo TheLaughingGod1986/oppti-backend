@@ -21,7 +21,7 @@ describe('license service', () => {
   });
 
   test('returns limits by plan', () => {
-    expect(getLimits('free').credits).toBe(50);
+    expect(getLimits('free').credits).toBe(15);
     expect(getLimits('pro').credits).toBe(1000);
     expect(getLimits('agency').maxSites).toBeNull();
   });

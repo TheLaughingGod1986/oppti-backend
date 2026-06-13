@@ -89,7 +89,7 @@ describe('GET /usage anonymous trial status', () => {
     expect(res.body.data.credits_used).toBe(2);
     expect(res.body.data.credits_remaining).toBe(3);
     expect(res.body.data.total_limit).toBe(5);
-    expect(res.body.data.free_plan_offer).toBe(50);
+    expect(res.body.data.free_plan_offer).toBe(15);
     expect(res.body.data.signup_required).toBe(false);
     expect(res.body.data.entitlement_state).toEqual(expect.objectContaining({
       plan: 'trial',
@@ -132,7 +132,7 @@ describe('GET /usage anonymous trial status', () => {
     expect(res.body.data.credits_remaining).toBe(0);
     expect(res.body.data.signup_required).toBe(true);
     expect(res.body.data.upgrade_required).toBe(false);
-    expect(res.body.data.free_plan_offer).toBe(50);
+    expect(res.body.data.free_plan_offer).toBe(15);
     expect(res.body.data.entitlement_state.can_generate).toBe(false);
   });
 
