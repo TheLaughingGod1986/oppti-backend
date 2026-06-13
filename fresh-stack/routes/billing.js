@@ -10,7 +10,7 @@ const {
   selectActiveSiteSubscription,
   syncLegacySitePointers
 } = require('../services/siteQuota');
-const { getBillingPlansJson, buildPlansList } = require('../services/billingPlansCatalog');
+const { getBillingPlansJson, getBillingPlansJsonLive, buildPlansList } = require('../services/billingPlansCatalog');
 
 const ACCOUNT_SELECT = 'id, email, license_key, stripe_customer_id, stripe_subscription_id, plan, billing_cycle';
 const SITE_SELECT = 'id, site_hash, license_key, site_url, site_name, status';
@@ -2101,10 +2101,10 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
 
   const plans = buildPlansList(priceIds || {});
 
-  router.get('/plans', (req, res) => {
+  router.get('/plans', async (req, res) => {
     const t0 = Date.now();
     try {
-      const payload = getBillingPlansJson(priceIds || {});
+      const payload = await getBillingPlansJsonLive(priceIds || {}, getStripe);
       res.set('Cache-Control', 'public, max-age=300');
       res.json(payload);
       logger.info('[billing] GET /plans ok', {
