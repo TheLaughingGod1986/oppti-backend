@@ -27,7 +27,7 @@ const {
   logRuntimeIdentityStartup,
   logSupabaseTargetStartup
 } = require('./services/dataIntegrityDiagnostics');
-const { getBillingPlansJson } = require('./services/billingPlansCatalog');
+const { getBillingPlansJson, getBillingPlansJsonLive } = require('./services/billingPlansCatalog');
 const rateLimitMiddleware = require('./middleware/rateLimit');
 const { authMiddleware } = require('./middleware/auth');
 const requestId = require('./middleware/requestId');
@@ -177,10 +177,10 @@ function createApp({
     });
   });
 
-  function sendPublicBillingPlans(req, res) {
+  async function sendPublicBillingPlans(req, res) {
     const t0 = Date.now();
     try {
-      const body = getBillingPlansJson(priceIds);
+      const body = await getBillingPlansJsonLive(priceIds, getStripe);
       res.set('Cache-Control', 'public, max-age=300');
       res.json(body);
       logger.info('[billing/plans] served', {
