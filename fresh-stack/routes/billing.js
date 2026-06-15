@@ -2221,9 +2221,10 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       const selectedPlanId = normalizePlanValue(selectedPlan?.id || resolvePlanFromPriceId(priceIds, priceId) || null);
       const currentPlan = normalizePlanValue(account?.plan || null);
       const mode = selectedPlan?.interval === 'one-time' ? 'payment' : 'subscription';
+      let existingSubscription = null;
       if (mode === 'subscription') {
         const existingBilling = await selectBillingSiteSubscriptionForLicense(supabase, account);
-        const existingSubscription = existingBilling.subscription;
+        existingSubscription = existingBilling.subscription;
         const existingCustomerId = existingSubscription?.stripe_customer_id || account?.stripe_customer_id || null;
         if (existingSubscription && existingCustomerId) {
           if (!stripeClient.billingPortal?.sessions?.create) {
@@ -2263,29 +2264,24 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         }
       }
 
-      // Enforce site limit for single-site subscription plans.
-      // Existing subscriptions are handled above so repeated upgrade clicks do
-      // not surface as a site-limit error.
-      if ((priceId === priceIds.pro || priceId === priceIds.starter) && supabase) {
-        try {
-          const siteLimitRecord = siteRecord ? { license_key: siteRecord.license_key } : null;
-          if (siteLimitRecord?.license_key) {
-            const { data: existingLicense } = await supabase
-              .from('licenses')
-              .select('plan')
-              .eq('license_key', siteLimitRecord.license_key)
-              .single();
-            if (normalizePlanValue(existingLicense?.plan) === selectedPlanId) {
-              return res.status(403).json({
-                error: 'SITE_LIMIT_EXCEEDED',
-                message: 'This subscription plan is limited to 1 site per subscription.',
-                plan: selectedPlanId
-              });
-            }
-          }
-        } catch (e) {
-          // fail-open
-        }
+      // Enforce the single-site subscription limit — but ONLY when there is a
+      // genuinely active subscription on the same plan. This previously keyed off
+      // the dual-written legacy `licenses.plan` column, which can drift out of
+      // sync with the real entitlement: a free account whose legacy row still
+      // read `pro` got a false 403 here, dead-ending the Pro upgrade while
+      // Starter/credits worked. `existingSubscription` comes from
+      // `site_subscriptions` filtered to active statuses, so it's the source of
+      // truth. (The active-sub-with-customer case already returned a billing
+      // portal redirect above; this only guards the rare active-sub-without-
+      // resolvable-customer edge case, preventing a duplicate subscription.)
+      if (mode === 'subscription'
+        && existingSubscription
+        && normalizePlanValue(existingSubscription.plan_id) === selectedPlanId) {
+        return res.status(403).json({
+          error: 'SITE_LIMIT_EXCEEDED',
+          message: 'This subscription plan is limited to 1 site per subscription.',
+          plan: selectedPlanId
+        });
       }
 
       const purchaseType = inferPurchaseType({
