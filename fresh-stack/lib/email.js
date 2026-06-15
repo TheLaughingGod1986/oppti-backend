@@ -5,7 +5,34 @@ let resend = null;
 
 // Initialize Resend client if API key is available
 const apiKey = process.env.RESEND_API_KEY;
+const DEFAULT_CONTACT_EMAIL = 'benoats86@gmail.com';
 const fromEmail = process.env.RESEND_FROM_EMAIL || 'noreply@alttext.ai';
+
+function firstConfiguredEmail(...values) {
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+
+    const email = String(value).split(',').map((item) => item.trim()).find(Boolean);
+    if (email) {
+      return email;
+    }
+  }
+
+  return null;
+}
+
+function getContactRecipientEmail(to) {
+  return firstConfiguredEmail(
+    to,
+    process.env.RESEND_CONTACT_EMAIL,
+    process.env.CONTACT_SUPPORT_EMAIL,
+    process.env.SUPPORT_EMAIL,
+    process.env.CONTACT_EMAIL,
+    DEFAULT_CONTACT_EMAIL
+  );
+}
 
 if (apiKey) {
   try {
@@ -156,8 +183,7 @@ async function sendContactEmail({
     };
   }
 
-  // Get recipient email from env or use default
-  const recipientEmail = to || process.env.RESEND_CONTACT_EMAIL || process.env.RESEND_FROM_EMAIL || 'support@alttext.ai';
+  const recipientEmail = getContactRecipientEmail(to);
 
   // Build metadata section
   let metadataHtml = '';
@@ -243,7 +269,8 @@ This is an automated message from the AltText AI contact form. You can reply dir
     if (error) {
       logger.error('[Email] Failed to send contact form email', { 
         to: recipientEmail,
-        from: email,
+        sender: fromEmail,
+        replyTo: email,
         error: error.message 
       });
       return {
@@ -254,19 +281,22 @@ This is an automated message from the AltText AI contact form. You can reply dir
 
     logger.info('[Email] Contact form email sent', { 
       to: recipientEmail,
-      from: email,
+      sender: fromEmail,
+      replyTo: email,
       subject,
       messageId: data?.id 
     });
 
     return {
       success: true,
-      messageId: data?.id
+      messageId: data?.id,
+      recipientEmail
     };
   } catch (error) {
     logger.error('[Email] Error sending contact form email', { 
       to: recipientEmail,
-      from: email,
+      sender: fromEmail,
+      replyTo: email,
       error: error.message 
     });
     return {
@@ -279,9 +309,9 @@ This is an automated message from the AltText AI contact form. You can reply dir
 module.exports = {
   sendPasswordResetEmail,
   sendContactEmail,
+  getContactRecipientEmail,
   isAvailable: () => !!resend
 };
-
 
 
 

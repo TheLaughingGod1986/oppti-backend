@@ -1,7 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const logger = require('../lib/logger');
-const { sendContactEmail, isAvailable: isEmailAvailable } = require('../lib/email');
+const { sendContactEmail, getContactRecipientEmail, isAvailable: isEmailAvailable } = require('../lib/email');
 
 /**
  * Create contact form router
@@ -134,11 +134,14 @@ function createContactRouter({ redis }) {
       const allowedRecipients = [
         process.env.RESEND_CONTACT_EMAIL,
         process.env.CONTACT_SUPPORT_EMAIL,
+        process.env.SUPPORT_EMAIL,
+        process.env.CONTACT_EMAIL,
         'benoats86@gmail.com'
-      ].filter(Boolean);
-      const recipient = support_recipient && allowedRecipients.includes(support_recipient)
+      ].filter(Boolean).flatMap((value) => String(value).split(',').map((item) => item.trim()).filter(Boolean));
+      const requestedRecipient = support_recipient && allowedRecipients.includes(support_recipient)
         ? support_recipient
         : undefined;
+      const recipient = getContactRecipientEmail(requestedRecipient);
 
       // Send email
       const emailResult = await sendContactEmail({
@@ -160,6 +163,7 @@ function createContactRouter({ redis }) {
       if (!emailResult.success) {
         logger.error('[Contact] Failed to send email', {
           error: emailResult.error,
+          recipient,
           siteHash: siteHash.substring(0, 8) + '...'
         });
         return res.status(500).json({
@@ -171,13 +175,19 @@ function createContactRouter({ redis }) {
       logger.info('[Contact] Contact form submitted successfully', {
         email,
         subject,
+        recipient: emailResult.recipientEmail || recipient,
+        messageId: emailResult.messageId,
         siteHash: siteHash.substring(0, 8) + '...',
         hasLicense: !!licenseKey
       });
 
       return res.status(200).json({
         success: true,
-        message: 'Your message has been sent successfully. We\'ll get back to you soon!'
+        message: 'Your message has been sent successfully. We\'ll get back to you soon!',
+        delivery: {
+          recipient: emailResult.recipientEmail || recipient,
+          message_id: emailResult.messageId || null
+        }
       });
 
     } catch (error) {
