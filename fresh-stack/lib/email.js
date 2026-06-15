@@ -8,23 +8,30 @@ const apiKey = process.env.RESEND_API_KEY;
 const DEFAULT_CONTACT_EMAIL = 'benoats86@gmail.com';
 const fromEmail = process.env.RESEND_FROM_EMAIL || 'noreply@alttext.ai';
 
-function firstConfiguredEmail(...values) {
+function configuredEmails(...values) {
+  const emails = [];
+
   for (const value of values) {
     if (!value) {
       continue;
     }
 
-    const email = String(value).split(',').map((item) => item.trim()).find(Boolean);
-    if (email) {
-      return email;
+    for (const email of String(value).split(',').map((item) => item.trim()).filter(Boolean)) {
+      if (!emails.includes(email)) {
+        emails.push(email);
+      }
     }
   }
 
-  return null;
+  return emails;
 }
 
-function getContactRecipientEmail(to) {
-  return firstConfiguredEmail(
+function firstConfiguredEmail(...values) {
+  return configuredEmails(...values)[0] || null;
+}
+
+function getContactRecipientEmails(to) {
+  const recipients = configuredEmails(
     to,
     process.env.RESEND_CONTACT_EMAIL,
     process.env.CONTACT_SUPPORT_EMAIL,
@@ -32,6 +39,16 @@ function getContactRecipientEmail(to) {
     process.env.CONTACT_EMAIL,
     DEFAULT_CONTACT_EMAIL
   );
+
+  if (!recipients.includes(DEFAULT_CONTACT_EMAIL)) {
+    recipients.push(DEFAULT_CONTACT_EMAIL);
+  }
+
+  return recipients;
+}
+
+function getContactRecipientEmail(to) {
+  return firstConfiguredEmail(...getContactRecipientEmails(to));
 }
 
 if (apiKey) {
@@ -183,7 +200,8 @@ async function sendContactEmail({
     };
   }
 
-  const recipientEmail = getContactRecipientEmail(to);
+  const recipientEmails = getContactRecipientEmails(to);
+  const recipientEmail = recipientEmails[0];
 
   // Build metadata section
   let metadataHtml = '';
@@ -219,7 +237,7 @@ async function sendContactEmail({
   try {
     const { data, error } = await resend.emails.send({
       from: fromEmail,
-      to: [recipientEmail],
+      to: recipientEmails,
       replyTo: email, // Allow replying directly to the user
       subject: `Contact Form: ${subject}`,
       html: `
@@ -268,7 +286,7 @@ This is an automated message from the AltText AI contact form. You can reply dir
 
     if (error) {
       logger.error('[Email] Failed to send contact form email', { 
-        to: recipientEmail,
+        to: recipientEmails,
         sender: fromEmail,
         replyTo: email,
         error: error.message 
@@ -281,6 +299,7 @@ This is an automated message from the AltText AI contact form. You can reply dir
 
     logger.info('[Email] Contact form email sent', { 
       to: recipientEmail,
+      recipients: recipientEmails,
       sender: fromEmail,
       replyTo: email,
       subject,
@@ -290,11 +309,12 @@ This is an automated message from the AltText AI contact form. You can reply dir
     return {
       success: true,
       messageId: data?.id,
-      recipientEmail
+      recipientEmail,
+      recipientEmails
     };
   } catch (error) {
     logger.error('[Email] Error sending contact form email', { 
-      to: recipientEmail,
+      to: recipientEmails,
       sender: fromEmail,
       replyTo: email,
       error: error.message 
@@ -310,9 +330,8 @@ module.exports = {
   sendPasswordResetEmail,
   sendContactEmail,
   getContactRecipientEmail,
+  getContactRecipientEmails,
   isAvailable: () => !!resend
 };
-
-
 
 

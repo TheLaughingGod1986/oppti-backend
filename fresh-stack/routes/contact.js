@@ -176,6 +176,7 @@ function createContactRouter({ redis }) {
         email,
         subject,
         recipient: emailResult.recipientEmail || recipient,
+        recipients: emailResult.recipientEmails || [recipient],
         messageId: emailResult.messageId,
         siteHash: siteHash.substring(0, 8) + '...',
         hasLicense: !!licenseKey
@@ -186,6 +187,7 @@ function createContactRouter({ redis }) {
         message: 'Your message has been sent successfully. We\'ll get back to you soon!',
         delivery: {
           recipient: emailResult.recipientEmail || recipient,
+          recipients: emailResult.recipientEmails || [recipient],
           message_id: emailResult.messageId || null
         }
       });
