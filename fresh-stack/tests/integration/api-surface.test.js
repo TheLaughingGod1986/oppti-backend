@@ -30,6 +30,7 @@ const {
   getBillingPlansJsonLive,
   invalidateLiveBillingPlansCache
 } = require('../../services/billingPlansCatalog');
+const { buildBillingHealth } = require('../../services/billingHealth');
 const { createReviewRouter } = require('../../routes/review');
 const rateLimitMiddleware = require('../../middleware/rateLimit');
 
@@ -194,5 +195,59 @@ describe('billingPlansCatalog', () => {
       expect(pro.available).toBe(false);
       expect(pro.priceId).toBeNull();
     });
+  });
+});
+
+describe('buildBillingHealth', () => {
+  beforeEach(() => invalidateLiveBillingPlansCache());
+
+  const priceIds = { starter: 'price_starter', pro: 'price_pro', credits: 'price_credits' };
+  const okStripe = () => ({
+    prices: {
+      retrieve: jest.fn(async (priceId) => ({
+        id: priceId, unit_amount: 999, currency: 'gbp', active: true, recurring: { interval: 'month' }
+      }))
+    }
+  });
+  const supabaseWithPlans = (ids = ['starter', 'pro']) => ({
+    from: () => ({
+      select: () => ({
+        in: async () => ({ data: ids.map((id) => ({ id })), error: null })
+      })
+    })
+  });
+
+  test('reports all green when Stripe + plans + entitlement store are healthy', async () => {
+    const health = await buildBillingHealth({ priceIds, getStripe: okStripe, supabase: supabaseWithPlans() });
+    expect(health).toEqual(expect.objectContaining({ stripe: true, starter: true, pro: true, entitlements: true }));
+    expect(typeof health.timestamp).toBe('string');
+  });
+
+  test('flags pro false when its Stripe price cannot be retrieved', async () => {
+    const stripe = () => ({
+      prices: {
+        retrieve: jest.fn(async (priceId) => {
+          if (priceId === 'price_pro') throw new Error('No such price');
+          return { id: priceId, unit_amount: 499, currency: 'gbp', active: true, recurring: { interval: 'month' } };
+        })
+      }
+    });
+    const health = await buildBillingHealth({ priceIds, getStripe: stripe, supabase: supabaseWithPlans() });
+    expect(health.pro).toBe(false);
+    expect(health.starter).toBe(true);
+    expect(health.stripe).toBe(true); // starter still resolves
+    expect(health.entitlements).toBe(true);
+  });
+
+  test('stripe false when no client configured', async () => {
+    const health = await buildBillingHealth({ priceIds, getStripe: () => null, supabase: supabaseWithPlans() });
+    expect(health.stripe).toBe(false);
+    expect(health.starter).toBe(false);
+    expect(health.pro).toBe(false);
+  });
+
+  test('entitlements false when the plans table is missing expected rows', async () => {
+    const health = await buildBillingHealth({ priceIds, getStripe: okStripe, supabase: supabaseWithPlans(['starter']) });
+    expect(health.entitlements).toBe(false);
   });
 });

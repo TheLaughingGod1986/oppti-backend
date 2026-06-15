@@ -28,6 +28,7 @@ const {
   logSupabaseTargetStartup
 } = require('./services/dataIntegrityDiagnostics');
 const { getBillingPlansJson, getBillingPlansJsonLive } = require('./services/billingPlansCatalog');
+const { buildBillingHealth } = require('./services/billingHealth');
 const rateLimitMiddleware = require('./middleware/rateLimit');
 const { authMiddleware } = require('./middleware/auth');
 const requestId = require('./middleware/requestId');
@@ -201,6 +202,25 @@ function createApp({
 
   app.get('/billing/plans', sendPublicBillingPlans);
   app.get('/api/billing/plans', sendPublicBillingPlans);
+
+  // Fast "can checkout work right now?" probe for support/diagnostics.
+  // Booleans only (no secrets) so it stays unauthenticated like /billing/plans.
+  async function sendBillingHealth(req, res) {
+    try {
+      const health = await buildBillingHealth({ priceIds, getStripe, supabase: supabaseClient });
+      res.set('Cache-Control', 'no-store');
+      res.json(health);
+    } catch (err) {
+      logger.error('[billing/health] error', { path: req.path, error: err.message });
+      res.status(500).json({
+        stripe: false, starter: false, pro: false, entitlements: false,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  app.get('/billing/health', sendBillingHealth);
+  app.get('/api/billing/health', sendBillingHealth);
 
   app.use(rateLimitMiddleware({
     redis,
