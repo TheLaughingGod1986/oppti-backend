@@ -26,7 +26,8 @@ function buildPlansList(priceIds = {}) {
       cta: 'Upgrade to Starter',
       priceId: priceIds.starter,
       trialDays: 0,
-      scope: 'site'
+      scope: 'site',
+      available: true
     },
     {
       id: 'pro',
@@ -47,7 +48,8 @@ function buildPlansList(priceIds = {}) {
       cta: 'Upgrade to Growth',
       priceId: priceIds.pro,
       trialDays: 0,
-      scope: 'site'
+      scope: 'site',
+      available: true
     },
     {
       id: 'credits',
@@ -66,7 +68,8 @@ function buildPlansList(priceIds = {}) {
       cta: 'Buy more credits',
       priceId: priceIds.credits,
       trialDays: 0,
-      scope: 'site'
+      scope: 'site',
+      available: true
     }
   ];
 }
@@ -141,7 +144,15 @@ async function getBillingPlansJsonLive(priceIds = {}, getStripe) {
 
   try {
     await Promise.all(plans.map(async (plan) => {
-      if (!plan.priceId) return;
+      if (!plan.priceId) {
+        // No price configured for this plan — it can't be checked out.
+        plan.available = false;
+        plan.priceId = null;
+        logger.error('[billingPlansCatalog] plan has no configured priceId — marked unavailable', {
+          plan: plan.id
+        });
+        return;
+      }
       try {
         const price = await stripe.prices.retrieve(plan.priceId);
         if (typeof price.unit_amount === 'number') {
@@ -152,10 +163,28 @@ async function getBillingPlansJsonLive(priceIds = {}, getStripe) {
         }
         plan.interval = price.recurring?.interval || 'one-time';
         plan.trialDays = price.recurring?.trial_period_days || 0;
+
+        // An archived price retrieves fine but is rejected at checkout. Don't
+        // advertise it — surface the misconfiguration instead of a dead CTA.
+        if (price.active === false) {
+          plan.available = false;
+          plan.priceId = null;
+          logger.error('[billingPlansCatalog] configured price is archived (inactive) — plan marked unavailable', {
+            plan: plan.id,
+            priceId: price.id
+          });
+        }
       } catch (priceErr) {
-        logger.warn('[billingPlansCatalog] price fetch failed, using static value', {
+        // The price can't be retrieved at all (wrong Stripe mode, deleted, or a
+        // typo'd id). Advertising it would produce a "Get Pro" button that 404s
+        // at checkout.sessions.create — so drop the priceId and mark the plan
+        // unavailable so the failure is obvious, not silent.
+        const failedPriceId = plan.priceId;
+        plan.available = false;
+        plan.priceId = null;
+        logger.error('[billingPlansCatalog] price retrieve failed — plan marked unavailable', {
           plan: plan.id,
-          priceId: plan.priceId,
+          priceId: failedPriceId,
           error: priceErr.message
         });
       }

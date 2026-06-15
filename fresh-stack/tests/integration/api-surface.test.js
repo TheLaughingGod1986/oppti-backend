@@ -25,7 +25,11 @@ jest.mock('../../middleware/auth', () => ({
   extractUserInfo: () => ({})
 }));
 
-const { getBillingPlansJson } = require('../../services/billingPlansCatalog');
+const {
+  getBillingPlansJson,
+  getBillingPlansJsonLive,
+  invalidateLiveBillingPlansCache
+} = require('../../services/billingPlansCatalog');
 const { createReviewRouter } = require('../../routes/review');
 const rateLimitMiddleware = require('../../middleware/rateLimit');
 
@@ -136,5 +140,59 @@ describe('billingPlansCatalog', () => {
       quota: 1000,
       priceId: 'x'
     }));
+  });
+
+  describe('getBillingPlansJsonLive — never advertise an unusable price', () => {
+    beforeEach(() => invalidateLiveBillingPlansCache());
+
+    const findPlan = (payload, id) => payload.plans.find((p) => p.id === id);
+
+    test('a price that cannot be retrieved drops its priceId and is marked unavailable', async () => {
+      const stripe = {
+        prices: {
+          retrieve: jest.fn(async (priceId) => {
+            if (priceId === 'price_pro_bad') {
+              throw new Error('No such price: price_pro_bad');
+            }
+            return { id: priceId, unit_amount: 499, currency: 'gbp', active: true, recurring: { interval: 'month' } };
+          })
+        }
+      };
+      const payload = await getBillingPlansJsonLive(
+        { starter: 'price_starter_ok', pro: 'price_pro_bad', credits: 'price_credits_ok' },
+        () => stripe
+      );
+
+      const pro = findPlan(payload, 'pro');
+      expect(pro.available).toBe(false);
+      expect(pro.priceId).toBeNull();
+
+      // Working plans are untouched and still checkout-able.
+      const starter = findPlan(payload, 'starter');
+      expect(starter.available).toBe(true);
+      expect(starter.priceId).toBe('price_starter_ok');
+    });
+
+    test('an archived (inactive) price is also marked unavailable', async () => {
+      const stripe = {
+        prices: {
+          retrieve: jest.fn(async (priceId) => ({
+            id: priceId,
+            unit_amount: 1299,
+            currency: 'gbp',
+            active: priceId !== 'price_pro_archived',
+            recurring: { interval: 'month' }
+          }))
+        }
+      };
+      const payload = await getBillingPlansJsonLive(
+        { starter: 'price_starter_ok', pro: 'price_pro_archived', credits: 'price_credits_ok' },
+        () => stripe
+      );
+
+      const pro = findPlan(payload, 'pro');
+      expect(pro.available).toBe(false);
+      expect(pro.priceId).toBeNull();
+    });
   });
 });
