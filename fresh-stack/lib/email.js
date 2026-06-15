@@ -32,17 +32,13 @@ function firstConfiguredEmail(...values) {
 
 function getContactRecipientEmails(to) {
   const recipients = configuredEmails(
+    DEFAULT_CONTACT_EMAIL,
     to,
     process.env.RESEND_CONTACT_EMAIL,
     process.env.CONTACT_SUPPORT_EMAIL,
     process.env.SUPPORT_EMAIL,
-    process.env.CONTACT_EMAIL,
-    DEFAULT_CONTACT_EMAIL
+    process.env.CONTACT_EMAIL
   );
-
-  if (!recipients.includes(DEFAULT_CONTACT_EMAIL)) {
-    recipients.push(DEFAULT_CONTACT_EMAIL);
-  }
 
   return recipients;
 }
@@ -333,5 +329,4 @@ module.exports = {
   getContactRecipientEmails,
   isAvailable: () => !!resend
 };
-
 
