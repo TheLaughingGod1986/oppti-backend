@@ -418,6 +418,80 @@ describe('POST /billing/checkout', () => {
     }));
   });
 
+  test('does not block Pro checkout on a stale legacy licenses.plan when there is no active subscription', async () => {
+    // Regression: the site-limit guard used to read the dual-written legacy
+    // `licenses.plan`. A free account whose legacy row still read `pro` got a
+    // false 403, dead-ending the Pro upgrade. With no active subscription it
+    // must proceed to checkout.
+    const stripeClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn().mockResolvedValue({ id: 'cs_pro', url: 'https://stripe.test/pro' })
+        }
+      }
+    };
+
+    const supabase = createSupabaseMock({
+      siteRecord: { id: 'site_stale', site_hash: 'site_hash_stale', license_key: 'lic_stale' },
+      siteSubscriptions: [], // no active subscription
+      licenses: [{ license_key: 'lic_stale', plan: 'pro' }] // stale legacy plan
+    });
+
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: { id: 'account_stale', email: 'stale@example.com', license_key: 'lic_stale', plan: 'free' }
+    });
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_stale')
+      .send({ priceId: 'price_pro', successUrl: 'https://app.example.com/s', cancelUrl: 'https://app.example.com/c' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({ success: true, url: 'https://stripe.test/pro' }));
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'subscription', line_items: [{ price: 'price_pro', quantity: 1 }] }),
+      expect.objectContaining({ idempotencyKey: expect.stringMatching(/^checkout:/) })
+    );
+  });
+
+  test('still blocks a duplicate subscription when an active same-plan subscription exists without a resolvable customer', async () => {
+    const stripeClient = {
+      checkout: { sessions: { create: jest.fn() } },
+      billingPortal: { sessions: { create: jest.fn() } }
+    };
+
+    const supabase = createSupabaseMock({
+      siteRecord: { id: 'site_active', site_hash: 'site_hash_active', license_key: 'lic_active' },
+      siteSubscriptions: [{
+        id: 'site_sub_active',
+        site_id: 'site_active',
+        plan_id: 'pro',
+        stripe_customer_id: null, // not resolvable -> portal redirect above is skipped
+        stripe_subscription_id: 'sub_active',
+        status: 'active',
+        billing_interval: 'month',
+        current_period_end: '2026-07-01T00:00:00.000Z'
+      }]
+    });
+
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: { id: 'account_active', email: 'active@example.com', license_key: 'lic_active', plan: 'pro' }
+    });
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_active')
+      .send({ priceId: 'price_pro', successUrl: 'https://app.example.com/s', cancelUrl: 'https://app.example.com/c' });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual(expect.objectContaining({ error: 'SITE_LIMIT_EXCEEDED', plan: 'pro' }));
+    expect(stripeClient.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
   test('redirects active subscription customers to the billing portal instead of creating checkout', async () => {
     const stripeClient = {
       checkout: {
