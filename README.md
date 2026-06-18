@@ -48,6 +48,10 @@ STRIPE_WEBHOOK_SECRET=whsec_...
 POSTHOG_API_KEY=phc_...
 POSTHOG_HOST=https://us.i.posthog.com
 
+# Loops (Required for lifecycle and transactional email)
+LOOPS_API_KEY=your_loops_api_key
+LOOPS_TIMEOUT_MS=5000
+
 # Admin (Recommended if using /admin endpoints)
 ADMIN_KEY=generate-a-separate-admin-key
 

@@ -10,8 +10,13 @@ jest.mock('../../lib/posthog', () => ({
   identifyServerUser: jest.fn().mockResolvedValue({ ok: true, status: 200 })
 }));
 
+jest.mock('../../../src/services/loops', () => ({
+  trackPlanUpgraded: jest.fn().mockResolvedValue(null)
+}));
+
 const { verifyWebhookSignature } = require('../../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../../lib/posthog');
+const { trackPlanUpgraded } = require('../../../src/services/loops');
 const logger = require('../../lib/logger');
 const { createBillingWebhookHandler } = require('../../routes/billing');
 
@@ -483,6 +488,48 @@ describe('POST /billing/webhook', () => {
         plan: 'free'
       }
     });
+    expect(trackPlanUpgraded).not.toHaveBeenCalled();
+  });
+
+  test('does not resend the purchase email for subscription renewal invoices', async () => {
+    const supabase = createSupabaseMock({
+      accounts: [
+        {
+          id: 'account_renewal',
+          email: 'renewal@example.com',
+          license_key: 'lic_renewal',
+          stripe_customer_id: 'cus_renewal',
+          stripe_subscription_id: 'sub_renewal',
+          plan: 'pro'
+        }
+      ]
+    });
+
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_invoice_renewal',
+      type: 'invoice.payment_succeeded',
+      data: {
+        object: {
+          id: 'in_renewal',
+          amount_paid: 1499,
+          currency: 'usd',
+          customer: 'cus_renewal',
+          subscription: 'sub_renewal',
+          billing_reason: 'subscription_cycle',
+          livemode: true,
+          metadata: {},
+          lines: {
+            data: [{ price: { id: 'price_pro', product: 'prod_pro', recurring: { interval: 'month' } } }]
+          }
+        }
+      }
+    });
+
+    const app = createApp({ supabase });
+    const res = await sendWebhook(app, 'evt_invoice_renewal');
+
+    expect(res.status).toBe(200);
+    expect(trackPlanUpgraded).not.toHaveBeenCalled();
   });
 
   test('uses metadata license_key as fallback distinct id before site and Stripe ids when no account is resolved', async () => {
@@ -863,6 +910,15 @@ describe('POST /billing/webhook', () => {
         license_key: 'lic_456',
         plan: 'free'
       }
+    });
+    expect(trackPlanUpgraded).toHaveBeenCalledWith({
+      email: 'subscriber@example.com',
+      planName: 'pro',
+      purchaseType: 'new_purchase',
+      billingPeriod: 'monthly',
+      amount: 14.99,
+      currency: 'usd',
+      stripeEventId: 'evt_invoice_paid'
     });
   });
 
