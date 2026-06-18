@@ -5,7 +5,7 @@ const LOOPS_BASE = 'https://app.loops.so/api/v1';
 const PLUGIN_USERS_LIST_ID = 'cmn7g83oddsuu0izg27ia6tgv';
 const LOOPS_TIMEOUT_MS = Number(process.env.LOOPS_TIMEOUT_MS || 5000);
 
-async function loopsRequest(method, path, body) {
+async function loopsRequest(method, path, body, { idempotencyKey = null } = {}) {
   if (!LOOPS_API_KEY) {
     logger.info('[signup] Loops request skipped', {
       path,
@@ -19,12 +19,17 @@ async function loopsRequest(method, path, body) {
   const timeout = setTimeout(() => controller.abort(), LOOPS_TIMEOUT_MS);
 
   try {
+    const headers = {
+      'Authorization': `Bearer ${LOOPS_API_KEY}`,
+      'Content-Type': 'application/json',
+    };
+    if (idempotencyKey) {
+      headers['Idempotency-Key'] = String(idempotencyKey).slice(0, 100);
+    }
+
     const res = await fetch(`${LOOPS_BASE}${path}`, {
       method,
-      headers: {
-        'Authorization': `Bearer ${LOOPS_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
+      headers,
       signal: controller.signal,
       body: JSON.stringify(body),
     });
@@ -84,9 +89,28 @@ async function trackCreditsExhausted({ email, imagesUnprocessed }) {
   await loopsPost('/events/send', { email, eventName: 'credits_exhausted', imagesUnprocessed, plan: 'free' });
 }
 
-async function trackPlanUpgraded({ email, planName }) {
+async function trackPlanUpgraded({
+  email,
+  planName,
+  purchaseType = 'new_purchase',
+  billingPeriod = 'unknown',
+  amount = null,
+  currency = null,
+  stripeEventId = null
+}) {
   await loopsRequest('PUT', '/contacts/update', { email, plan: planName });
-  await loopsPost('/events/send', { email, eventName: 'plan_upgraded', plan: planName });
+  await loopsRequest('POST', '/events/send', {
+    email,
+    eventName: 'plan_upgraded',
+    eventProperties: {
+      plan: planName,
+      purchaseType,
+      billingPeriod,
+      amount,
+      currency,
+      stripeEventId
+    }
+  }, { idempotencyKey: stripeEventId });
 }
 
 module.exports = { trackAccountCreated, trackGenerationMilestone, trackCreditsExhausted, trackPlanUpgraded };

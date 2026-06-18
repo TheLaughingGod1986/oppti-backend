@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { verifyWebhookSignature } = require('../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../lib/posthog');
+const { trackPlanUpgraded } = require('../../src/services/loops');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const {
   reconcileBillingEntitlement,
@@ -1891,6 +1892,39 @@ async function emitPaymentSucceeded({
   });
 }
 
+async function emitLoopsPurchaseSucceeded({ stripeEventId, eventProperties }) {
+  const purchaseType = eventProperties?.purchase_type || 'unknown';
+  const shouldNotify = ['new_purchase', 'upgrade'].includes(purchaseType);
+  const email = eventProperties?.email || null;
+  const plan = eventProperties?.plan || null;
+
+  if (!shouldNotify || !email || !plan || ['free', 'credits'].includes(plan)) {
+    logger.info('[billing] Loops purchase event skipped', {
+      stripeEventId,
+      purchaseType,
+      emailPresent: Boolean(email),
+      plan
+    });
+    return;
+  }
+
+  await trackPlanUpgraded({
+    email,
+    planName: plan,
+    purchaseType,
+    billingPeriod: eventProperties.billing_period || 'unknown',
+    amount: eventProperties.amount ?? null,
+    currency: eventProperties.currency || null,
+    stripeEventId
+  });
+
+  logger.info('[billing] Loops purchase event succeeded', {
+    stripeEventId,
+    purchaseType,
+    plan
+  });
+}
+
 function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webhookSecret = process.env.STRIPE_WEBHOOK_SECRET }) {
   return async function billingWebhookHandler(req, res) {
     const signature = req.header('stripe-signature');
@@ -1972,6 +2006,10 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               account: payload.account,
               eventProperties: payload.eventProperties
             });
+            await emitLoopsPurchaseSucceeded({
+              stripeEventId: event.id,
+              eventProperties: payload.eventProperties
+            });
           } else if (session?.mode === 'subscription') {
             const payload = await buildCheckoutSucceededPayload({
               supabase,
@@ -2036,6 +2074,10 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               distinctId: payload.distinctId,
               distinctIdSource: payload.distinctIdSource,
               account: payload.account,
+              eventProperties: payload.eventProperties
+            });
+            await emitLoopsPurchaseSucceeded({
+              stripeEventId: event.id,
               eventProperties: payload.eventProperties
             });
           }
