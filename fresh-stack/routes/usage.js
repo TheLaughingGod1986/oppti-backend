@@ -258,7 +258,9 @@ function createUsageRouter({ supabase }) {
           upgrade_required: false,
           free_plan_offer: 15,
           warning_threshold: status.warning_threshold,
-          is_near_limit: status.is_near_limit
+          is_near_limit: status.is_near_limit,
+          // Per-plugin attribution of the shared wallet for this cycle.
+          usage_by_feature: status.usage_by_feature || {}
         },
         auth_state: 'authenticated',
         quota_type: quotaType,
@@ -269,6 +271,9 @@ function createUsageRouter({ supabase }) {
         total_limit: status.total_limit,
         plan_type: status.plan_type,
         reset_date: status.reset_date,
+        // Per-plugin attribution of the shared wallet (sums to credits_used).
+        // Reusable by every BeepBeep plugin's "Credit usage" card.
+        usage_by_feature: status.usage_by_feature || {},
         signup_required: false,
         upgrade_required: false,
         free_plan_offer: 15
