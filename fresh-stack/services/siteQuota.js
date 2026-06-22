@@ -378,6 +378,52 @@ function logCreditsAudit(message, details = {}, level = 'info') {
   logger[level](`[bbai-credits] ${message}`, details);
 }
 
+/**
+ * Attribute the shared wallet's spend to the BeepBeep plugin that consumed it,
+ * for the current billing cycle. Reads the `usage_logs` ledger (one row per
+ * generation, tagged with `feature_type`) over the same window and scope the
+ * quota total is computed from, and sums credits per feature.
+ *
+ * Returns a plain map like `{ alt_text: 10, title_meta: 5 }` that sums to the
+ * cycle's credits_used. Never throws — on any error it yields `{}`, so callers
+ * fall back to showing the combined total. This is the single source of truth
+ * every BeepBeep plugin reads, so attribution stays consistent across them.
+ *
+ * @returns {Promise<Record<string, number>>}
+ */
+async function aggregateUsageByFeature(supabase, { site, licenseKey, periodStart, periodEnd } = {}) {
+  if (!periodStart || !periodEnd || !(site?.site_hash || licenseKey)) {
+    return {};
+  }
+
+  try {
+    let query = supabase
+      .from('usage_logs')
+      .select('feature_type, credits_used')
+      .gte('created_at', periodStart)
+      .lt('created_at', periodEnd);
+
+    query = site?.site_hash
+      ? query.eq('site_hash', site.site_hash)
+      : query.eq('license_key', licenseKey);
+
+    const { data, error } = await query;
+    if (error || !Array.isArray(data)) {
+      return {};
+    }
+
+    const usage = {};
+    for (const row of data) {
+      const feature = row?.feature_type || 'alt_text';
+      usage[feature] = (usage[feature] || 0) + toCreditAuditNumber(row?.credits_used, 1);
+    }
+    return usage;
+  } catch (err) {
+    logCreditsAudit('usage_by_feature_failed', { error: err?.message || String(err) }, 'warn');
+    return {};
+  }
+}
+
 function buildRowsFoundAuditPayload(details = {}, error = null) {
   const rowsFound = toCreditAuditNumber(details.rows_found, 0);
   const payload = {
@@ -2047,6 +2093,13 @@ async function getSiteQuotaStatus(supabase, {
   const creditsUsed = effectiveRead.used;
   const creditsRemaining = effectiveRead.remaining;
 
+  const usageByFeature = await aggregateUsageByFeature(supabase, {
+    site,
+    licenseKey: licenseKey || site.license_key || legacyAccount?.license_key || null,
+    periodStart: quotaWindow.quotaPeriodStart,
+    periodEnd: quotaWindow.quotaPeriodEnd
+  });
+
   return {
     error: null,
     site,
@@ -2063,6 +2116,9 @@ async function getSiteQuotaStatus(supabase, {
     credits_remaining: creditsRemaining,
     total_limit: totalLimit,
     reset_date: quotaWindow.quotaPeriodEnd,
+    // Per-plugin attribution of credits_used for this cycle, summing to the
+    // total. Reusable by every BeepBeep plugin that reads the shared wallet.
+    usage_by_feature: usageByFeature,
     warning_threshold: 0.9,
     is_near_limit: totalLimit > 0 ? creditsUsed / totalLimit >= 0.9 : false,
     site_quota: {

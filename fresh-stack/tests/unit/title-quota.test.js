@@ -137,6 +137,45 @@ describe('getTitleQuotaStatus', () => {
     expect(status.error).toBe('SITE_NOT_FOUND');
     expect(status.status).toBe(404);
   });
+
+  test('exposes per-plugin usage attribution from the shared wallet', async () => {
+    getSiteQuotaStatus.mockResolvedValue({
+      error: null,
+      site: SITE,
+      plan_type: 'free',
+      credits_used: 15,
+      credits_remaining: 0,
+      total_limit: 15,
+      reset_date: '2026-07-01T00:00:00.000Z',
+      usage_by_feature: { title_meta: 5, alt_text: 10 }
+    });
+
+    const status = await getTitleQuotaStatus({ rpc: jest.fn() }, {
+      licenseKey: 'lic-test',
+      siteIdentity: { siteHash: 'hash-abc' }
+    });
+
+    expect(status.usage_by_feature).toEqual({ title_meta: 5, alt_text: 10 });
+  });
+
+  test('defaults usage attribution to an empty object when absent', async () => {
+    getSiteQuotaStatus.mockResolvedValue({
+      error: null,
+      site: SITE,
+      plan_type: 'free',
+      credits_used: 0,
+      credits_remaining: 50,
+      total_limit: 50,
+      reset_date: '2026-07-01T00:00:00.000Z'
+    });
+
+    const status = await getTitleQuotaStatus({ rpc: jest.fn() }, {
+      licenseKey: 'lic-test',
+      siteIdentity: { siteHash: 'hash-abc' }
+    });
+
+    expect(status.usage_by_feature).toEqual({});
+  });
 });
 
 describe('buildTitleRequestFingerprint', () => {
