@@ -108,6 +108,9 @@ async function getTitleQuotaStatus(supabase, {
     daily_remaining: null,
     plan: status.plan_type || 'free',
     reset_date: status.reset_date || null,
+    // Per-plugin attribution of the shared wallet for this cycle (sums to
+    // credits_used). The plugin's Settings "Credit usage" card renders this.
+    usage_by_feature: status.usage_by_feature || {},
     source: 'site_quotas_shared'
   };
 }
