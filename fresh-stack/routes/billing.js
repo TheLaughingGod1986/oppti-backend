@@ -177,14 +177,18 @@ function checkCheckoutRateLimit(req, { siteKey, priceId, selectedPlanId }) {
   };
 }
 
-function buildCheckoutIdempotencyKey({ licenseKey, siteId, priceId, billingCycle }) {
+function buildCheckoutIdempotencyKey({ licenseKey, siteId, priceId, billingCycle, attemptId }) {
   const stablePayload = [
     licenseKey || 'anonymous',
     siteId || 'unknown-site',
     priceId || 'unknown-price',
     billingCycle || 'unknown-cycle'
-  ].join(':');
-  return `checkout:${crypto.createHash('sha256').update(stablePayload).digest('hex')}`;
+  ];
+  if (attemptId) {
+    stablePayload.push(attemptId);
+  }
+  const payload = stablePayload.join(':');
+  return `checkout:${crypto.createHash('sha256').update(payload).digest('hex')}`;
 }
 
 function mergeStripeMetadata(...metadataSources) {
@@ -2461,7 +2465,8 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         licenseKey: metadata.license_key,
         siteId: metadata.site_id,
         priceId,
-        billingCycle: metadata.billing_interval
+        billingCycle: metadata.billing_interval,
+        attemptId: mode === 'payment' && selectedPlanId === 'credits' ? crypto.randomUUID() : null
       });
       const session = await stripeClient.checkout.sessions.create(checkoutPayload, { idempotencyKey });
       res.json({ success: true, url: session.url, sessionId: session.id });

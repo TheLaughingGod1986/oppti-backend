@@ -351,6 +351,67 @@ describe('POST /billing/checkout', () => {
     }));
   });
 
+  test('creates a fresh Stripe Checkout Session for repeated one-time credit clicks', async () => {
+    const stripeClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn()
+            .mockResolvedValueOnce({
+              id: 'cs_payment_first',
+              url: 'https://stripe.test/payment-first'
+            })
+            .mockResolvedValueOnce({
+              id: 'cs_payment_second',
+              url: 'https://stripe.test/payment-second'
+            })
+        }
+      }
+    };
+
+    const supabase = createSupabaseMock({
+      siteRecord: {
+        id: 'site_credits_fresh',
+        site_hash: 'site_hash_credits_fresh',
+        license_key: 'lic_credits_fresh'
+      }
+    });
+
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: {
+        id: 'account_credits_fresh',
+        email: 'credits-fresh@example.com',
+        license_key: 'lic_credits_fresh',
+        plan: 'pro'
+      }
+    });
+
+    const first = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_credits_fresh')
+      .set('X-Forwarded-For', '203.0.113.21')
+      .send({ priceId: 'price_credits' });
+
+    const second = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_credits_fresh')
+      .set('X-Forwarded-For', '203.0.113.21')
+      .send({ priceId: 'price_credits' });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.body.url).toBe('https://stripe.test/payment-first');
+    expect(second.body.url).toBe('https://stripe.test/payment-second');
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledTimes(2);
+
+    const firstOptions = stripeClient.checkout.sessions.create.mock.calls[0][1];
+    const secondOptions = stripeClient.checkout.sessions.create.mock.calls[1][1];
+    expect(firstOptions.idempotencyKey).toMatch(/^checkout:/);
+    expect(secondOptions.idempotencyKey).toMatch(/^checkout:/);
+    expect(firstOptions.idempotencyKey).not.toBe(secondOptions.idempotencyKey);
+  });
+
   test('rate limits repeated one-time credit checkout attempts before Stripe session creation', async () => {
     const stripeClient = {
       checkout: {
