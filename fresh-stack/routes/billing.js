@@ -30,6 +30,8 @@ const PURCHASE_TYPES = new Set([
   'unknown'
 ]);
 const STRIPE_METADATA_MAX_LENGTH = 500;
+const CHECKOUT_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const checkoutRateBuckets = new Map();
 
 function normalizeStripeId(value) {
   if (typeof value === 'string' && value) return value;
@@ -117,6 +119,62 @@ function maskSecret(value) {
   if (!value) return null;
   const stringValue = String(value);
   return stringValue.length <= 8 ? '[redacted]' : `${stringValue.slice(0, 8)}...`;
+}
+
+function getClientIp(req) {
+  return req.ip
+    || req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+    || req.connection?.remoteAddress
+    || 'unknown-ip';
+}
+
+function getCheckoutRateLimit(selectedPlanId) {
+  const defaultLimit = selectedPlanId === 'credits' ? 3 : 6;
+  const configured = Number(
+    selectedPlanId === 'credits'
+      ? process.env.CHECKOUT_CREDITS_RATE_LIMIT_PER_15_MIN
+      : process.env.CHECKOUT_RATE_LIMIT_PER_15_MIN
+  );
+  return Number.isFinite(configured) && configured > 0 ? configured : defaultLimit;
+}
+
+function pruneCheckoutRateBuckets(now = Date.now()) {
+  for (const [key, hits] of checkoutRateBuckets.entries()) {
+    const recent = hits.filter((timestamp) => now - timestamp < CHECKOUT_RATE_LIMIT_WINDOW_MS);
+    if (recent.length) {
+      checkoutRateBuckets.set(key, recent);
+    } else {
+      checkoutRateBuckets.delete(key);
+    }
+  }
+}
+
+function checkCheckoutRateLimit(req, { siteKey, priceId, selectedPlanId }) {
+  const now = Date.now();
+  pruneCheckoutRateBuckets(now);
+
+  const limit = getCheckoutRateLimit(selectedPlanId);
+  const ip = getClientIp(req);
+  const account = req.license || req.user || null;
+  const accountKey = account?.id || account?.license_key || 'no-account';
+  const bucketKey = [
+    'checkout',
+    selectedPlanId || 'unknown-plan',
+    priceId || 'unknown-price',
+    siteKey || 'unknown-site',
+    accountKey,
+    ip
+  ].join(':');
+  const hits = checkoutRateBuckets.get(bucketKey) || [];
+  hits.push(now);
+  checkoutRateBuckets.set(bucketKey, hits);
+
+  return {
+    allowed: hits.length <= limit,
+    count: hits.length,
+    limit,
+    retryAfterSeconds: Math.ceil(CHECKOUT_RATE_LIMIT_WINDOW_MS / 1000)
+  };
 }
 
 function buildCheckoutIdempotencyKey({ licenseKey, siteId, priceId, billingCycle }) {
@@ -2263,6 +2321,23 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       const selectedPlanId = normalizePlanValue(selectedPlan?.id || resolvePlanFromPriceId(priceIds, priceId) || null);
       const currentPlan = normalizePlanValue(account?.plan || null);
       const mode = selectedPlan?.interval === 'one-time' ? 'payment' : 'subscription';
+      const checkoutRateLimit = checkCheckoutRateLimit(req, { siteKey, priceId, selectedPlanId });
+      if (!checkoutRateLimit.allowed) {
+        logger.warn('[billing] checkout rate limit exceeded', {
+          siteKey,
+          selectedPlanId,
+          account_id: account?.id || null,
+          licenseKeyPrefix: maskSecret(account?.license_key || null),
+          count: checkoutRateLimit.count,
+          limit: checkoutRateLimit.limit
+        });
+        return res.status(429).json({
+          error: 'CHECKOUT_RATE_LIMIT_EXCEEDED',
+          code: 'CHECKOUT_RATE_LIMIT_EXCEEDED',
+          message: 'Too many checkout attempts. Please wait a few minutes before trying again.',
+          retry_after: checkoutRateLimit.retryAfterSeconds
+        });
+      }
       let existingSubscription = null;
       if (mode === 'subscription') {
         const existingBilling = await selectBillingSiteSubscriptionForLicense(supabase, account);

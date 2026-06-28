@@ -351,6 +351,61 @@ describe('POST /billing/checkout', () => {
     }));
   });
 
+  test('rate limits repeated one-time credit checkout attempts before Stripe session creation', async () => {
+    const stripeClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn().mockResolvedValue({
+            id: 'cs_payment_limited',
+            url: 'https://stripe.test/payment-limited'
+          })
+        }
+      }
+    };
+
+    const supabase = createSupabaseMock({
+      siteRecord: {
+        id: 'site_credits_limited',
+        site_hash: 'site_hash_credits_limited',
+        license_key: 'lic_credits_limited'
+      }
+    });
+
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: {
+        id: 'account_credits_limited',
+        email: 'credits-limited@example.com',
+        license_key: 'lic_credits_limited',
+        plan: 'pro'
+      }
+    });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const res = await request(app)
+        .post('/billing/checkout')
+        .set('X-Site-Key', 'site_hash_credits_limited')
+        .set('X-Forwarded-For', '203.0.113.10')
+        .send({ priceId: 'price_credits' });
+
+      expect(res.status).toBe(200);
+    }
+
+    const limited = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_credits_limited')
+      .set('X-Forwarded-For', '203.0.113.10')
+      .send({ priceId: 'price_credits' });
+
+    expect(limited.status).toBe(429);
+    expect(limited.body).toEqual(expect.objectContaining({
+      code: 'CHECKOUT_RATE_LIMIT_EXCEEDED',
+      retry_after: 900
+    }));
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledTimes(3);
+  });
+
   test('uses the Starter Stripe price and starter plan metadata', async () => {
     const stripeClient = {
       checkout: {
