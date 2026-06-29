@@ -352,8 +352,17 @@ async function sendImageSeoAuditEmail({
   const pagesScanned = Number(summary?.pagesScanned || 0);
   const imagesScanned = Number(summary?.imagesScanned || 0);
   const missingAltPercent = Number(summary?.missingAltPercent || 0);
+  const weakAltCount = Number(summary?.weakAltCount || 0);
+  const scoreBand = summary?.scoreBand || 'Review needed';
+  const topIssues = Array.isArray(summary?.topIssues) ? summary.topIssues.slice(0, 3) : [];
   const domain = normalizedDomain || siteUrl;
   const pluginUrl = process.env.WP_ALT_TEXT_PLUGIN_URL || 'https://wordpress.org/plugins/beepbeep-ai-alt-text-generator/';
+  const topIssuesHtml = topIssues.length
+    ? `<ul style="margin: 10px 0 0; padding-left: 20px;">${topIssues.map((item) => `<li>${escapeHtml(item.issue)}: ${Number(item.count || 0)} image${Number(item.count || 0) === 1 ? '' : 's'}</li>`).join('')}</ul>`
+    : '<p style="margin: 10px 0 0;">No major issue pattern was found in the crawled sample.</p>';
+  const topIssuesText = topIssues.length
+    ? topIssues.map((item) => `- ${item.issue}: ${Number(item.count || 0)} image${Number(item.count || 0) === 1 ? '' : 's'}`).join('\n')
+    : '- No major issue pattern was found in the crawled sample.';
 
   try {
     const { data, error } = await resend.emails.send({
@@ -376,12 +385,16 @@ async function sendImageSeoAuditEmail({
             <p style="margin-top: 0;">Hi,</p>
             <p>Your public-page image SEO audit for <strong>${escapeHtml(domain)}</strong> is attached as a PDF.</p>
             <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 18px; margin: 22px 0;">
-              <p style="margin: 0 0 8px;"><strong>Overall score:</strong> ${score}/100</p>
+              <p style="margin: 0 0 8px;"><strong>Overall score:</strong> ${score}/100 (${escapeHtml(scoreBand)})</p>
               <p style="margin: 0 0 8px;"><strong>Pages scanned:</strong> ${pagesScanned}</p>
               <p style="margin: 0 0 8px;"><strong>Images found:</strong> ${imagesScanned}</p>
-              <p style="margin: 0;"><strong>Missing alt text:</strong> ${missingAltPercent}%</p>
+              <p style="margin: 0 0 8px;"><strong>Missing alt text:</strong> ${missingAltPercent}%</p>
+              <p style="margin: 0;"><strong>Weak or review-needed alt text:</strong> ${weakAltCount} images</p>
             </div>
-            <p>The report focuses on public pages we could crawl. For a deeper WordPress media-library cleanup, install the BeepBeep AI Alt Text plugin.</p>
+            <p style="margin-bottom: 6px;"><strong>Top issue patterns from the crawl:</strong></p>
+            ${topIssuesHtml}
+            <p>The attached report now includes a page-priority list, grouped image examples so repeated icons do not dominate the audit, and a short action plan for fixing the highest-impact items first.</p>
+            <p>For a deeper WordPress media-library cleanup, install the BeepBeep AI Alt Text plugin and scan the source uploads directly.</p>
             <p style="margin: 28px 0;">
               <a href="${pluginUrl}" style="display: inline-block; background: #7B5CFF; color: white; padding: 12px 18px; border-radius: 8px; text-decoration: none; font-weight: 700;">Get the WordPress plugin</a>
             </p>
@@ -396,12 +409,16 @@ Your Image SEO Audit is ready
 
 Your public-page image SEO audit for ${domain} is attached as a PDF.
 
-Overall score: ${score}/100
+Overall score: ${score}/100 (${scoreBand})
 Pages scanned: ${pagesScanned}
 Images found: ${imagesScanned}
 Missing alt text: ${missingAltPercent}%
+Weak or review-needed alt text: ${weakAltCount} images
 
-The report focuses on public pages we could crawl. For a deeper WordPress media-library cleanup, install the BeepBeep AI Alt Text plugin:
+Top issue patterns:
+${topIssuesText}
+
+The attached report includes a page-priority list, grouped image examples, and a short action plan. For a deeper WordPress media-library cleanup, install the BeepBeep AI Alt Text plugin:
 ${pluginUrl}
 
 Thanks,
