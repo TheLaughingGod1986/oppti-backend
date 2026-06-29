@@ -92,6 +92,7 @@ describe('Loops lifecycle events', () => {
             failureCode: 'card_declined',
             declineCode: 'insufficient_funds',
             recoverability: 'recoverable',
+            lastPaymentFailureRecoverability: 'recoverable',
             paymentIntentId: 'pi_failed_123',
             chargeId: 'ch_failed_123',
             paymentLinkId: 'plink_credits',
@@ -145,5 +146,62 @@ describe('Loops lifecycle events', () => {
         })
       })
     );
+  });
+
+  test('sends first generation success for activation workflows', async () => {
+    const { trackGenerationMilestone } = require('../../../src/services/loops');
+
+    await trackGenerationMilestone({
+      email: 'user@example.com',
+      generationsCount: 1,
+      imagesUnprocessed: 12
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenLastCalledWith(
+      'https://app.loops.so/api/v1/events/send',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer loops_test_key'
+        }),
+        body: expect.stringContaining('"eventName":"generation_completed"')
+      })
+    );
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
+      email: 'user@example.com',
+      eventName: 'generation_completed',
+      eventProperties: {
+        generationsCount: 1,
+        imagesUnprocessed: 12,
+        lastGenerationAt: expect.any(String)
+      }
+    });
+  });
+
+  test('keeps generation milestone sends and skips non-milestones after activation', async () => {
+    const { trackGenerationMilestone } = require('../../../src/services/loops');
+
+    await trackGenerationMilestone({
+      email: 'user@example.com',
+      generationsCount: 3,
+      imagesUnprocessed: 9
+    });
+    await trackGenerationMilestone({
+      email: 'user@example.com',
+      generationsCount: 5,
+      imagesUnprocessed: 7
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
+      email: 'user@example.com',
+      eventName: 'generation_completed',
+      eventProperties: {
+        generationsCount: 5,
+        imagesUnprocessed: 7,
+        lastGenerationAt: expect.any(String)
+      }
+    });
   });
 });

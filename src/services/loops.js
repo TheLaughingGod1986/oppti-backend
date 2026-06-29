@@ -75,18 +75,40 @@ async function trackAccountCreated({ email, firstName, isWooCommerce, imagesUnpr
     await loopsRequest('PUT', '/contacts/update', { email, mailingLists });
   }
   await loopsPost('/events/send', {
-    email, eventName: 'account_created', plan: 'free', generationsCount: 0,
-    imagesUnprocessed: imagesUnprocessed || 0, woocommerce: isWooCommerce || false,
+    email,
+    eventName: 'account_created',
+    eventProperties: {
+      plan: 'free',
+      generationsCount: 0,
+      imagesUnprocessed: imagesUnprocessed || 0,
+      woocommerce: isWooCommerce || false
+    }
   });
 }
 
 async function trackGenerationMilestone({ email, generationsCount, imagesUnprocessed }) {
-  if (generationsCount % 5 !== 0) return;
-  await loopsPost('/events/send', { email, eventName: 'generation_completed', generationsCount, imagesUnprocessed, lastGenerationAt: new Date().toISOString() });
+  const count = Number(generationsCount) || 0;
+  if (count !== 1 && count % 5 !== 0) return;
+  await loopsPost('/events/send', {
+    email,
+    eventName: 'generation_completed',
+    eventProperties: {
+      generationsCount: count,
+      imagesUnprocessed,
+      lastGenerationAt: new Date().toISOString()
+    }
+  });
 }
 
 async function trackCreditsExhausted({ email, imagesUnprocessed }) {
-  await loopsPost('/events/send', { email, eventName: 'credits_exhausted', imagesUnprocessed, plan: 'free' });
+  await loopsPost('/events/send', {
+    email,
+    eventName: 'credits_exhausted',
+    eventProperties: {
+      imagesUnprocessed,
+      plan: 'free'
+    }
+  });
 }
 
 async function trackPlanUpgraded({
@@ -145,6 +167,7 @@ async function trackPaymentFailed({
       failureCode,
       declineCode,
       recoverability,
+      lastPaymentFailureRecoverability: recoverability,
       paymentIntentId,
       chargeId,
       paymentLinkId,
