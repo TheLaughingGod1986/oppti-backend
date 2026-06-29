@@ -322,11 +322,133 @@ This is an automated message from the AltText AI contact form. You can reply dir
   }
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/**
+ * Send the free image SEO audit PDF report.
+ */
+async function sendImageSeoAuditEmail({
+  to,
+  siteUrl,
+  normalizedDomain,
+  summary,
+  pdfBuffer
+}) {
+  if (!resend) {
+    return {
+      success: false,
+      error: 'Email service not configured (RESEND_API_KEY not set)'
+    };
+  }
+
+  const score = Number(summary?.score || 0);
+  const pagesScanned = Number(summary?.pagesScanned || 0);
+  const imagesScanned = Number(summary?.imagesScanned || 0);
+  const missingAltPercent = Number(summary?.missingAltPercent || 0);
+  const domain = normalizedDomain || siteUrl;
+  const pluginUrl = process.env.WP_ALT_TEXT_PLUGIN_URL || 'https://wordpress.org/plugins/beepbeep-ai-alt-text-generator/';
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from: fromEmail,
+      to: [to],
+      subject: `Your Image SEO Audit report for ${domain}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Your Image SEO Audit</title>
+        </head>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #1f2937; max-width: 640px; margin: 0 auto; padding: 24px;">
+          <div style="background: #111827; padding: 28px; border-radius: 10px 10px 0 0;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">Your Image SEO Audit is ready</h1>
+          </div>
+          <div style="background: #f9fafb; padding: 28px; border-radius: 0 0 10px 10px;">
+            <p style="margin-top: 0;">Hi,</p>
+            <p>Your public-page image SEO audit for <strong>${escapeHtml(domain)}</strong> is attached as a PDF.</p>
+            <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 18px; margin: 22px 0;">
+              <p style="margin: 0 0 8px;"><strong>Overall score:</strong> ${score}/100</p>
+              <p style="margin: 0 0 8px;"><strong>Pages scanned:</strong> ${pagesScanned}</p>
+              <p style="margin: 0 0 8px;"><strong>Images found:</strong> ${imagesScanned}</p>
+              <p style="margin: 0;"><strong>Missing alt text:</strong> ${missingAltPercent}%</p>
+            </div>
+            <p>The report focuses on public pages we could crawl. For a deeper WordPress media-library cleanup, install the BeepBeep AI Alt Text plugin.</p>
+            <p style="margin: 28px 0;">
+              <a href="${pluginUrl}" style="display: inline-block; background: #7B5CFF; color: white; padding: 12px 18px; border-radius: 8px; text-decoration: none; font-weight: 700;">Get the WordPress plugin</a>
+            </p>
+            <p style="font-size: 14px; color: #6b7280;">You can reply to this email if you want help interpreting the report.</p>
+            <p>Thanks,<br>Ben</p>
+          </div>
+        </body>
+        </html>
+      `,
+      text: `
+Your Image SEO Audit is ready
+
+Your public-page image SEO audit for ${domain} is attached as a PDF.
+
+Overall score: ${score}/100
+Pages scanned: ${pagesScanned}
+Images found: ${imagesScanned}
+Missing alt text: ${missingAltPercent}%
+
+The report focuses on public pages we could crawl. For a deeper WordPress media-library cleanup, install the BeepBeep AI Alt Text plugin:
+${pluginUrl}
+
+Thanks,
+Ben
+      `.trim(),
+      attachments: [
+        {
+          filename: `image-seo-audit-${String(domain).replace(/[^a-z0-9.-]+/gi, '-').slice(0, 80)}.pdf`,
+          content: pdfBuffer
+        }
+      ]
+    });
+
+    if (error) {
+      logger.error('[Email] Failed to send image SEO audit email', {
+        to,
+        domain,
+        error: error.message
+      });
+      return { success: false, error: error.message };
+    }
+
+    logger.info('[Email] Image SEO audit email sent', {
+      to,
+      domain,
+      messageId: data?.id
+    });
+
+    return {
+      success: true,
+      messageId: data?.id
+    };
+  } catch (error) {
+    logger.error('[Email] Error sending image SEO audit email', {
+      to,
+      domain,
+      error: error.message
+    });
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   sendPasswordResetEmail,
   sendContactEmail,
+  sendImageSeoAuditEmail,
   getContactRecipientEmail,
   getContactRecipientEmails,
   isAvailable: () => !!resend
 };
-

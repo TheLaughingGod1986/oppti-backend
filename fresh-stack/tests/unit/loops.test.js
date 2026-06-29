@@ -204,4 +204,64 @@ describe('Loops lifecycle events', () => {
       }
     });
   });
+
+  test('sends image SEO audit completion as lead contact properties and event properties', async () => {
+    const { trackImageSeoAuditCompleted } = require('../../../src/services/loops');
+
+    await trackImageSeoAuditCompleted({
+      email: 'lead@example.com',
+      websiteUrl: 'https://example.com/',
+      normalizedDomain: 'example.com',
+      auditId: 'audit_123',
+      auditScore: 72,
+      pagesScanned: 12,
+      imagesScanned: 80,
+      missingAltPercent: 34
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'https://app.loops.so/api/v1/contacts/create',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer loops_test_key'
+        }),
+        body: JSON.stringify({
+          email: 'lead@example.com',
+          firstName: '',
+          userGroup: 'audit_lead',
+          source: 'image_seo_audit',
+          websiteUrl: 'https://example.com/',
+          normalizedDomain: 'example.com',
+          subscribed: true,
+          auditScore: 72,
+          pagesScanned: 12,
+          imagesScanned: 80,
+          missingAltPercent: 34
+        })
+      })
+    );
+    expect(global.fetch).toHaveBeenLastCalledWith(
+      'https://app.loops.so/api/v1/events/send',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          email: 'lead@example.com',
+          eventName: 'image_seo_audit_completed',
+          eventProperties: {
+            auditId: 'audit_123',
+            websiteUrl: 'https://example.com/',
+            normalizedDomain: 'example.com',
+            auditScore: 72,
+            pagesScanned: 12,
+            imagesScanned: 80,
+            missingAltPercent: 34,
+            source: 'image_seo_audit'
+          }
+        })
+      })
+    );
+  });
 });

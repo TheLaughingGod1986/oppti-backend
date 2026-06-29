@@ -213,11 +213,127 @@ async function trackPaymentSucceeded({
   }, { idempotencyKey: stripeEventId });
 }
 
+async function trackImageSeoAuditRequested({
+  email,
+  websiteUrl,
+  normalizedDomain,
+  auditId,
+  source = 'image_seo_audit'
+}) {
+  await upsertAuditLeadContact({ email, websiteUrl, normalizedDomain, source });
+  await loopsPost('/events/send', {
+    email,
+    eventName: 'image_seo_audit_requested',
+    eventProperties: {
+      auditId,
+      websiteUrl,
+      normalizedDomain,
+      source
+    }
+  });
+}
+
+async function trackImageSeoAuditCompleted({
+  email,
+  websiteUrl,
+  normalizedDomain,
+  auditId,
+  auditScore,
+  pagesScanned,
+  imagesScanned,
+  missingAltPercent,
+  source = 'image_seo_audit'
+}) {
+  await upsertAuditLeadContact({
+    email,
+    websiteUrl,
+    normalizedDomain,
+    source,
+    auditScore,
+    pagesScanned,
+    imagesScanned,
+    missingAltPercent
+  });
+  await loopsPost('/events/send', {
+    email,
+    eventName: 'image_seo_audit_completed',
+    eventProperties: {
+      auditId,
+      websiteUrl,
+      normalizedDomain,
+      auditScore,
+      pagesScanned,
+      imagesScanned,
+      missingAltPercent,
+      source
+    }
+  });
+}
+
+async function trackImageSeoAuditFailed({
+  email,
+  websiteUrl,
+  normalizedDomain,
+  auditId,
+  errorCode,
+  source = 'image_seo_audit'
+}) {
+  await upsertAuditLeadContact({ email, websiteUrl, normalizedDomain, source });
+  await loopsPost('/events/send', {
+    email,
+    eventName: 'image_seo_audit_failed',
+    eventProperties: {
+      auditId,
+      websiteUrl,
+      normalizedDomain,
+      errorCode,
+      source
+    }
+  });
+}
+
+async function upsertAuditLeadContact({
+  email,
+  websiteUrl,
+  normalizedDomain,
+  source,
+  auditScore = null,
+  pagesScanned = null,
+  imagesScanned = null,
+  missingAltPercent = null
+}) {
+  const body = {
+    email,
+    firstName: '',
+    userGroup: 'audit_lead',
+    source,
+    websiteUrl,
+    normalizedDomain,
+    subscribed: true
+  };
+  if (auditScore !== null) body.auditScore = auditScore;
+  if (pagesScanned !== null) body.pagesScanned = pagesScanned;
+  if (imagesScanned !== null) body.imagesScanned = imagesScanned;
+  if (missingAltPercent !== null) body.missingAltPercent = missingAltPercent;
+
+  try {
+    await loopsRequest('POST', '/contacts/create', body);
+  } catch (error) {
+    if (error.status !== 409) {
+      throw error;
+    }
+    await loopsRequest('PUT', '/contacts/update', body);
+  }
+}
+
 module.exports = {
   trackAccountCreated,
   trackGenerationMilestone,
   trackCreditsExhausted,
   trackPlanUpgraded,
   trackPaymentFailed,
-  trackPaymentSucceeded
+  trackPaymentSucceeded,
+  trackImageSeoAuditRequested,
+  trackImageSeoAuditCompleted,
+  trackImageSeoAuditFailed
 };

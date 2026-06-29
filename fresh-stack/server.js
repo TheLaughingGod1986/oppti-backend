@@ -21,6 +21,7 @@ const { createLicenseRouter } = require('./routes/license');
 const { createDashboardRouter } = require('./routes/dashboard');
 const { createAdminRouter } = require('./routes/admin');
 const { createContactRouter } = require('./routes/contact');
+const { createImageSeoAuditRouter } = require('./routes/imageSeoAudit');
 const { inspectV2Schema, logV2SchemaStartupStatus } = require('./services/v2Diagnostics');
 const {
   getRuntimeIdentity,
@@ -239,6 +240,7 @@ function createApp({
   }));
 
   app.use('/api/contact', createContactRouter({ redis }));
+  app.use('/api/image-seo-audit', createImageSeoAuditRouter({ supabase: supabaseClient }));
 
   app.use((req, res, next) => {
     if (req.path === '/api/billing/webhook') {
