@@ -154,10 +154,47 @@ async function trackPaymentFailed({
   }, { idempotencyKey: stripeEventId });
 }
 
+async function trackPaymentSucceeded({
+  email,
+  planName = null,
+  purchaseType = 'unknown',
+  billingPeriod = 'unknown',
+  amount = null,
+  currency = null,
+  checkoutSessionId = null,
+  invoiceId = null,
+  paymentLinkId = null,
+  stripeEventId = null
+}) {
+  const succeededAt = new Date().toISOString();
+  await loopsRequest('PUT', '/contacts/update', {
+    email,
+    lastSuccessfulPaymentAt: succeededAt,
+    lastSuccessfulPaymentPlan: planName || '',
+    lastPaymentFailureRecoverability: ''
+  });
+  await loopsRequest('POST', '/events/send', {
+    email,
+    eventName: 'payment_succeeded',
+    eventProperties: {
+      plan: planName,
+      purchaseType,
+      billingPeriod,
+      amount,
+      currency,
+      checkoutSessionId,
+      invoiceId,
+      paymentLinkId,
+      stripeEventId
+    }
+  }, { idempotencyKey: stripeEventId });
+}
+
 module.exports = {
   trackAccountCreated,
   trackGenerationMilestone,
   trackCreditsExhausted,
   trackPlanUpgraded,
-  trackPaymentFailed
+  trackPaymentFailed,
+  trackPaymentSucceeded
 };

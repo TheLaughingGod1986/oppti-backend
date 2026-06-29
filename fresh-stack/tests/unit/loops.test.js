@@ -102,4 +102,48 @@ describe('Loops lifecycle events', () => {
       })
     );
   });
+
+  test('sends payment successes as idempotent event properties', async () => {
+    const { trackPaymentSucceeded } = require('../../../src/services/loops');
+
+    await trackPaymentSucceeded({
+      email: 'buyer@example.com',
+      planName: 'credits',
+      purchaseType: 'credit_top_up',
+      billingPeriod: 'one_time',
+      amount: 9.99,
+      currency: 'gbp',
+      checkoutSessionId: 'cs_paid_123',
+      invoiceId: null,
+      paymentLinkId: 'plink_credits',
+      stripeEventId: 'evt_paid_123'
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(global.fetch).toHaveBeenLastCalledWith(
+      'https://app.loops.so/api/v1/events/send',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer loops_test_key',
+          'Idempotency-Key': 'evt_paid_123'
+        }),
+        body: JSON.stringify({
+          email: 'buyer@example.com',
+          eventName: 'payment_succeeded',
+          eventProperties: {
+            plan: 'credits',
+            purchaseType: 'credit_top_up',
+            billingPeriod: 'one_time',
+            amount: 9.99,
+            currency: 'gbp',
+            checkoutSessionId: 'cs_paid_123',
+            invoiceId: null,
+            paymentLinkId: 'plink_credits',
+            stripeEventId: 'evt_paid_123'
+          }
+        })
+      })
+    );
+  });
 });

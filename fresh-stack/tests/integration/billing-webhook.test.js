@@ -12,12 +12,17 @@ jest.mock('../../lib/posthog', () => ({
 
 jest.mock('../../../src/services/loops', () => ({
   trackPaymentFailed: jest.fn().mockResolvedValue(null),
+  trackPaymentSucceeded: jest.fn().mockResolvedValue(null),
   trackPlanUpgraded: jest.fn().mockResolvedValue(null)
 }));
 
 const { verifyWebhookSignature } = require('../../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../../lib/posthog');
-const { trackPaymentFailed, trackPlanUpgraded } = require('../../../src/services/loops');
+const {
+  trackPaymentFailed,
+  trackPaymentSucceeded,
+  trackPlanUpgraded
+} = require('../../../src/services/loops');
 const logger = require('../../lib/logger');
 const { createBillingWebhookHandler } = require('../../routes/billing');
 
@@ -488,6 +493,18 @@ describe('POST /billing/webhook', () => {
         license_key: 'lic_123',
         plan: 'free'
       }
+    });
+    expect(trackPaymentSucceeded).toHaveBeenCalledWith({
+      email: 'buyer@example.com',
+      planName: 'credits',
+      purchaseType: 'credit_top_up',
+      billingPeriod: 'one_time',
+      amount: 19.99,
+      currency: 'gbp',
+      checkoutSessionId: 'cs_test_123',
+      invoiceId: null,
+      paymentLinkId: 'plink_123',
+      stripeEventId: 'evt_checkout_paid'
     });
     expect(trackPlanUpgraded).not.toHaveBeenCalled();
   });
@@ -1001,6 +1018,18 @@ describe('POST /billing/webhook', () => {
         license_key: 'lic_456',
         plan: 'free'
       }
+    });
+    expect(trackPaymentSucceeded).toHaveBeenCalledWith({
+      email: 'subscriber@example.com',
+      planName: 'pro',
+      purchaseType: 'new_purchase',
+      billingPeriod: 'monthly',
+      amount: 14.99,
+      currency: 'usd',
+      checkoutSessionId: null,
+      invoiceId: 'in_123',
+      paymentLinkId: null,
+      stripeEventId: 'evt_invoice_paid'
     });
     expect(trackPlanUpgraded).toHaveBeenCalledWith({
       email: 'subscriber@example.com',

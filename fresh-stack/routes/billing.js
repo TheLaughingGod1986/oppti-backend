@@ -3,7 +3,11 @@ const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { verifyWebhookSignature } = require('../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../lib/posthog');
-const { trackPaymentFailed, trackPlanUpgraded } = require('../../src/services/loops');
+const {
+  trackPaymentFailed,
+  trackPaymentSucceeded,
+  trackPlanUpgraded
+} = require('../../src/services/loops');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const {
   reconcileBillingEntitlement,
@@ -2062,6 +2066,37 @@ async function emitLoopsPurchaseSucceeded({ stripeEventId, eventProperties }) {
   });
 }
 
+async function emitLoopsPaymentSucceeded({ stripeEventId, eventProperties }) {
+  const email = eventProperties?.email || null;
+  if (!email) {
+    logger.info('[billing] Loops payment succeeded event skipped', {
+      stripeEventId,
+      emailPresent: false,
+      plan: eventProperties?.plan || null
+    });
+    return;
+  }
+
+  await trackPaymentSucceeded({
+    email,
+    planName: eventProperties.plan || null,
+    purchaseType: eventProperties.purchase_type || 'unknown',
+    billingPeriod: eventProperties.billing_period || 'unknown',
+    amount: eventProperties.amount ?? null,
+    currency: eventProperties.currency || null,
+    checkoutSessionId: eventProperties.checkout_session_id || null,
+    invoiceId: eventProperties.invoice_id || null,
+    paymentLinkId: eventProperties.payment_link_id || null,
+    stripeEventId
+  });
+
+  logger.info('[billing] Loops payment succeeded event sent', {
+    stripeEventId,
+    plan: eventProperties.plan || null,
+    purchaseType: eventProperties.purchase_type || 'unknown'
+  });
+}
+
 function buildPaymentFailedEventProperties(paymentIntent = {}) {
   const charge = getExpandedLatestCharge(paymentIntent);
   const metadata = mergeStripeMetadata(paymentIntent.metadata, charge?.metadata);
@@ -2225,6 +2260,10 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               account: payload.account,
               eventProperties: payload.eventProperties
             });
+            await emitLoopsPaymentSucceeded({
+              stripeEventId: event.id,
+              eventProperties: payload.eventProperties
+            });
             await emitLoopsPurchaseSucceeded({
               stripeEventId: event.id,
               eventProperties: payload.eventProperties
@@ -2293,6 +2332,10 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               distinctId: payload.distinctId,
               distinctIdSource: payload.distinctIdSource,
               account: payload.account,
+              eventProperties: payload.eventProperties
+            });
+            await emitLoopsPaymentSucceeded({
+              stripeEventId: event.id,
               eventProperties: payload.eventProperties
             });
             await emitLoopsPurchaseSucceeded({
