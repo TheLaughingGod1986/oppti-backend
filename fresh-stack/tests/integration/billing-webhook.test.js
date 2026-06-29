@@ -11,12 +11,13 @@ jest.mock('../../lib/posthog', () => ({
 }));
 
 jest.mock('../../../src/services/loops', () => ({
+  trackPaymentFailed: jest.fn().mockResolvedValue(null),
   trackPlanUpgraded: jest.fn().mockResolvedValue(null)
 }));
 
 const { verifyWebhookSignature } = require('../../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../../lib/posthog');
-const { trackPlanUpgraded } = require('../../../src/services/loops');
+const { trackPaymentFailed, trackPlanUpgraded } = require('../../../src/services/loops');
 const logger = require('../../lib/logger');
 const { createBillingWebhookHandler } = require('../../routes/billing');
 
@@ -529,6 +530,96 @@ describe('POST /billing/webhook', () => {
     const res = await sendWebhook(app, 'evt_invoice_renewal');
 
     expect(res.status).toBe(200);
+    expect(trackPlanUpgraded).not.toHaveBeenCalled();
+  });
+
+  test('sends recoverable payment failures to Loops', async () => {
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_payment_failed_recoverable',
+      type: 'payment_intent.payment_failed',
+      data: {
+        object: {
+          id: 'pi_failed_recoverable',
+          amount: 999,
+          currency: 'gbp',
+          customer: 'cus_failed',
+          livemode: true,
+          latest_charge: {
+            id: 'ch_failed_recoverable',
+            billing_details: {
+              email: 'Buyer@Example.com'
+            }
+          },
+          metadata: {
+            plan: 'credits',
+            checkout_session_id: 'cs_failed_recoverable',
+            payment_link_id: 'plink_credits'
+          },
+          last_payment_error: {
+            code: 'card_declined',
+            decline_code: 'insufficient_funds',
+            payment_method: {
+              billing_details: {
+                email: 'Buyer@Example.com'
+              }
+            }
+          }
+        }
+      }
+    });
+
+    const app = createApp();
+    const res = await sendWebhook(app, 'evt_payment_failed_recoverable');
+
+    expect(res.status).toBe(200);
+    expect(trackPaymentFailed).toHaveBeenCalledWith({
+      email: 'buyer@example.com',
+      planName: 'credits',
+      amount: 9.99,
+      currency: 'gbp',
+      failureCode: 'card_declined',
+      declineCode: 'insufficient_funds',
+      recoverability: 'recoverable',
+      paymentIntentId: 'pi_failed_recoverable',
+      chargeId: 'ch_failed_recoverable',
+      paymentLinkId: 'plink_credits',
+      checkoutSessionId: 'cs_failed_recoverable',
+      stripeEventId: 'evt_payment_failed_recoverable'
+    });
+    expect(trackPlanUpgraded).not.toHaveBeenCalled();
+  });
+
+  test('suppresses incorrect-number payment failures from the Loops funnel', async () => {
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_payment_failed_incorrect_number',
+      type: 'payment_intent.payment_failed',
+      data: {
+        object: {
+          id: 'pi_failed_incorrect_number',
+          amount: 999,
+          currency: 'gbp',
+          livemode: true,
+          latest_charge: 'ch_failed_incorrect_number',
+          metadata: {
+            plan: 'credits'
+          },
+          last_payment_error: {
+            code: 'incorrect_number',
+            payment_method: {
+              billing_details: {
+                email: 'attempt@example.com'
+              }
+            }
+          }
+        }
+      }
+    });
+
+    const app = createApp();
+    const res = await sendWebhook(app, 'evt_payment_failed_incorrect_number');
+
+    expect(res.status).toBe(200);
+    expect(trackPaymentFailed).not.toHaveBeenCalled();
     expect(trackPlanUpgraded).not.toHaveBeenCalled();
   });
 

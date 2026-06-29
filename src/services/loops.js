@@ -113,4 +113,51 @@ async function trackPlanUpgraded({
   }, { idempotencyKey: stripeEventId });
 }
 
-module.exports = { trackAccountCreated, trackGenerationMilestone, trackCreditsExhausted, trackPlanUpgraded };
+async function trackPaymentFailed({
+  email,
+  planName = null,
+  amount = null,
+  currency = null,
+  failureCode = null,
+  declineCode = null,
+  recoverability = 'recoverable',
+  paymentIntentId = null,
+  chargeId = null,
+  paymentLinkId = null,
+  checkoutSessionId = null,
+  stripeEventId = null
+}) {
+  const failedAt = new Date().toISOString();
+  await loopsRequest('PUT', '/contacts/update', {
+    email,
+    lastPaymentFailureAt: failedAt,
+    lastPaymentFailurePlan: planName || '',
+    lastPaymentFailureCode: failureCode || declineCode || '',
+    lastPaymentFailureRecoverability: recoverability
+  });
+  await loopsRequest('POST', '/events/send', {
+    email,
+    eventName: 'payment_failed',
+    eventProperties: {
+      plan: planName,
+      amount,
+      currency,
+      failureCode,
+      declineCode,
+      recoverability,
+      paymentIntentId,
+      chargeId,
+      paymentLinkId,
+      checkoutSessionId,
+      stripeEventId
+    }
+  }, { idempotencyKey: stripeEventId });
+}
+
+module.exports = {
+  trackAccountCreated,
+  trackGenerationMilestone,
+  trackCreditsExhausted,
+  trackPlanUpgraded,
+  trackPaymentFailed
+};

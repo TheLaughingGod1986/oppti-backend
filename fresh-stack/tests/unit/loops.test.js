@@ -54,4 +54,52 @@ describe('Loops lifecycle events', () => {
       })
     );
   });
+
+  test('sends payment failures as idempotent event properties', async () => {
+    const { trackPaymentFailed } = require('../../../src/services/loops');
+
+    await trackPaymentFailed({
+      email: 'buyer@example.com',
+      planName: 'credits',
+      amount: 9.99,
+      currency: 'gbp',
+      failureCode: 'card_declined',
+      declineCode: 'insufficient_funds',
+      recoverability: 'recoverable',
+      paymentIntentId: 'pi_failed_123',
+      chargeId: 'ch_failed_123',
+      paymentLinkId: 'plink_credits',
+      checkoutSessionId: 'cs_failed_123',
+      stripeEventId: 'evt_failed_123'
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(global.fetch).toHaveBeenLastCalledWith(
+      'https://app.loops.so/api/v1/events/send',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer loops_test_key',
+          'Idempotency-Key': 'evt_failed_123'
+        }),
+        body: JSON.stringify({
+          email: 'buyer@example.com',
+          eventName: 'payment_failed',
+          eventProperties: {
+            plan: 'credits',
+            amount: 9.99,
+            currency: 'gbp',
+            failureCode: 'card_declined',
+            declineCode: 'insufficient_funds',
+            recoverability: 'recoverable',
+            paymentIntentId: 'pi_failed_123',
+            chargeId: 'ch_failed_123',
+            paymentLinkId: 'plink_credits',
+            checkoutSessionId: 'cs_failed_123',
+            stripeEventId: 'evt_failed_123'
+          }
+        })
+      })
+    );
+  });
 });

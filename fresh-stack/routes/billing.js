@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { verifyWebhookSignature } = require('../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../lib/posthog');
-const { trackPlanUpgraded } = require('../../src/services/loops');
+const { trackPaymentFailed, trackPlanUpgraded } = require('../../src/services/loops');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const {
   reconcileBillingEntitlement,
@@ -28,6 +28,23 @@ const PURCHASE_TYPES = new Set([
   'renewal',
   'credit_top_up',
   'unknown'
+]);
+const RECOVERABLE_PAYMENT_FAILURE_CODES = new Set([
+  'authentication_required',
+  'card_declined',
+  'expired_card',
+  'incorrect_cvc',
+  'incorrect_zip',
+  'insufficient_funds',
+  'processing_error'
+]);
+const SUPPRESSED_PAYMENT_FAILURE_CODES = new Set([
+  'incorrect_number',
+  'invalid_number',
+  'fraudulent',
+  'lost_card',
+  'pickup_card',
+  'stolen_card'
 ]);
 const STRIPE_METADATA_MAX_LENGTH = 500;
 const CHECKOUT_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
@@ -58,6 +75,13 @@ function normalizePlanValue(plan) {
 function normalizeCurrency(currency) {
   if (typeof currency !== 'string' || !currency.trim()) return null;
   return currency.trim().toLowerCase();
+}
+
+function normalizeEmail(email) {
+  if (typeof email !== 'string') return null;
+  const normalized = email.trim().toLowerCase();
+  if (!normalized || !normalized.includes('@')) return null;
+  return normalized;
 }
 
 function normalizePurchaseType(purchaseType) {
@@ -208,6 +232,57 @@ function mergeStripeMetadata(...metadataSources) {
 
     return merged;
   }, {});
+}
+
+function resolvePaymentFailureCode(paymentIntent = {}) {
+  return paymentIntent.last_payment_error?.code
+    || paymentIntent.last_payment_error?.decline_code
+    || paymentIntent.cancellation_reason
+    || null;
+}
+
+function classifyPaymentFailure({ failureCode, declineCode }) {
+  const normalizedFailureCode = failureCode ? String(failureCode).trim().toLowerCase() : null;
+  const normalizedDeclineCode = declineCode ? String(declineCode).trim().toLowerCase() : null;
+  const codes = [normalizedFailureCode, normalizedDeclineCode].filter(Boolean);
+
+  if (codes.some((code) => SUPPRESSED_PAYMENT_FAILURE_CODES.has(code))) {
+    return {
+      recoverability: 'suppressed',
+      suppressionReason: 'suspicious_failure_code'
+    };
+  }
+
+  if (codes.some((code) => RECOVERABLE_PAYMENT_FAILURE_CODES.has(code))) {
+    return {
+      recoverability: 'recoverable',
+      suppressionReason: null
+    };
+  }
+
+  return {
+    recoverability: 'unknown',
+    suppressionReason: 'unclassified_failure_code'
+  };
+}
+
+function getExpandedLatestCharge(paymentIntent = {}) {
+  if (paymentIntent.latest_charge && typeof paymentIntent.latest_charge === 'object') {
+    return paymentIntent.latest_charge;
+  }
+  if (Array.isArray(paymentIntent.charges?.data) && paymentIntent.charges.data[0]) {
+    return paymentIntent.charges.data[0];
+  }
+  return null;
+}
+
+function resolvePaymentFailureEmail(paymentIntent = {}, charge = null, metadata = {}) {
+  return normalizeEmail(paymentIntent.receipt_email)
+    || normalizeEmail(paymentIntent.customer?.email)
+    || normalizeEmail(paymentIntent.last_payment_error?.payment_method?.billing_details?.email)
+    || normalizeEmail(paymentIntent.payment_method?.billing_details?.email)
+    || normalizeEmail(charge?.billing_details?.email)
+    || normalizeEmail(extractMetadataValue(metadata, ['email', 'customer_email', 'customerEmail']));
 }
 
 function normalizeCheckoutAttribution(body = {}) {
@@ -1987,6 +2062,88 @@ async function emitLoopsPurchaseSucceeded({ stripeEventId, eventProperties }) {
   });
 }
 
+function buildPaymentFailedEventProperties(paymentIntent = {}) {
+  const charge = getExpandedLatestCharge(paymentIntent);
+  const metadata = mergeStripeMetadata(paymentIntent.metadata, charge?.metadata);
+  const failureCode = paymentIntent.last_payment_error?.code || null;
+  const declineCode = paymentIntent.last_payment_error?.decline_code || null;
+  const classification = classifyPaymentFailure({
+    failureCode: failureCode || resolvePaymentFailureCode(paymentIntent),
+    declineCode
+  });
+  const currency = normalizeCurrency(paymentIntent.currency);
+  const amountMinor = paymentIntent.amount ?? paymentIntent.amount_capturable ?? null;
+
+  return {
+    email: resolvePaymentFailureEmail(paymentIntent, charge, metadata),
+    plan: normalizePlanValue(
+      extractMetadataValue(metadata, ['plan', 'plan_type', 'planType', 'target_plan', 'targetPlan'])
+    ),
+    amount: resolveAmount(amountMinor, currency),
+    amount_minor: typeof amountMinor === 'number' ? amountMinor : null,
+    currency,
+    failure_code: failureCode,
+    decline_code: declineCode,
+    recoverability: classification.recoverability,
+    suppression_reason: classification.suppressionReason,
+    payment_intent_id: normalizeStripeId(paymentIntent),
+    charge_id: normalizeStripeId(charge) || normalizeStripeId(paymentIntent.latest_charge),
+    payment_link_id: normalizeStripeId(paymentIntent.payment_link)
+      || normalizeStripeId(charge?.payment_link)
+      || extractMetadataValue(metadata, ['payment_link_id', 'paymentLinkId']),
+    checkout_session_id: extractMetadataValue(metadata, ['checkout_session_id', 'checkoutSessionId']),
+    livemode: Boolean(paymentIntent.livemode)
+  };
+}
+
+async function emitLoopsPaymentFailed({ stripeEventId, paymentIntent }) {
+  const eventProperties = buildPaymentFailedEventProperties(paymentIntent);
+
+  if (!eventProperties.email || eventProperties.recoverability !== 'recoverable') {
+    logger.info('[billing] Loops payment failed event skipped', {
+      stripeEventId,
+      paymentIntentId: eventProperties.payment_intent_id || null,
+      failureCode: eventProperties.failure_code || null,
+      declineCode: eventProperties.decline_code || null,
+      recoverability: eventProperties.recoverability,
+      suppressionReason: eventProperties.suppression_reason,
+      emailPresent: Boolean(eventProperties.email)
+    });
+    return {
+      sent: false,
+      eventProperties
+    };
+  }
+
+  await trackPaymentFailed({
+    email: eventProperties.email,
+    planName: eventProperties.plan,
+    amount: eventProperties.amount,
+    currency: eventProperties.currency,
+    failureCode: eventProperties.failure_code,
+    declineCode: eventProperties.decline_code,
+    recoverability: eventProperties.recoverability,
+    paymentIntentId: eventProperties.payment_intent_id,
+    chargeId: eventProperties.charge_id,
+    paymentLinkId: eventProperties.payment_link_id,
+    checkoutSessionId: eventProperties.checkout_session_id,
+    stripeEventId
+  });
+
+  logger.info('[billing] Loops payment failed event succeeded', {
+    stripeEventId,
+    paymentIntentId: eventProperties.payment_intent_id,
+    failureCode: eventProperties.failure_code,
+    declineCode: eventProperties.decline_code,
+    plan: eventProperties.plan
+  });
+
+  return {
+    sent: true,
+    eventProperties
+  };
+}
+
 function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webhookSecret = process.env.STRIPE_WEBHOOK_SECRET }) {
   return async function billingWebhookHandler(req, res) {
     const signature = req.header('stripe-signature');
@@ -2142,6 +2299,24 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               stripeEventId: event.id,
               eventProperties: payload.eventProperties
             });
+          }
+          logger.info('[billing] webhook_write_trace', billingTrace);
+          break;
+        }
+        case 'payment_intent.payment_failed': {
+          const paymentIntent = event.data?.object;
+          if (paymentIntent) {
+            const loopsTrace = await emitLoopsPaymentFailed({
+              stripeEventId: event.id,
+              paymentIntent
+            });
+            billingTrace = {
+              ...billingTrace,
+              payment_intent_id: normalizeStripeId(paymentIntent),
+              loops_payment_failed_sent: Boolean(loopsTrace.sent),
+              loops_payment_failed_recoverability: loopsTrace.eventProperties?.recoverability || null,
+              loops_payment_failed_suppression_reason: loopsTrace.eventProperties?.suppression_reason || null
+            };
           }
           logger.info('[billing] webhook_write_trace', billingTrace);
           break;
