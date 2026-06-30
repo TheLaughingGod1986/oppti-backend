@@ -157,7 +157,17 @@ describe('Loops lifecycle events', () => {
       imagesUnprocessed: 12
     });
 
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://app.loops.so/api/v1/contacts/update',
+      expect.objectContaining({
+        method: 'PUT',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer loops_test_key'
+        }),
+        body: expect.stringContaining('"generationsCount":1')
+      })
+    );
     expect(global.fetch).toHaveBeenLastCalledWith(
       'https://app.loops.so/api/v1/events/send',
       expect.objectContaining({
@@ -168,7 +178,7 @@ describe('Loops lifecycle events', () => {
         body: expect.stringContaining('"eventName":"generation_completed"')
       })
     );
-    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual({
       email: 'user@example.com',
       eventName: 'generation_completed',
       eventProperties: {
@@ -179,7 +189,7 @@ describe('Loops lifecycle events', () => {
     });
   });
 
-  test('keeps generation milestone sends and skips non-milestones after activation', async () => {
+  test('skips later generation counts after activation', async () => {
     const { trackGenerationMilestone } = require('../../../src/services/loops');
 
     await trackGenerationMilestone({
@@ -193,16 +203,7 @@ describe('Loops lifecycle events', () => {
       imagesUnprocessed: 7
     });
 
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
-      email: 'user@example.com',
-      eventName: 'generation_completed',
-      eventProperties: {
-        generationsCount: 5,
-        imagesUnprocessed: 7,
-        lastGenerationAt: expect.any(String)
-      }
-    });
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   test('sends image SEO audit completion as lead contact properties and event properties', async () => {

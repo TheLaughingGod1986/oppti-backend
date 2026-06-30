@@ -88,7 +88,12 @@ async function trackAccountCreated({ email, firstName, isWooCommerce, imagesUnpr
 
 async function trackGenerationMilestone({ email, generationsCount, imagesUnprocessed }) {
   const count = Number(generationsCount) || 0;
-  if (count !== 1 && count % 5 !== 0) return;
+  if (count !== 1) return;
+  await loopsRequest('PUT', '/contacts/update', {
+    email,
+    generationsCount: count,
+    lastGenerationAt: new Date().toISOString()
+  });
   await loopsPost('/events/send', {
     email,
     eventName: 'generation_completed',
@@ -192,8 +197,10 @@ async function trackPaymentSucceeded({
   const succeededAt = new Date().toISOString();
   await loopsRequest('PUT', '/contacts/update', {
     email,
+    plan: planName || '',
     lastSuccessfulPaymentAt: succeededAt,
     lastSuccessfulPaymentPlan: planName || '',
+    lastSuccessfulPaymentPurchaseType: purchaseType || '',
     lastPaymentFailureRecoverability: ''
   });
   await loopsRequest('POST', '/events/send', {
