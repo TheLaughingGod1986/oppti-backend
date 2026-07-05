@@ -376,7 +376,7 @@ function inferPurchaseType({
     }
   }
 
-  if (eventType === 'invoice.payment_succeeded') {
+  if (eventType === 'invoice.payment_succeeded' || eventType === 'invoice.paid') {
     if (billingReason === 'subscription_cycle') return 'renewal';
     if (billingReason === 'subscription_update' && hasExistingPaidPlan && planChanged) return 'upgrade';
     if (billingReason === 'subscription_create') {
@@ -1468,7 +1468,13 @@ async function buildCheckoutSucceededPayload({ supabase, stripeClient, session, 
   };
 }
 
-async function buildInvoiceSucceededPayload({ supabase, stripeClient, invoice, priceIds }) {
+async function buildInvoiceSucceededPayload({
+  supabase,
+  stripeClient,
+  invoice,
+  priceIds,
+  stripeEventType = 'invoice.payment_succeeded'
+}) {
   const metadata = await resolveInvoiceMetadata(stripeClient, invoice);
   const stripeCustomerId = normalizeStripeId(invoice.customer);
   const stripeSubscriptionId = normalizeStripeId(invoice.subscription);
@@ -1493,7 +1499,7 @@ async function buildInvoiceSucceededPayload({ supabase, stripeClient, invoice, p
   const currency = normalizeCurrency(invoice.currency);
   const amount = resolveAmount(invoice.amount_paid, currency);
   const purchaseType = inferPurchaseType({
-    eventType: 'invoice.payment_succeeded',
+    eventType: stripeEventType,
     paymentMode: null,
     stripeSubscriptionId,
     billingReason: invoice.billing_reason || null,
@@ -1544,7 +1550,7 @@ async function buildInvoiceSucceededPayload({ supabase, stripeClient, invoice, p
     site: identity.site,
     eventProperties: {
       source: 'stripe_webhook',
-      stripe_event_type: 'invoice.payment_succeeded',
+      stripe_event_type: stripeEventType,
       amount,
       amount_minor: invoice.amount_paid ?? null,
       revenue: amount,
@@ -2336,14 +2342,16 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
           logger.info('[billing] webhook_write_trace', billingTrace);
           break;
         }
-        case 'invoice.payment_succeeded': {
+        case 'invoice.payment_succeeded':
+        case 'invoice.paid': {
           const invoice = event.data?.object;
           if (invoice) {
             const payload = await buildInvoiceSucceededPayload({
               supabase,
               stripeClient,
               invoice,
-              priceIds
+              priceIds,
+              stripeEventType: event.type
             });
             const firstLinePeriod = Array.isArray(invoice.lines?.data) && invoice.lines.data[0]?.period
               ? invoice.lines.data[0].period
@@ -2414,14 +2422,30 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               priceIds,
               stripeEventType: event.type
             });
-            const entitlementTrace = await reconcileSubscriptionStatus({
-              supabase,
-              stripeEventId: event.id,
-              account: payload.account,
-              site: payload.site,
-              eventProperties: payload.eventProperties,
-              subscription: payload.subscription
-            });
+            let entitlementTrace;
+            try {
+              entitlementTrace = await reconcileSubscriptionStatus({
+                supabase,
+                stripeEventId: event.id,
+                account: payload.account,
+                site: payload.site,
+                eventProperties: payload.eventProperties,
+                subscription: payload.subscription
+              });
+            } catch (error) {
+              logger.warn('[billing] subscription status reconciliation failed without failing Stripe webhook', {
+                stripeEventId: event.id,
+                stripeEventType: event.type,
+                stripeSubscriptionId: payload.eventProperties?.stripe_subscription_id || null,
+                error: error.message
+              });
+              entitlementTrace = {
+                subscriptions_written: false,
+                licenses_updated: false,
+                billing_info_source: 'site_subscriptions_failed',
+                site_subscription_update_error: error.message
+              };
+            }
             billingTrace = {
               ...billingTrace,
               ...entitlementTrace,

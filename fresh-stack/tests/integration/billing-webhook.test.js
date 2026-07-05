@@ -1128,6 +1128,72 @@ describe('POST /billing/webhook', () => {
     });
   });
 
+  test('treats Stripe invoice.paid as a successful subscription invoice', async () => {
+    const supabase = createSupabaseMock({
+      accounts: [
+        {
+          id: 'account_invoice_paid_alias',
+          email: 'paid-alias@example.com',
+          license_key: 'lic_invoice_paid_alias',
+          stripe_customer_id: 'cus_invoice_paid_alias',
+          plan: 'free'
+        }
+      ]
+    });
+
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_invoice_paid_alias',
+      type: 'invoice.paid',
+      data: {
+        object: {
+          id: 'in_paid_alias',
+          amount_paid: 1299,
+          currency: 'gbp',
+          customer: 'cus_invoice_paid_alias',
+          subscription: 'sub_invoice_paid_alias',
+          billing_reason: 'subscription_cycle',
+          livemode: true,
+          metadata: {},
+          lines: {
+            data: [{ price: { id: 'price_pro', product: 'prod_pro', recurring: { interval: 'month' } } }]
+          }
+        }
+      }
+    });
+
+    const app = createApp({ supabase });
+    const res = await sendWebhook(app, 'evt_invoice_paid_alias');
+
+    expect(res.status).toBe(200);
+    expect(captureServerEvent).toHaveBeenCalledWith({
+      event: 'payment_succeeded',
+      distinctId: 'account_invoice_paid_alias',
+      properties: expect.objectContaining({
+        stripe_event_id: 'evt_invoice_paid_alias',
+        stripe_event_type: 'invoice.paid',
+        amount: 12.99,
+        amount_minor: 1299,
+        currency: 'gbp',
+        plan: 'pro',
+        price_id: 'price_pro',
+        stripe_customer_id: 'cus_invoice_paid_alias',
+        stripe_subscription_id: 'sub_invoice_paid_alias',
+        invoice_id: 'in_paid_alias',
+        purchase_type: 'renewal',
+        $insert_id: 'evt_invoice_paid_alias'
+      })
+    });
+    expect(trackPaymentSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      email: 'paid-alias@example.com',
+      planName: 'pro',
+      purchaseType: 'renewal',
+      amount: 12.99,
+      currency: 'gbp',
+      invoiceId: 'in_paid_alias',
+      stripeEventId: 'evt_invoice_paid_alias'
+    }));
+  });
+
   test('enriches invoice.payment_succeeded with attribution from subscription metadata', async () => {
     const stripeClient = {
       subscriptions: {
@@ -1391,6 +1457,77 @@ describe('POST /billing/webhook', () => {
         payload: expect.objectContaining({ plan: 'free' })
       })
     ]));
+  });
+
+  test('acknowledges customer.subscription.updated when local subscription reconciliation fails', async () => {
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+    const supabase = createSupabaseMock({
+      enableBillingRpc: true,
+      failBillingRpc: true,
+      accounts: [
+        {
+          id: 'account_sub_status_fail',
+          email: 'sub-status-fail@example.com',
+          license_key: 'lic_sub_status_fail',
+          stripe_customer_id: 'cus_sub_status_fail',
+          stripe_subscription_id: 'sub_status_fail',
+          plan: 'pro'
+        }
+      ],
+      sites: [
+        {
+          id: 'site_sub_status_fail',
+          site_hash: 'site_hash_sub_status_fail',
+          license_key: 'lic_sub_status_fail'
+        }
+      ]
+    });
+
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_sub_status_fail',
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_status_fail',
+          status: 'active',
+          customer: 'cus_sub_status_fail',
+          livemode: false,
+          current_period_start: 1780272000,
+          current_period_end: 1782864000,
+          metadata: {
+            account_id: 'account_sub_status_fail',
+            site_id: 'site_sub_status_fail',
+            license_key: 'lic_sub_status_fail'
+          },
+          items: {
+            data: [{
+              price: {
+                id: 'price_pro',
+                product: 'prod_pro',
+                recurring: { interval: 'month' }
+              }
+            }]
+          }
+        }
+      }
+    });
+
+    const app = createApp({ supabase });
+    const res = await sendWebhook(app, 'evt_sub_status_fail');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ received: true });
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[billing] site entitlement V2 failed; using legacy billing fallback',
+      expect.objectContaining({
+        stripeEventId: 'evt_sub_status_fail',
+        siteId: 'site_sub_status_fail',
+        plan: 'pro',
+        purchaseType: 'renewal',
+        error: expect.stringContaining('site billing rpc failed')
+      })
+    );
+    warnSpy.mockRestore();
   });
 
   test('reconciles Starter subscriptions with starter plan id', async () => {
