@@ -9,12 +9,13 @@ function supportsAnonymousTrialPath(path = '') {
   return path === '/api/alt-text'
     || path === '/api/usage'
     || path === '/api/usage/trial-batch-plan'
-    || path === '/usage';
+    || path === '/usage'
+    || path === '/api/optimizer/audit';
 }
 
 function isPublicJobPollRequest(req) {
   return req?.method === 'GET'
-    && /^\/api\/jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req?.path || '');
+    && /^\/api\/(jobs|optimizer\/audit)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req?.path || '');
 }
 
 function authMiddleware({ supabase }) {

@@ -22,6 +22,7 @@ const { createDashboardRouter } = require('./routes/dashboard');
 const { createAdminRouter } = require('./routes/admin');
 const { createContactRouter } = require('./routes/contact');
 const { createImageSeoAuditRouter } = require('./routes/imageSeoAudit');
+const { createOptimizerRouter } = require('./routes/optimizer');
 const { inspectV2Schema, logV2SchemaStartupStatus } = require('./services/v2Diagnostics');
 const {
   getRuntimeIdentity,
@@ -56,7 +57,8 @@ const PROTECTED_API_PREFIXES = [
   '/api/review',
   '/api/titles',
   '/api/usage',
-  '/api/auth'
+  '/api/auth',
+  '/api/optimizer'
 ];
 
 let supabase = null;
@@ -331,6 +333,10 @@ function createApp({
 
   const reviewRouter = createReviewRouter({ supabase: supabaseClient });
   app.use('/api/review', reviewRouter);
+
+  // Oppti Optimizer plugin — site audit start/poll. Auth via the same
+  // license / JWT / anonymous-trial rails as alt-text (see middleware/auth.js).
+  app.use('/api/optimizer', createOptimizerRouter());
 
   const queueHolder = { q: null };
   const bulkProcessor = createBulkAltTextProcessor({

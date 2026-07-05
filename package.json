@@ -17,7 +17,8 @@
     "diagnostics:data-integrity": "node fresh-stack/scripts/print-data-integrity-diagnostics.js",
     "ledger:sync": "node fresh-stack/scripts/sync-image-alt-states.js",
     "verify:site-quota-v2": "node fresh-stack/scripts/verify-site-quota-v2-schema.js --pretty",
-    "repair:stripe-entitlement": "node scripts/repair-stripe-subscription-entitlement.js"
+    "repair:stripe-entitlement": "node scripts/repair-stripe-subscription-entitlement.js",
+    "dev:local": "node fresh-stack/scripts/dev-local.js"
   },
   "keywords": [
     "alttext",

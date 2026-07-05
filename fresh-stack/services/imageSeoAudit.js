@@ -190,6 +190,64 @@ function extractPageData(pageUrl, html) {
     if (url) links.push(url);
   });
 
+  /* --- Additive page signals for the optimizer audit (SEO / schema /
+   * accessibility / performance). The lead-gen email flow ignores these. --- */
+  const metaDescription = ($('meta[name="description"]').attr('content') || '').trim();
+  const canonical = ($('link[rel="canonical"]').attr('href') || '').trim();
+  const robotsMeta = ($('meta[name="robots"]').attr('content') || '').trim().toLowerCase();
+  const hasOgTitle = $('meta[property="og:title"]').length > 0;
+  const hasTwitterCard = $('meta[name="twitter:card"]').length > 0;
+  const htmlLang = ($('html').attr('lang') || '').trim();
+  const h1Count = $('h1').length;
+
+  const jsonLdTypes = [];
+  $('script[type="application/ld+json"]').each((_index, element) => {
+    try {
+      const parsed = JSON.parse($(element).contents().text());
+      const nodes = Array.isArray(parsed) ? parsed : (parsed && parsed['@graph']) ? parsed['@graph'] : [parsed];
+      for (const node of nodes) {
+        const type = node && node['@type'];
+        if (Array.isArray(type)) jsonLdTypes.push(...type.map(String));
+        else if (type) jsonLdTypes.push(String(type));
+      }
+    } catch (_error) { /* malformed JSON-LD — counts as absent */ }
+  });
+
+  let unlabeledInputs = 0;
+  $('input[type="text"], input[type="email"], input[type="search"], input[type="tel"], input[type="url"], input:not([type]), textarea, select').each((_index, element) => {
+    const el = $(element);
+    const id = el.attr('id');
+    const labelled = (id && $(`label[for="${id}"]`).length > 0)
+      || el.attr('aria-label') || el.attr('aria-labelledby')
+      || el.parents('label').length > 0;
+    if (!labelled) unlabeledInputs += 1;
+  });
+
+  let emptyLinks = 0;
+  $('a[href]').each((_index, element) => {
+    const el = $(element);
+    const hasText = el.text().trim() !== ''
+      || el.attr('aria-label')
+      || el.find('img[alt]').filter((_i, img) => String($(img).attr('alt') || '').trim() !== '').length > 0;
+    if (!hasText) emptyLinks += 1;
+  });
+
+  const signals = {
+    metaDescription,
+    canonical,
+    noindex: robotsMeta.includes('noindex'),
+    hasOgTitle,
+    hasTwitterCard,
+    htmlLang,
+    h1Count,
+    jsonLdTypes,
+    unlabeledInputs,
+    emptyLinks,
+    scriptCount: $('script[src]').length,
+    stylesheetCount: $('link[rel="stylesheet"]').length,
+    htmlBytes: html.length
+  };
+
   $('img').each((_index, element) => {
     const img = $(element);
     const src = img.attr('src') || img.attr('data-src') || img.attr('data-lazy-src') || '';
@@ -208,7 +266,7 @@ function extractPageData(pageUrl, html) {
     });
   });
 
-  return { title, links, images };
+  return { title, links, images, signals };
 }
 
 function resolveImageUrl(pageUrl, src) {
@@ -475,9 +533,12 @@ function buildAuditRecommendations({ totalImages, missing, weak, averageQuality,
   return recommendations.slice(0, 5);
 }
 
-async function crawlPublicSite(siteUrl, { maxPages = DEFAULT_MAX_PAGES, maxImages = DEFAULT_MAX_IMAGES } = {}) {
+async function crawlPublicSite(siteUrl, { maxPages = DEFAULT_MAX_PAGES, maxImages = DEFAULT_MAX_IMAGES, allowPrivate = false } = {}) {
   const startUrl = normalizeAuditUrl(siteUrl);
-  await assertPublicUrl(startUrl);
+  // allowPrivate is a local-development escape hatch (wp-env sites live on
+  // localhost). Callers must gate it behind an explicit env flag — never
+  // expose it to request input.
+  if (!allowPrivate) await assertPublicUrl(startUrl);
 
   const normalizedDomain = startUrl.hostname.replace(/^www\./, '').toLowerCase();
   const queue = [startUrl];
@@ -485,9 +546,11 @@ async function crawlPublicSite(siteUrl, { maxPages = DEFAULT_MAX_PAGES, maxImage
   const pages = [];
   const images = [];
 
+  let sitemapFound = false;
   const sitemapUrl = new URL('/sitemap.xml', startUrl.origin);
   try {
     const sitemap = await fetchText(sitemapUrl);
+    sitemapFound = true;
     for (const url of extractSitemapUrls(startUrl, sitemap.text, maxPages)) {
       uniquePush(queue, seen, url, maxPages);
     }
@@ -504,7 +567,7 @@ async function crawlPublicSite(siteUrl, { maxPages = DEFAULT_MAX_PAGES, maxImage
     if (seen.has(key)) continue;
     seen.add(key);
 
-    await assertPublicUrl(url);
+    if (!allowPrivate) await assertPublicUrl(url);
     let fetched;
     try {
       fetched = await fetchText(url);
@@ -521,7 +584,12 @@ async function crawlPublicSite(siteUrl, { maxPages = DEFAULT_MAX_PAGES, maxImage
     pages.push({
       url: fetched.url.toString(),
       title: page.title,
-      imageCount: page.images.length
+      imageCount: page.images.length,
+      // Outbound same-origin link targets (deduped) — lets consumers build an
+      // internal-link graph without re-crawling. Additive; email/PDF ignore it.
+      links: [...new Set(page.links.map((link) => link.toString()))],
+      // Per-page SEO/schema/a11y/perf signals for the optimizer audit.
+      signals: page.signals
     });
 
     for (const image of page.images) {
@@ -537,6 +605,7 @@ async function crawlPublicSite(siteUrl, { maxPages = DEFAULT_MAX_PAGES, maxImage
   return {
     siteUrl: startUrl.toString(),
     normalizedDomain,
+    sitemapFound,
     pages,
     images,
     summary: summarizeAudit({
@@ -839,6 +908,7 @@ module.exports = {
   normalizeEmail,
   isValidEmail,
   assertPublicUrl,
+  fetchText,
   scoreAltText,
   crawlPublicSite,
   generateAuditPdfBuffer,
