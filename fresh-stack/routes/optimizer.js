@@ -3,7 +3,8 @@ const { z } = require('zod');
 const logger = require('../lib/logger');
 const {
   startOptimizerAudit,
-  getOptimizerAudit
+  getOptimizerAudit,
+  getOptimizerHistory
 } = require('../services/optimizerAudit');
 
 /**
@@ -14,8 +15,10 @@ const {
  *                                  as the alt-text plugin).
  * GET  /api/optimizer/audit/:id  — poll status/results. Public by UUID, same
  *                                  model as GET /api/jobs/:id.
+ * GET  /api/optimizer/history    — completed audits for the requesting site
+ *                                  (same auth rails as audit start).
  */
-function createOptimizerRouter() {
+function createOptimizerRouter({ supabase = null } = {}) {
   const router = express.Router();
 
   // Per-site crawl throttle — crawling is the expensive bit.
@@ -69,7 +72,7 @@ function createOptimizerRouter() {
         });
       }
 
-      const record = startOptimizerAudit({ siteUrl, siteHash });
+      const record = startOptimizerAudit({ siteUrl, siteHash, supabase });
       logger.info('[optimizer] audit started', {
         audit_id: record.auditId,
         site_url: record.siteUrl,
@@ -92,8 +95,8 @@ function createOptimizerRouter() {
     }
   });
 
-  router.get('/audit/:auditId', (req, res) => {
-    const record = getOptimizerAudit(req.params.auditId);
+  router.get('/audit/:auditId', async (req, res) => {
+    const record = await getOptimizerAudit(req.params.auditId, { supabase });
     if (!record) {
       return res.status(404).json({
         ok: false,
@@ -111,6 +114,20 @@ function createOptimizerRouter() {
       errorCode: record.errorCode,
       result: record.status === 'completed' ? record.result : null
     });
+  });
+
+  router.get('/history', async (req, res) => {
+    const siteHash = req.header('X-Site-Hash') || req.header('X-Site-Key');
+    if (!siteHash) {
+      return res.status(400).json({
+        ok: false,
+        error: 'SITE_HASH_REQUIRED',
+        message: 'Provide the X-Site-Hash header'
+      });
+    }
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 12));
+    const audits = await getOptimizerHistory({ siteHash, supabase, limit });
+    return res.json({ ok: true, audits });
   });
 
   return router;

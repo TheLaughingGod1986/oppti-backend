@@ -334,9 +334,9 @@ function createApp({
   const reviewRouter = createReviewRouter({ supabase: supabaseClient });
   app.use('/api/review', reviewRouter);
 
-  // Oppti Optimizer plugin — site audit start/poll. Auth via the same
+  // Oppti Optimizer plugin — site audit start/poll/history. Auth via the same
   // license / JWT / anonymous-trial rails as alt-text (see middleware/auth.js).
-  app.use('/api/optimizer', createOptimizerRouter());
+  app.use('/api/optimizer', createOptimizerRouter({ supabase: supabaseClient }));
 
   const queueHolder = { q: null };
   const bulkProcessor = createBulkAltTextProcessor({

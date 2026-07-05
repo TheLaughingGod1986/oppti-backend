@@ -10,7 +10,8 @@ function supportsAnonymousTrialPath(path = '') {
     || path === '/api/usage'
     || path === '/api/usage/trial-batch-plan'
     || path === '/usage'
-    || path === '/api/optimizer/audit';
+    || path === '/api/optimizer/audit'
+    || path === '/api/optimizer/history';
 }
 
 function isPublicJobPollRequest(req) {

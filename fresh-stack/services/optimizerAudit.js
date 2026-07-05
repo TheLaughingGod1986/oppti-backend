@@ -521,9 +521,9 @@ async function buildOptimizerResult({ startUrl, crawl, allowPrivate }) {
 }
 
 /**
- * In-memory audit store. Matches the public-UUID polling model used by
- * /api/jobs — fine on a single instance; move to Supabase/Redis when the
- * backend scales horizontally.
+ * Audit store: in-memory for fast same-instance polling, mirrored to the
+ * optimizer_audits table (best-effort) so history and results survive
+ * restarts and serve the Progress screen.
  */
 const MAX_STORED_AUDITS = 200;
 const auditStore = new Map();
@@ -535,13 +535,39 @@ function pruneStore() {
   }
 }
 
-function startOptimizerAudit({ siteUrl, siteHash = null }) {
+async function persistAudit(supabase, record) {
+  if (!supabase) return;
+  const payload = {
+    id: record.auditId,
+    site_hash: record.siteHash,
+    site_url: record.siteUrl,
+    normalized_domain: record.normalizedDomain || null,
+    status: record.status,
+    overall_score: record.result ? record.result.overallScore : null,
+    pages_scanned: record.result ? record.result.pagesScanned : null,
+    images_scanned: record.result ? record.result.imagesScanned : null,
+    result_json: record.result || null,
+    error_code: record.errorCode,
+    completed_at: record.status === 'running' ? null : new Date().toISOString()
+  };
+  const { error } = await supabase.from('optimizer_audits').upsert(payload, { onConflict: 'id' });
+  if (error) {
+    logger.warn('[optimizer-audit] persistence failed', {
+      audit_id: record.auditId,
+      status: record.status,
+      error: error.message
+    });
+  }
+}
+
+function startOptimizerAudit({ siteUrl, siteHash = null, supabase = null }) {
   const url = normalizeAuditUrl(siteUrl);
   const auditId = crypto.randomUUID();
   const record = {
     auditId,
     siteHash,
     siteUrl: url.toString(),
+    normalizedDomain: url.hostname.replace(/^www\./, '').toLowerCase(),
     status: 'running',
     startedAt: new Date().toISOString(),
     result: null,
@@ -555,6 +581,7 @@ function startOptimizerAudit({ siteUrl, siteHash = null }) {
   const allowPrivate = process.env.OPTIMIZER_ALLOW_PRIVATE_URLS === 'true';
 
   (async () => {
+    await persistAudit(supabase, record);
     try {
       if (!allowPrivate) await assertPublicUrl(url);
       const crawl = await crawlPublicSite(url.toString(), { allowPrivate });
@@ -570,13 +597,73 @@ function startOptimizerAudit({ siteUrl, siteHash = null }) {
         code: record.errorCode
       });
     }
+    await persistAudit(supabase, record);
   })();
 
   return record;
 }
 
-function getOptimizerAudit(auditId) {
-  return auditStore.get(auditId) || null;
+async function getOptimizerAudit(auditId, { supabase = null } = {}) {
+  const inMemory = auditStore.get(auditId);
+  if (inMemory) return inMemory;
+  if (!supabase) return null;
+
+  // Fallback: another instance ran it, or this one restarted.
+  const { data, error } = await supabase
+    .from('optimizer_audits')
+    .select('id, site_hash, site_url, status, overall_score, result_json, error_code, created_at, completed_at')
+    .eq('id', auditId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return {
+    auditId: data.id,
+    siteHash: data.site_hash,
+    siteUrl: data.site_url,
+    status: data.status,
+    startedAt: data.created_at,
+    result: data.result_json,
+    errorCode: data.error_code
+  };
+}
+
+/**
+ * Completed audits for one site, newest first — powers the Progress screen.
+ * Falls back to this instance's memory when the DB is unavailable (dev).
+ */
+async function getOptimizerHistory({ siteHash, supabase = null, limit = 12 }) {
+  if (!siteHash) return [];
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('optimizer_audits')
+      .select('id, site_url, status, overall_score, pages_scanned, images_scanned, created_at, completed_at')
+      .eq('site_hash', siteHash)
+      .eq('status', 'completed')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (!error && data) {
+      return data.map((row) => ({
+        auditId: row.id,
+        siteUrl: row.site_url,
+        overallScore: row.overall_score,
+        pagesScanned: row.pages_scanned,
+        imagesScanned: row.images_scanned,
+        completedAt: row.completed_at || row.created_at
+      }));
+    }
+    logger.warn('[optimizer-audit] history query failed', { site_hash: siteHash, error: error && error.message });
+  }
+  return [...auditStore.values()]
+    .filter((r) => r.siteHash === siteHash && r.status === 'completed' && r.result)
+    .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))
+    .slice(0, limit)
+    .map((r) => ({
+      auditId: r.auditId,
+      siteUrl: r.siteUrl,
+      overallScore: r.result.overallScore,
+      pagesScanned: r.result.pagesScanned,
+      imagesScanned: r.result.imagesScanned,
+      completedAt: r.result.completedAt
+    }));
 }
 
 module.exports = {
@@ -591,5 +678,6 @@ module.exports = {
   summarizeAiReadiness,
   buildOptimizerResult,
   startOptimizerAudit,
-  getOptimizerAudit
+  getOptimizerAudit,
+  getOptimizerHistory
 };
