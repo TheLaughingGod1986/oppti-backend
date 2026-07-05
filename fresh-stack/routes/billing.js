@@ -2046,24 +2046,36 @@ async function emitLoopsPurchaseSucceeded({ stripeEventId, eventProperties }) {
       emailPresent: Boolean(email),
       plan
     });
-    return;
+    return { sent: false, skipped: true };
   }
 
-  await trackPlanUpgraded({
-    email,
-    planName: plan,
-    purchaseType,
-    billingPeriod: eventProperties.billing_period || 'unknown',
-    amount: eventProperties.amount ?? null,
-    currency: eventProperties.currency || null,
-    stripeEventId
-  });
+  try {
+    await trackPlanUpgraded({
+      email,
+      planName: plan,
+      purchaseType,
+      billingPeriod: eventProperties.billing_period || 'unknown',
+      amount: eventProperties.amount ?? null,
+      currency: eventProperties.currency || null,
+      stripeEventId
+    });
+  } catch (error) {
+    logger.warn('[billing] Loops purchase event failed without failing Stripe webhook', {
+      stripeEventId,
+      purchaseType,
+      plan,
+      error: error.message
+    });
+    return { sent: false, error };
+  }
 
   logger.info('[billing] Loops purchase event succeeded', {
     stripeEventId,
     purchaseType,
     plan
   });
+
+  return { sent: true };
 }
 
 async function emitLoopsPaymentSucceeded({ stripeEventId, eventProperties }) {
@@ -2074,27 +2086,39 @@ async function emitLoopsPaymentSucceeded({ stripeEventId, eventProperties }) {
       emailPresent: false,
       plan: eventProperties?.plan || null
     });
-    return;
+    return { sent: false, skipped: true };
   }
 
-  await trackPaymentSucceeded({
-    email,
-    planName: eventProperties.plan || null,
-    purchaseType: eventProperties.purchase_type || 'unknown',
-    billingPeriod: eventProperties.billing_period || 'unknown',
-    amount: eventProperties.amount ?? null,
-    currency: eventProperties.currency || null,
-    checkoutSessionId: eventProperties.checkout_session_id || null,
-    invoiceId: eventProperties.invoice_id || null,
-    paymentLinkId: eventProperties.payment_link_id || null,
-    stripeEventId
-  });
+  try {
+    await trackPaymentSucceeded({
+      email,
+      planName: eventProperties.plan || null,
+      purchaseType: eventProperties.purchase_type || 'unknown',
+      billingPeriod: eventProperties.billing_period || 'unknown',
+      amount: eventProperties.amount ?? null,
+      currency: eventProperties.currency || null,
+      checkoutSessionId: eventProperties.checkout_session_id || null,
+      invoiceId: eventProperties.invoice_id || null,
+      paymentLinkId: eventProperties.payment_link_id || null,
+      stripeEventId
+    });
+  } catch (error) {
+    logger.warn('[billing] Loops payment succeeded event failed without failing Stripe webhook', {
+      stripeEventId,
+      plan: eventProperties.plan || null,
+      purchaseType: eventProperties.purchase_type || 'unknown',
+      error: error.message
+    });
+    return { sent: false, error };
+  }
 
   logger.info('[billing] Loops payment succeeded event sent', {
     stripeEventId,
     plan: eventProperties.plan || null,
     purchaseType: eventProperties.purchase_type || 'unknown'
   });
+
+  return { sent: true };
 }
 
 function buildPaymentFailedEventProperties(paymentIntent = {}) {
@@ -2150,20 +2174,36 @@ async function emitLoopsPaymentFailed({ stripeEventId, paymentIntent }) {
     };
   }
 
-  await trackPaymentFailed({
-    email: eventProperties.email,
-    planName: eventProperties.plan,
-    amount: eventProperties.amount,
-    currency: eventProperties.currency,
-    failureCode: eventProperties.failure_code,
-    declineCode: eventProperties.decline_code,
-    recoverability: eventProperties.recoverability,
-    paymentIntentId: eventProperties.payment_intent_id,
-    chargeId: eventProperties.charge_id,
-    paymentLinkId: eventProperties.payment_link_id,
-    checkoutSessionId: eventProperties.checkout_session_id,
-    stripeEventId
-  });
+  try {
+    await trackPaymentFailed({
+      email: eventProperties.email,
+      planName: eventProperties.plan,
+      amount: eventProperties.amount,
+      currency: eventProperties.currency,
+      failureCode: eventProperties.failure_code,
+      declineCode: eventProperties.decline_code,
+      recoverability: eventProperties.recoverability,
+      paymentIntentId: eventProperties.payment_intent_id,
+      chargeId: eventProperties.charge_id,
+      paymentLinkId: eventProperties.payment_link_id,
+      checkoutSessionId: eventProperties.checkout_session_id,
+      stripeEventId
+    });
+  } catch (error) {
+    logger.warn('[billing] Loops payment failed event failed without failing Stripe webhook', {
+      stripeEventId,
+      paymentIntentId: eventProperties.payment_intent_id,
+      failureCode: eventProperties.failure_code,
+      declineCode: eventProperties.decline_code,
+      plan: eventProperties.plan,
+      error: error.message
+    });
+    return {
+      sent: false,
+      error,
+      eventProperties
+    };
+  }
 
   logger.info('[billing] Loops payment failed event succeeded', {
     stripeEventId,

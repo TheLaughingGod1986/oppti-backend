@@ -550,6 +550,49 @@ describe('POST /billing/webhook', () => {
     expect(trackPlanUpgraded).not.toHaveBeenCalled();
   });
 
+  test('still acknowledges Stripe when Loops payment succeeded tracking fails', async () => {
+    const supabase = createSupabaseMock({
+      accounts: [
+        {
+          id: 'account_loops_down',
+          email: 'loops-down@example.com',
+          license_key: 'lic_loops_down',
+          stripe_customer_id: 'cus_loops_down',
+          stripe_subscription_id: 'sub_loops_down',
+          plan: 'pro'
+        }
+      ]
+    });
+
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_invoice_loops_down',
+      type: 'invoice.payment_succeeded',
+      data: {
+        object: {
+          id: 'in_loops_down',
+          amount_paid: 1499,
+          currency: 'usd',
+          customer: 'cus_loops_down',
+          subscription: 'sub_loops_down',
+          billing_reason: 'subscription_cycle',
+          livemode: true,
+          metadata: {},
+          lines: {
+            data: [{ price: { id: 'price_pro', product: 'prod_pro', recurring: { interval: 'month' } } }]
+          }
+        }
+      }
+    });
+    trackPaymentSucceeded.mockRejectedValueOnce(new Error('Loops unavailable'));
+
+    const app = createApp({ supabase });
+    const res = await sendWebhook(app, 'evt_invoice_loops_down');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ received: true });
+    expect(trackPaymentSucceeded).toHaveBeenCalled();
+  });
+
   test('sends recoverable payment failures to Loops', async () => {
     verifyWebhookSignature.mockReturnValue({
       id: 'evt_payment_failed_recoverable',
@@ -604,6 +647,49 @@ describe('POST /billing/webhook', () => {
       stripeEventId: 'evt_payment_failed_recoverable'
     });
     expect(trackPlanUpgraded).not.toHaveBeenCalled();
+  });
+
+  test('still acknowledges Stripe when Loops payment failed tracking fails', async () => {
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_payment_failed_loops_down',
+      type: 'payment_intent.payment_failed',
+      data: {
+        object: {
+          id: 'pi_failed_loops_down',
+          amount: 999,
+          currency: 'gbp',
+          livemode: true,
+          latest_charge: {
+            id: 'ch_failed_loops_down',
+            billing_details: {
+              email: 'Buyer@Example.com'
+            }
+          },
+          metadata: {
+            plan: 'credits',
+            checkout_session_id: 'cs_failed_loops_down',
+            payment_link_id: 'plink_credits'
+          },
+          last_payment_error: {
+            code: 'card_declined',
+            decline_code: 'insufficient_funds',
+            payment_method: {
+              billing_details: {
+                email: 'Buyer@Example.com'
+              }
+            }
+          }
+        }
+      }
+    });
+    trackPaymentFailed.mockRejectedValueOnce(new Error('Loops unavailable'));
+
+    const app = createApp();
+    const res = await sendWebhook(app, 'evt_payment_failed_loops_down');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ received: true });
+    expect(trackPaymentFailed).toHaveBeenCalled();
   });
 
   test('suppresses incorrect-number payment failures from the Loops funnel', async () => {
