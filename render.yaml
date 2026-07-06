@@ -15,6 +15,11 @@ services:
         value: 3001
       - key: ALLOWED_ORIGINS
         sync: false
+      # Optimizer audit: real Core Web Vitals via PageSpeed Insights.
+      # Optional — without it the performance category uses the labeled
+      # page-weight heuristic.
+      - key: PAGESPEED_API_KEY
+        sync: false
       # Supabase (required)
       - key: SUPABASE_URL
         sync: false

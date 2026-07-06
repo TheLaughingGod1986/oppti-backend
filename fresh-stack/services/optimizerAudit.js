@@ -170,7 +170,10 @@ function summarizeSchema(pages) {
   const typeCounts = new Map();
 
   for (const page of pages) {
-    const types = (page.signals && page.signals.jsonLdTypes) || [];
+    // schemaTypes covers JSON-LD + microdata + RDFa; jsonLdTypes kept as the
+    // fallback for results produced by older crawler versions.
+    const s = page.signals || {};
+    const types = s.schemaTypes || s.jsonLdTypes || [];
     if (types.length > 0) pagesWithSchema += 1;
     for (const type of types) typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
   }
@@ -183,7 +186,7 @@ function summarizeSchema(pages) {
   const score = clampScore((pct(pagesWithSchema, total) * 70) + (hasOrg ? 15 : 0) + (hasWebSite ? 15 : 0));
 
   const findings = [];
-  if (pagesWithSchema === 0) findings.push('No structured data (JSON-LD) found on any crawled page');
+  if (pagesWithSchema === 0) findings.push('No structured data (JSON-LD, microdata or RDFa) found on any crawled page');
   else findings.push(`${pagesWithSchema} of ${total} pages carry structured data (${[...typeCounts.keys()].slice(0, 5).join(', ')})`);
   if (!hasOrg) findings.push('Google doesn’t know your organisation’s name, logo or socials (no Organization schema)');
   if (!hasWebSite) findings.push('No WebSite schema, so sitelinks search box and site name are not controlled');
@@ -292,6 +295,71 @@ function summarizeAccessibility(pages, imageSummary) {
     unlabeledInputs,
     emptyLinks,
     pagesNoH1
+  };
+}
+
+/* ---- Real Core Web Vitals via Google PageSpeed Insights ----
+ * Used when PAGESPEED_API_KEY is set (values of ~12 chars or fewer are
+ * treated as a keyless dev sentinel — Google allows low-volume keyless
+ * calls). Any failure falls back to the page-weight heuristic. PSI can only
+ * measure public URLs, so localhost dev audits always use the heuristic. */
+const PSI_ENDPOINT = 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed';
+const PSI_TIMEOUT_MS = 45000;
+
+async function fetchPageSpeed(siteUrl) {
+  const key = process.env.PAGESPEED_API_KEY;
+  if (!key) return null;
+  const params = new URLSearchParams({ url: siteUrl, strategy: 'mobile', category: 'performance' });
+  if (key.length > 12) params.set('key', key);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PSI_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${PSI_ENDPOINT}?${params.toString()}`, { signal: controller.signal });
+    if (!res.ok) throw new Error(`PSI responded ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function summarizePerformanceFromPsi(psi) {
+  const lh = psi && psi.lighthouseResult;
+  const perfCategory = lh && lh.categories && lh.categories.performance;
+  if (!lh || !perfCategory || perfCategory.score == null) return null;
+
+  const score = clampScore(perfCategory.score * 100);
+  const audits = lh.audits || {};
+  const display = (id) => (audits[id] && audits[id].displayValue) || null;
+  const findings = [];
+  const flag = (id, label) => {
+    const audit = audits[id];
+    if (audit && audit.score != null && audit.score < 0.9 && audit.displayValue) {
+      findings.push(`${label}: ${audit.displayValue}`);
+    }
+  };
+  flag('largest-contentful-paint', 'Largest Contentful Paint');
+  flag('cumulative-layout-shift', 'Layout shift (CLS)');
+  flag('total-blocking-time', 'Total blocking time');
+  flag('first-contentful-paint', 'First Contentful Paint');
+  if (!findings.length) findings.push('Core Web Vitals look healthy on mobile');
+  findings.push('Measured with Google Lighthouse (mobile)');
+
+  return {
+    available: true,
+    method: 'lighthouse',
+    score,
+    summary: score >= 90
+      ? 'Core Web Vitals look strong on mobile.'
+      : score >= 50
+        ? 'Core Web Vitals need attention on mobile.'
+        : 'Core Web Vitals are poor on mobile.',
+    findings,
+    metrics: {
+      lcp: display('largest-contentful-paint'),
+      cls: display('cumulative-layout-shift'),
+      tbt: display('total-blocking-time'),
+      fcp: display('first-contentful-paint')
+    }
   };
 }
 
@@ -456,7 +524,7 @@ const CATEGORY_WEIGHTS = {
   accessibility: 0.05
 };
 
-async function buildOptimizerResult({ startUrl, crawl, allowPrivate }) {
+async function buildOptimizerResult({ startUrl, crawl, allowPrivate, psi = null }) {
   const contentPages = crawl.pages.filter((page) => isContentPage(page.url));
   const imageSummary = crawl.summary;
 
@@ -465,7 +533,7 @@ async function buildOptimizerResult({ startUrl, crawl, allowPrivate }) {
   const schema = summarizeSchema(contentPages);
   const technical = await summarizeTechnical({ startUrl, sitemapFound: crawl.sitemapFound, allowPrivate });
   const accessibility = summarizeAccessibility(contentPages, imageSummary);
-  const performance = summarizePerformance(contentPages);
+  const performance = summarizePerformanceFromPsi(psi) || summarizePerformance(contentPages);
   const aiReadiness = summarizeAiReadiness({ schema, linking, pages: contentPages, imageSummary, technical });
 
   const images = {
@@ -584,8 +652,16 @@ function startOptimizerAudit({ siteUrl, siteHash = null, supabase = null }) {
     await persistAudit(supabase, record);
     try {
       if (!allowPrivate) await assertPublicUrl(url);
+      // PSI runs in parallel with the crawl; failures degrade to the heuristic.
+      const psiPromise = fetchPageSpeed(url.toString()).catch((error) => {
+        logger.info('[optimizer-audit] PageSpeed unavailable, using heuristic', {
+          audit_id: auditId,
+          error: error.message
+        });
+        return null;
+      });
       const crawl = await crawlPublicSite(url.toString(), { allowPrivate });
-      record.result = await buildOptimizerResult({ startUrl: url, crawl, allowPrivate });
+      record.result = await buildOptimizerResult({ startUrl: url, crawl, allowPrivate, psi: await psiPromise });
       record.status = 'completed';
     } catch (error) {
       record.status = 'failed';
@@ -675,6 +751,7 @@ module.exports = {
   summarizeTechnical,
   summarizeAccessibility,
   summarizePerformance,
+  summarizePerformanceFromPsi,
   summarizeAiReadiness,
   buildOptimizerResult,
   startOptimizerAudit,

@@ -6,6 +6,7 @@ const {
   summarizeSchema,
   summarizeAccessibility,
   summarizePerformance,
+  summarizePerformanceFromPsi,
   summarizeAiReadiness
 } = require('../../services/optimizerAudit');
 
@@ -96,6 +97,43 @@ describe('summarizeSchema', () => {
     const result = summarizeSchema([p]);
     expect(result.score).toBe(100);
     expect(result.hasOrganization).toBe(true);
+  });
+
+  it('counts microdata/RDFa via schemaTypes, preferring it over jsonLdTypes', () => {
+    const p = page('https://a.com/', { signals: { jsonLdTypes: [], schemaTypes: ['Product', 'Organization'] } });
+    const result = summarizeSchema([p]);
+    expect(result.pagesWithSchema).toBe(1);
+    expect(result.hasOrganization).toBe(true);
+    expect(result.types).toContain('Product');
+  });
+});
+
+describe('summarizePerformanceFromPsi', () => {
+  it('returns null for malformed PSI payloads (falls back to heuristic)', () => {
+    expect(summarizePerformanceFromPsi(null)).toBeNull();
+    expect(summarizePerformanceFromPsi({})).toBeNull();
+    expect(summarizePerformanceFromPsi({ lighthouseResult: { categories: {} } })).toBeNull();
+  });
+
+  it('maps Lighthouse score and flags failing metrics', () => {
+    const psi = {
+      lighthouseResult: {
+        categories: { performance: { score: 0.62 } },
+        audits: {
+          'largest-contentful-paint': { score: 0.4, displayValue: '4.2 s' },
+          'cumulative-layout-shift': { score: 0.95, displayValue: '0.02' },
+          'total-blocking-time': { score: 0.7, displayValue: '410 ms' },
+          'first-contentful-paint': { score: 0.92, displayValue: '1.8 s' }
+        }
+      }
+    };
+    const result = summarizePerformanceFromPsi(psi);
+    expect(result.method).toBe('lighthouse');
+    expect(result.score).toBe(62);
+    expect(result.findings.join(' ')).toMatch(/Largest Contentful Paint: 4\.2 s/);
+    expect(result.findings.join(' ')).not.toMatch(/Layout shift/);
+    expect(result.findings.join(' ')).toMatch(/Lighthouse/);
+    expect(result.metrics.lcp).toBe('4.2 s');
   });
 });
 

@@ -213,6 +213,21 @@ function extractPageData(pageUrl, html) {
     } catch (_error) { /* malformed JSON-LD — counts as absent */ }
   });
 
+  // Structured data beyond JSON-LD: microdata (itemtype) and RDFa (typeof).
+  const schemaTypes = [...jsonLdTypes];
+  $('[itemscope][itemtype]').each((_index, element) => {
+    for (const itemType of String($(element).attr('itemtype') || '').split(/\s+/)) {
+      const type = itemType.split('/').pop();
+      if (type) schemaTypes.push(type);
+    }
+  });
+  $('[typeof]').each((_index, element) => {
+    for (const rdfaType of String($(element).attr('typeof') || '').split(/\s+/)) {
+      const type = rdfaType.includes(':') ? rdfaType.split(':').pop() : rdfaType;
+      if (type) schemaTypes.push(type);
+    }
+  });
+
   let unlabeledInputs = 0;
   $('input[type="text"], input[type="email"], input[type="search"], input[type="tel"], input[type="url"], input:not([type]), textarea, select').each((_index, element) => {
     const el = $(element);
@@ -241,6 +256,7 @@ function extractPageData(pageUrl, html) {
     htmlLang,
     h1Count,
     jsonLdTypes,
+    schemaTypes,
     unlabeledInputs,
     emptyLinks,
     scriptCount: $('script[src]').length,
