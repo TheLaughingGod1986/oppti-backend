@@ -6,6 +6,7 @@ const {
   getOptimizerAudit,
   getOptimizerHistory
 } = require('../services/optimizerAudit');
+const { getOptimizerProgress } = require('../services/optimizerProgress');
 
 /**
  * Oppti Optimizer plugin API.
@@ -128,6 +129,26 @@ function createOptimizerRouter({ supabase = null } = {}) {
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 12));
     const audits = await getOptimizerHistory({ siteHash, supabase, limit });
     return res.json({ ok: true, audits });
+  });
+
+  // Progress screen data: weekly report + achievements, computed from audit
+  // history and real plugin usage. Same auth rails as audit start.
+  router.get('/progress', async (req, res) => {
+    const siteHash = req.header('X-Site-Hash') || req.header('X-Site-Key');
+    if (!siteHash) {
+      return res.status(400).json({
+        ok: false,
+        error: 'SITE_HASH_REQUIRED',
+        message: 'Provide the X-Site-Hash header'
+      });
+    }
+    try {
+      const progress = await getOptimizerProgress({ siteHash, supabase });
+      return res.json({ ok: true, ...progress });
+    } catch (error) {
+      logger.warn('[optimizer] progress failed', { site_hash: siteHash, error: error.message });
+      return res.status(500).json({ ok: false, error: 'PROGRESS_FAILED', message: 'Unable to load progress' });
+    }
   });
 
   return router;

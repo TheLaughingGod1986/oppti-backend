@@ -11,7 +11,8 @@ function supportsAnonymousTrialPath(path = '') {
     || path === '/api/usage/trial-batch-plan'
     || path === '/usage'
     || path === '/api/optimizer/audit'
-    || path === '/api/optimizer/history';
+    || path === '/api/optimizer/history'
+    || path === '/api/optimizer/progress';
 }
 
 function isPublicJobPollRequest(req) {

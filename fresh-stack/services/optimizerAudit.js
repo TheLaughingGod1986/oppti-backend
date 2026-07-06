@@ -742,6 +742,43 @@ async function getOptimizerHistory({ siteHash, supabase = null, limit = 12 }) {
     }));
 }
 
+/**
+ * Completed audits (with full result objects) for one site, newest first.
+ * Supabase path returns result_json; memory is the dev fallback. Used by the
+ * progress service, which needs per-category scores from the stored result.
+ */
+async function getRecentFullAudits({ siteHash, supabase = null, limit = 12 }) {
+  if (!siteHash) return [];
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('optimizer_audits')
+      .select('id, overall_score, result_json, created_at, completed_at')
+      .eq('site_hash', siteHash)
+      .eq('status', 'completed')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (!error && data) {
+      return data.map((row) => ({
+        auditId: row.id,
+        overallScore: row.overall_score,
+        result: row.result_json,
+        completedAt: row.completed_at || row.created_at
+      }));
+    }
+    logger.warn('[optimizer-audit] full history query failed', { site_hash: siteHash, error: error && error.message });
+  }
+  return [...auditStore.values()]
+    .filter((r) => r.siteHash === siteHash && r.status === 'completed' && r.result)
+    .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))
+    .slice(0, limit)
+    .map((r) => ({
+      auditId: r.auditId,
+      overallScore: r.result.overallScore,
+      result: r.result,
+      completedAt: r.result.completedAt || r.startedAt
+    }));
+}
+
 module.exports = {
   normalizePageKey,
   isContentPage,
@@ -756,5 +793,6 @@ module.exports = {
   buildOptimizerResult,
   startOptimizerAudit,
   getOptimizerAudit,
-  getOptimizerHistory
+  getOptimizerHistory,
+  getRecentFullAudits
 };
