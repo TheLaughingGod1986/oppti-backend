@@ -674,6 +674,24 @@ function startOptimizerAudit({ siteUrl, siteHash = null, supabase = null }) {
       });
     }
     await persistAudit(supabase, record);
+
+    // Record milestones/wins vs the previous audit. Lazy require avoids a
+    // circular dependency (events → progress → audit). Non-fatal.
+    if (record.status === 'completed' && siteHash) {
+      try {
+        const { detectEvents } = require('./optimizerEvents');
+        const recent = await getRecentFullAudits({ siteHash, supabase, limit: 3 });
+        const previous = recent.find((a) => a.auditId !== auditId) || null;
+        await detectEvents({
+          supabase,
+          siteHash,
+          current: { auditId, overallScore: record.result.overallScore, result: record.result, completedAt: record.result.completedAt },
+          previous
+        });
+      } catch (error) {
+        logger.warn('[optimizer-audit] event detection failed', { audit_id: auditId, error: error.message });
+      }
+    }
   })();
 
   return record;

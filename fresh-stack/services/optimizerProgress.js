@@ -195,13 +195,19 @@ function computeAchievements(latest, usage) {
  * empty states rather than demo data.
  */
 async function getOptimizerProgress({ siteHash, supabase = null }) {
-  const [audits, usage] = await Promise.all([
+  // Lazy require avoids a circular dependency (events → progress).
+  const { getEvents } = require('./optimizerEvents');
+  const [audits, usage, wins, milestones] = await Promise.all([
     getRecentFullAudits({ siteHash, supabase, limit: 12 }),
-    getUsageTotals(supabase, siteHash)
+    getUsageTotals(supabase, siteHash),
+    getEvents({ supabase, siteHash, type: 'win', limit: 8 }),
+    getEvents({ supabase, siteHash, type: 'milestone', limit: 8 })
   ]);
   return {
     weekly: computeWeekly(audits, usage),
     achievements: computeAchievements(audits[0], usage),
+    wins,
+    milestones,
     auditCount: audits.length
   };
 }
@@ -211,5 +217,6 @@ module.exports = {
   computeWeekly,
   computeAchievements,
   ACHIEVEMENT_DEFS,
+  getSiteId,
   getOptimizerProgress
 };
