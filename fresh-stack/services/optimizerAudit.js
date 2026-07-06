@@ -304,7 +304,10 @@ function summarizeAccessibility(pages, imageSummary) {
  * calls). Any failure falls back to the page-weight heuristic. PSI can only
  * measure public URLs, so localhost dev audits always use the heuristic. */
 const PSI_ENDPOINT = 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed';
-const PSI_TIMEOUT_MS = 45000;
+// Cap PSI so a slow Lighthouse run can't push total audit time toward the
+// frontend's poll timeout. Best-effort: on timeout the audit falls back to the
+// page-weight heuristic. Configurable via env.
+const PSI_TIMEOUT_MS = Number(process.env.OPTIMIZER_PSI_TIMEOUT_MS || 25000);
 
 async function fetchPageSpeed(siteUrl) {
   const key = process.env.PAGESPEED_API_KEY;
@@ -697,6 +700,10 @@ function startOptimizerAudit({ siteUrl, siteHash = null, supabase = null }) {
   return record;
 }
 
+// An audit stuck 'running' past this is treated as interrupted (its instance
+// died mid-crawl): crawl + PSI comfortably finish well inside this window.
+const AUDIT_STALE_MS = 5 * 60 * 1000;
+
 async function getOptimizerAudit(auditId, { supabase = null } = {}) {
   const inMemory = auditStore.get(auditId);
   if (inMemory) return inMemory;
@@ -709,14 +716,29 @@ async function getOptimizerAudit(auditId, { supabase = null } = {}) {
     .eq('id', auditId)
     .maybeSingle();
   if (error || !data) return null;
+
+  let status = data.status;
+  let errorCode = data.error_code;
+  // Reconcile a stuck 'running' row: the worker instance died before it could
+  // write a terminal status. Mark it interrupted (best-effort write-back) so
+  // the client stops polling and history/progress don't count it.
+  if (status === 'running' && Date.now() - new Date(data.created_at).getTime() > AUDIT_STALE_MS) {
+    status = 'failed';
+    errorCode = 'AUDIT_INTERRUPTED';
+    supabase.from('optimizer_audits')
+      .update({ status: 'failed', error_code: 'AUDIT_INTERRUPTED', completed_at: new Date().toISOString() })
+      .eq('id', auditId).eq('status', 'running')
+      .then(({ error: uErr }) => { if (uErr) logger.warn('[optimizer-audit] stale reconcile failed', { audit_id: auditId, error: uErr.message }); });
+  }
+
   return {
     auditId: data.id,
     siteHash: data.site_hash,
     siteUrl: data.site_url,
-    status: data.status,
+    status,
     startedAt: data.created_at,
     result: data.result_json,
-    errorCode: data.error_code
+    errorCode
   };
 }
 
