@@ -208,7 +208,10 @@ async function getOptimizerProgress({ siteHash, supabase = null }) {
     achievements: computeAchievements(audits[0], usage),
     wins,
     milestones,
-    auditCount: audits.length
+    auditCount: audits.length,
+    // Full result of the most recent audit, so the dashboard can show real
+    // scores on load without forcing a re-scan.
+    latestResult: audits[0] ? audits[0].result : null
   };
 }
 
