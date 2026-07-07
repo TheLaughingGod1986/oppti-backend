@@ -218,11 +218,44 @@ function buildSiteIdentity({
 }
 
 function extractSiteIdentityFromRequest(req, body = req?.body || {}) {
+  const siteHash = req?.header('X-Site-Hash')
+    || req?.header('X-Site-Key')
+    || body.site_id
+    || body.site_hash
+    || body.site_key
+    || body.site_identifier
+    || body.siteId
+    || body.siteHash
+    || body.siteKey
+    || body.siteIdentifier
+    || body.install_id
+    || body.installId
+    || body.site_install_id
+    || body.siteInstallId
+    || null;
+  const installUuid = req?.header('X-Install-Hash')
+    || req?.header('X-Install-UUID')
+    || body.install_hash
+    || body.installHash
+    || body.install_uuid
+    || body.installUuid
+    || body.install_id
+    || body.installId
+    || body.site_install_id
+    || body.siteInstallId
+    || body.site_id
+    || body.site_hash
+    || body.site_key
+    || body.siteId
+    || body.siteHash
+    || body.siteKey
+    || null;
+
   return buildSiteIdentity({
     siteUrl: req?.header('X-Site-URL') || body.site_url || body.siteUrl || null,
-    siteHash: req?.header('X-Site-Hash') || req?.header('X-Site-Key') || body.site_id || body.siteId || body.siteHash || body.installId || null,
+    siteHash,
     siteFingerprint: req?.header('X-Site-Fingerprint') || body.site_fingerprint || body.siteFingerprint || body.fingerprint || null,
-    installUuid: req?.header('X-Install-Hash') || req?.header('X-Install-UUID') || body.install_hash || body.installHash || body.install_uuid || body.installUuid || body.site_id || body.siteId || body.installId || null
+    installUuid
   });
 }
 

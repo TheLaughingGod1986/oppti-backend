@@ -35,9 +35,36 @@ function maskEmail(email) {
 }
 
 function buildAuthSiteContext(body = {}) {
+  const siteHash = body.site_id
+    || body.site_hash
+    || body.site_key
+    || body.site_identifier
+    || body.siteId
+    || body.siteHash
+    || body.siteKey
+    || body.siteIdentifier
+    || body.install_id
+    || body.installId
+    || body.site_install_id
+    || body.siteInstallId
+    || null;
+  const installUuid = body.install_uuid
+    || body.installUuid
+    || body.install_id
+    || body.installId
+    || body.site_install_id
+    || body.siteInstallId
+    || body.site_id
+    || body.site_hash
+    || body.site_key
+    || body.siteId
+    || body.siteHash
+    || body.siteKey
+    || null;
+
   return buildSiteIdentity({
-    siteHash: body.site_id || body.siteId || body.siteHash || body.installId || null,
-    installUuid: body.install_uuid || body.installUuid || body.site_id || body.siteId || body.installId || null,
+    siteHash,
+    installUuid,
     siteUrl: body.site_url || body.siteUrl || null,
     siteFingerprint: body.site_fingerprint || body.siteFingerprint || body.fingerprint || null,
     // Allow localhost/dev installs to register/login and link context.
@@ -411,10 +438,25 @@ function createAuthRouter({ supabase }) {
       password: z.string().min(8),
       name: z.string().optional(),
       site_id: z.string().optional(),
+      site_hash: z.string().optional(),
+      site_key: z.string().optional(),
+      site_identifier: z.string().optional(),
+      siteId: z.string().optional(),
+      siteHash: z.string().optional(),
+      siteKey: z.string().optional(),
+      siteIdentifier: z.string().optional(),
       site_url: z.string().optional(),
+      siteUrl: z.string().optional(),
       site_fingerprint: z.string().optional(),
+      siteFingerprint: z.string().optional(),
+      fingerprint: z.string().optional(),
       anon_id: z.string().optional(),
       install_uuid: z.string().optional(),
+      installUuid: z.string().optional(),
+      install_id: z.string().optional(),
+      installId: z.string().optional(),
+      site_install_id: z.string().optional(),
+      siteInstallId: z.string().optional(),
       blog_id: z.number().optional(),
       network_id: z.number().optional(),
       is_multisite: z.boolean().optional(),
@@ -693,10 +735,25 @@ function createAuthRouter({ supabase }) {
       email: z.string().email(),
       password: z.string(),
       site_id: z.string().optional(),
+      site_hash: z.string().optional(),
+      site_key: z.string().optional(),
+      site_identifier: z.string().optional(),
+      siteId: z.string().optional(),
+      siteHash: z.string().optional(),
+      siteKey: z.string().optional(),
+      siteIdentifier: z.string().optional(),
       site_url: z.string().optional(),
+      siteUrl: z.string().optional(),
       site_fingerprint: z.string().optional(),
+      siteFingerprint: z.string().optional(),
+      fingerprint: z.string().optional(),
       anon_id: z.string().optional(),
       install_uuid: z.string().optional(),
+      installUuid: z.string().optional(),
+      install_id: z.string().optional(),
+      installId: z.string().optional(),
+      site_install_id: z.string().optional(),
+      siteInstallId: z.string().optional(),
       blog_id: z.number().optional(),
       network_id: z.number().optional(),
       is_multisite: z.boolean().optional(),

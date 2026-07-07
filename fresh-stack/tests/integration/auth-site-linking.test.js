@@ -403,6 +403,62 @@ describe('site-aware auth linking', () => {
     expect(new Set(supabase._state.siteMemberships.map((membership) => membership.user_id)).size).toBe(2);
   });
 
+  test('registration resolves sandbox payload by site_hash alias before ambiguous domain matching', async () => {
+    const supabase = createSupabaseMock();
+    const targetSite = {
+      id: 'site_sandbox_target',
+      license_key: null,
+      site_hash: 'sandbox-install-target',
+      wp_install_uuid: 'sandbox-install-target',
+      site_url: 'https://eu2.wpsandbox.org/site/s-target',
+      normalized_site_url: 'eu2.wpsandbox.org/site/s-target',
+      canonical_domain: 'eu2.wpsandbox.org',
+      site_fingerprint: 'sandbox-fingerprint-target',
+      status: 'active',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    supabase._state.sites.push(
+      targetSite,
+      {
+        id: 'site_sandbox_other',
+        license_key: null,
+        site_hash: 'sandbox-install-other',
+        wp_install_uuid: 'sandbox-install-other',
+        site_url: 'https://eu2.wpsandbox.org/site/s-other',
+        normalized_site_url: 'eu2.wpsandbox.org/site/s-other',
+        canonical_domain: 'eu2.wpsandbox.org',
+        site_fingerprint: 'sandbox-fingerprint-other',
+        status: 'active',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }
+    );
+
+    const app = createApp(supabase);
+    const res = await request(app)
+      .post('/auth/register')
+      .send({
+        email: 'sandbox-alias@example.com',
+        password: 'Password123!',
+        site_hash: 'sandbox-install-target',
+        site_key: 'sandbox-install-target',
+        install_id: 'sandbox-install-target',
+        site_install_id: 'sandbox-install-target',
+        site_url: 'https://eu2.wpsandbox.org/wp-admin/'
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.code).not.toBe('AMBIGUOUS_SITE_MATCH');
+    expect(res.body.site).toEqual(expect.objectContaining({
+      id: targetSite.id,
+      site_hash: targetSite.site_hash
+    }));
+    expect(supabase._state.siteAuditLogs).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_type: 'ambiguous_site_match' })
+    ]));
+  });
+
   test('registration records anonymous trial merge when the site already has trial usage', async () => {
     const supabase = createSupabaseMock();
     const existingSite = {
