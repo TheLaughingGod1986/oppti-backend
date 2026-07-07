@@ -551,6 +551,60 @@ describe('POST /billing/webhook', () => {
     expect(trackPlanUpgraded).not.toHaveBeenCalled();
   });
 
+  test('emits payment_recovered when invoice succeeds after prior failed attempts', async () => {
+    const supabase = createSupabaseMock({
+      accounts: [
+        {
+          id: 'account_recovered',
+          email: 'recovered@example.com',
+          license_key: 'lic_recovered',
+          stripe_customer_id: 'cus_recovered',
+          stripe_subscription_id: 'sub_recovered',
+          plan: 'pro'
+        }
+      ]
+    });
+
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_invoice_recovered',
+      type: 'invoice.payment_succeeded',
+      data: {
+        object: {
+          id: 'in_recovered',
+          amount_paid: 1499,
+          currency: 'usd',
+          customer: 'cus_recovered',
+          subscription: 'sub_recovered',
+          billing_reason: 'subscription_cycle',
+          attempt_count: 2,
+          livemode: true,
+          metadata: {},
+          lines: {
+            data: [{ price: { id: 'price_pro', product: 'prod_pro', recurring: { interval: 'month' } } }]
+          }
+        }
+      }
+    });
+
+    const app = createApp({ supabase });
+    const res = await sendWebhook(app, 'evt_invoice_recovered');
+
+    expect(res.status).toBe(200);
+    expect(captureServerEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'payment_recovered',
+      distinctId: 'account_recovered',
+      properties: expect.objectContaining({
+        event_source: 'stripe_webhook',
+        stripe_event_id: 'evt_invoice_recovered',
+        billing_reason: 'subscription_cycle'
+      })
+    }));
+    expect(captureServerEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'subscription_renewed',
+      distinctId: 'account_recovered'
+    }));
+  });
+
   test('still acknowledges Stripe when Loops payment succeeded tracking fails', async () => {
     const supabase = createSupabaseMock({
       accounts: [

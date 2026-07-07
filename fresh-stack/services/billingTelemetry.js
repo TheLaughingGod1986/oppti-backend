@@ -232,31 +232,43 @@ function resolveCanonicalEvents({
   }
 
   if (stripeEventType === 'invoice.payment_succeeded' || stripeEventType === 'invoice.paid') {
+    const events = [];
+
+    if (eventProperties.payment_recovered) {
+      events.push('payment_recovered');
+    }
+
     if (eventProperties.is_trial_conversion) {
-      return ['trial_converted', 'subscription_activated'];
+      events.push('trial_converted', 'subscription_activated');
+      return events;
     }
     if (billingReason === 'subscription_create') {
       if (subscriptionStatus === 'trialing') {
-        return ['trial_started'];
+        events.push('trial_started');
+      } else {
+        events.push('subscription_activated');
       }
-      return ['subscription_activated'];
+      return events;
     }
     if (billingReason === 'subscription_cycle') {
-      return ['subscription_renewed'];
+      events.push('subscription_renewed');
+      return events;
     }
     if (billingReason === 'subscription_update') {
       if (purchaseType === 'upgrade' || planTierDelta > 0) {
-        return ['subscription_upgraded'];
+        events.push('subscription_upgraded');
+      } else if (planTierDelta < 0) {
+        events.push('subscription_downgraded');
+      } else {
+        events.push('subscription_renewed');
       }
-      if (planTierDelta < 0) {
-        return ['subscription_downgraded'];
-      }
-      return ['subscription_renewed'];
+      return events;
     }
     if (!eventProperties.stripe_subscription_id) {
-      return [];
+      return events;
     }
-    return ['subscription_activated'];
+    events.push('subscription_activated');
+    return events;
   }
 
   if (stripeEventType === 'customer.subscription.updated') {
@@ -297,10 +309,6 @@ function resolveCanonicalEvents({
 
   if (stripeEventType === 'charge.refunded' || stripeEventType === 'refund.created') {
     return ['refund_processed'];
-  }
-
-  if (stripeEventType === 'invoice.payment_succeeded' && eventProperties.payment_recovered) {
-    return ['payment_recovered'];
   }
 
   return [];

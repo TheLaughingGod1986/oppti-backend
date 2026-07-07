@@ -453,6 +453,14 @@ function inferTrialConversion({ metadata, purchaseType }) {
   return null;
 }
 
+function inferPaymentRecovered(invoice) {
+  if (!invoice) return false;
+  if (typeof invoice.attempt_count === 'number' && invoice.attempt_count > 1) {
+    return true;
+  }
+  return false;
+}
+
 function resolveCommercialPlan({ metadata, context, accountPlan }) {
   return normalizePlanValue(
     extractMetadataValue(metadata, ['plan', 'plan_type', 'planType'])
@@ -1608,7 +1616,8 @@ async function buildInvoiceSucceededPayload({
       billing_reason: invoice.billing_reason || null,
       billing_period: billingPeriod,
       purchase_type: purchaseType,
-      is_trial_conversion: inferTrialConversion({ metadata, purchaseType })
+      is_trial_conversion: inferTrialConversion({ metadata, purchaseType }),
+      payment_recovered: inferPaymentRecovered(invoice)
     }
   };
 }

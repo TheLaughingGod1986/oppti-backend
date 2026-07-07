@@ -31,6 +31,32 @@ describe('billingTelemetry', () => {
     expect(events).toEqual(['subscription_renewed']);
   });
 
+  test('maps recovered invoice payment to payment_recovered before subscription_cycle', () => {
+    const events = resolveCanonicalEvents({
+      stripeEventType: 'invoice.payment_succeeded',
+      eventProperties: {
+        billing_reason: 'subscription_cycle',
+        plan: 'pro',
+        payment_recovered: true
+      }
+    });
+
+    expect(events).toEqual(['payment_recovered', 'subscription_renewed']);
+  });
+
+  test('maps recovered subscription_create invoice to payment_recovered and subscription_activated', () => {
+    const events = resolveCanonicalEvents({
+      stripeEventType: 'invoice.payment_succeeded',
+      eventProperties: {
+        billing_reason: 'subscription_create',
+        plan: 'pro',
+        payment_recovered: true
+      }
+    });
+
+    expect(events).toEqual(['payment_recovered', 'subscription_activated']);
+  });
+
   test('builds canonical billing properties with mrr delta', () => {
     const properties = buildCanonicalProperties({
       stripeEventId: 'evt_test',
