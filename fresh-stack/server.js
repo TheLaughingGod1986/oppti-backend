@@ -31,6 +31,7 @@ const {
 } = require('./services/dataIntegrityDiagnostics');
 const { getBillingPlansJson, getBillingPlansJsonLive } = require('./services/billingPlansCatalog');
 const { buildBillingHealth } = require('./services/billingHealth');
+const { scheduleCustomerHealthCron } = require('./services/customerHealthTelemetry');
 const rateLimitMiddleware = require('./middleware/rateLimit');
 const { authMiddleware } = require('./middleware/auth');
 const requestId = require('./middleware/requestId');
@@ -463,6 +464,8 @@ function startServer({
       } catch (err) {
         logger.warn('[init] V2 schema probe failed (non-fatal)', { error: err.message });
       }
+
+      scheduleCustomerHealthCron(supabaseClient);
     }
   });
 }

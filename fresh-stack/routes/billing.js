@@ -4,6 +4,11 @@ const logger = require('../lib/logger');
 const { verifyWebhookSignature } = require('../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../lib/posthog');
 const {
+  emitCanonicalBillingEvents,
+  emitPaymentFailedEvent,
+  resolveAttributionFromMetadata
+} = require('../services/billingTelemetry');
+const {
   trackPaymentFailed,
   trackPaymentSucceeded,
   trackPlanUpgraded
@@ -298,21 +303,44 @@ function normalizeCheckoutAttribution(body = {}) {
     licenseKey: sanitizeStripeMetadataValue(body.license_key),
     siteId: sanitizeStripeMetadataValue(body.site_id),
     siteHash: sanitizeStripeMetadataValue(body.site_hash),
+    siteInstallId: sanitizeStripeMetadataValue(body.site_install_id),
     email: sanitizeStripeMetadataValue(body.email, { lowercase: true }),
     triggerFeature: sanitizeStripeMetadataValue(body.trigger_feature),
     triggerLocation: sanitizeStripeMetadataValue(body.trigger_location),
     sourcePage: sanitizeStripeMetadataValue(body.source_page),
     targetPlan: normalizePlanValue(targetPlan) || targetPlan,
-    source: sanitizeStripeMetadataValue(body.source)
+    source: sanitizeStripeMetadataValue(body.source),
+    utmSource: sanitizeStripeMetadataValue(body.utm_source),
+    utmMedium: sanitizeStripeMetadataValue(body.utm_medium),
+    utmCampaign: sanitizeStripeMetadataValue(body.utm_campaign),
+    utmContent: sanitizeStripeMetadataValue(body.utm_content),
+    utmTerm: sanitizeStripeMetadataValue(body.utm_term),
+    referrer: sanitizeStripeMetadataValue(body.referrer),
+    landingPage: sanitizeStripeMetadataValue(body.landing_page),
+    acquisitionChannel: sanitizeStripeMetadataValue(body.acquisition_channel),
+    pluginVersion: sanitizeStripeMetadataValue(body.plugin_version),
+    country: sanitizeStripeMetadataValue(body.country)
   };
 }
 
 function resolveAttributionProperties(metadata = {}) {
+  const attribution = resolveAttributionFromMetadata(metadata);
   return {
     trigger_feature: extractMetadataValue(metadata, ['trigger_feature', 'triggerFeature']),
     trigger_location: extractMetadataValue(metadata, ['trigger_location', 'triggerLocation']),
     source_page: extractMetadataValue(metadata, ['source_page', 'sourcePage']),
-    target_plan: extractMetadataValue(metadata, ['target_plan', 'targetPlan'])
+    target_plan: extractMetadataValue(metadata, ['target_plan', 'targetPlan']),
+    utm_source: attribution.utm_source,
+    utm_medium: attribution.utm_medium,
+    utm_campaign: attribution.utm_campaign,
+    utm_content: attribution.utm_content,
+    utm_term: attribution.utm_term,
+    referrer: attribution.referrer,
+    landing_page: attribution.landing_page,
+    acquisition_channel: attribution.acquisition_channel,
+    plugin_version: extractMetadataValue(metadata, ['plugin_version', 'pluginVersion']),
+    site_install_id: extractMetadataValue(metadata, ['site_install_id', 'siteInstallId']),
+    country: extractMetadataValue(metadata, ['country'])
   };
 }
 
@@ -1969,10 +1997,13 @@ async function reconcileSiteEntitlement({
 
 async function emitPaymentSucceeded({
   stripeEventId,
+  stripeEventType,
   distinctId,
   distinctIdSource,
   account,
-  eventProperties
+  site,
+  eventProperties,
+  metadata = {}
 }) {
   if (!distinctId) {
     logger.warn('[billing] webhook payment_succeeded skipped: no distinct id', {
@@ -1996,40 +2027,38 @@ async function emitPaymentSucceeded({
     stripeSubscriptionId: eventProperties.stripe_subscription_id || null
   });
 
-  logger.info('[billing] identity path', {
-    stripeEventId,
-    stripeEventType: eventProperties.stripe_event_type,
-    path: eventProperties.identity_path || resolveIdentityPath({ resolutionSource: null, distinctIdSource })
-  });
-
   logger.info('[billing] PostHog capture attempt', {
     stripeEventId,
     stripeEventType: eventProperties.stripe_event_type,
     distinctId
   });
 
-  const result = await captureServerEvent({
-    event: 'payment_succeeded',
+  const canonicalResult = await emitCanonicalBillingEvents({
+    stripeEventId,
+    stripeEventType: stripeEventType || eventProperties.stripe_event_type,
     distinctId,
-    properties: {
+    eventProperties: {
       ...eventProperties,
-      stripe_event_id: stripeEventId,
-      $insert_id: stripeEventId
-    }
+      previous_plan: eventProperties.previous_plan || eventProperties.current_plan || account?.plan || null
+    },
+    metadata,
+    site,
+    account,
+    includeLegacyPaymentSucceeded: true
   });
 
-  if (result.ok) {
+  const legacyCapture = canonicalResult.emitted.find((entry) => entry.event === 'payment_succeeded');
+  if (legacyCapture?.ok) {
     logger.info('[billing] PostHog capture succeeded', {
       stripeEventId,
       stripeEventType: eventProperties.stripe_event_type,
-      status: result.status || null
+      status: legacyCapture.status || null
     });
-  } else if (!result.skipped) {
+  } else if (legacyCapture && !legacyCapture.skipped) {
     logger.warn('[billing] PostHog capture failed', {
       stripeEventId,
       stripeEventType: eventProperties.stripe_event_type,
-      status: result.status || null,
-      error: result.error?.message || null
+      status: legacyCapture.status || null
     });
   }
 
@@ -2301,10 +2330,13 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
             };
             await emitPaymentSucceeded({
               stripeEventId: event.id,
+              stripeEventType: event.type,
               distinctId: payload.distinctId,
               distinctIdSource: payload.distinctIdSource,
               account: payload.account,
-              eventProperties: payload.eventProperties
+              site: payload.site,
+              eventProperties: payload.eventProperties,
+              metadata: session.metadata || {}
             });
             await emitLoopsPaymentSucceeded({
               stripeEventId: event.id,
@@ -2338,6 +2370,19 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               site_id: payload.site?.id || null,
               site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
             };
+            await emitCanonicalBillingEvents({
+              stripeEventId: event.id,
+              stripeEventType: event.type,
+              distinctId: payload.distinctId,
+              eventProperties: {
+                ...payload.eventProperties,
+                previous_plan: payload.eventProperties.current_plan || payload.account?.plan || 'free'
+              },
+              metadata: session.metadata || {},
+              site: payload.site,
+              account: payload.account,
+              subscriptionStatus: 'active'
+            });
           }
           logger.info('[billing] webhook_write_trace', billingTrace);
           break;
@@ -2375,12 +2420,16 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               site_id: payload.site?.id || null,
               site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
             };
+            const invoiceMetadata = await resolveInvoiceMetadata(stripeClient, invoice);
             await emitPaymentSucceeded({
               stripeEventId: event.id,
+              stripeEventType: event.type,
               distinctId: payload.distinctId,
               distinctIdSource: payload.distinctIdSource,
               account: payload.account,
-              eventProperties: payload.eventProperties
+              site: payload.site,
+              eventProperties: payload.eventProperties,
+              metadata: invoiceMetadata
             });
             await emitLoopsPaymentSucceeded({
               stripeEventId: event.id,
@@ -2401,6 +2450,49 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               stripeEventId: event.id,
               paymentIntent
             });
+            const failedProps = buildPaymentFailedEventProperties(paymentIntent);
+            const metadata = mergeStripeMetadata(paymentIntent.metadata, getExpandedLatestCharge(paymentIntent)?.metadata);
+            const identity = await resolveIdentityContext({
+              supabase,
+              metadata,
+              email: failedProps.email,
+              stripeCustomerId: normalizeStripeId(paymentIntent.customer),
+              stripeSubscriptionId: null
+            });
+            const { distinctId } = resolveDistinctIdFromStripeEvent({
+              account: identity.account,
+              accountId: identity.accountId,
+              userId: identity.userId,
+              licenseKey: identity.licenseKey,
+              site: identity.site,
+              siteId: identity.siteId,
+              siteHash: identity.siteHash,
+              stripeCustomerId: normalizeStripeId(paymentIntent.customer),
+              stripeSubscriptionId: null,
+              email: identity.email,
+              checkoutSessionId: failedProps.checkout_session_id,
+              invoiceId: null
+            });
+            if (distinctId) {
+              await emitPaymentFailedEvent({
+                stripeEventId: event.id,
+                distinctId,
+                eventProperties: {
+                  ...failedProps,
+                  stripe_event_type: event.type,
+                  stripe_customer_id: normalizeStripeId(paymentIntent.customer),
+                  account_id: identity.account?.id || identity.accountId || null,
+                  user_id: identity.userId || identity.account?.id || null,
+                  site_id: identity.siteId,
+                  site_hash: identity.siteHash,
+                  license_key: identity.licenseKey,
+                  license_key_present: Boolean(identity.licenseKey)
+                },
+                metadata,
+                site: identity.site,
+                account: identity.account
+              });
+            }
             billingTrace = {
               ...billingTrace,
               payment_intent_id: normalizeStripeId(paymentIntent),
@@ -2408,6 +2500,66 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               loops_payment_failed_recoverability: loopsTrace.eventProperties?.recoverability || null,
               loops_payment_failed_suppression_reason: loopsTrace.eventProperties?.suppression_reason || null
             };
+          }
+          logger.info('[billing] webhook_write_trace', billingTrace);
+          break;
+        }
+        case 'charge.refunded':
+        case 'refund.created': {
+          const refundObject = event.data?.object;
+          const charge = refundObject?.charge && typeof refundObject.charge === 'object'
+            ? refundObject.charge
+            : null;
+          const metadata = mergeStripeMetadata(refundObject?.metadata, charge?.metadata);
+          const stripeCustomerId = normalizeStripeId(charge?.customer || refundObject?.customer);
+          const identity = await resolveIdentityContext({
+            supabase,
+            metadata,
+            email: null,
+            stripeCustomerId,
+            stripeSubscriptionId: null
+          });
+          const currency = normalizeCurrency(refundObject?.currency || charge?.currency);
+          const amountMinor = refundObject?.amount ?? charge?.amount_refunded ?? null;
+          const amount = resolveAmount(amountMinor, currency);
+          const { distinctId } = resolveDistinctIdFromStripeEvent({
+            account: identity.account,
+            accountId: identity.accountId,
+            userId: identity.userId,
+            licenseKey: identity.licenseKey,
+            site: identity.site,
+            siteId: identity.siteId,
+            siteHash: identity.siteHash,
+            stripeCustomerId,
+            stripeSubscriptionId: null,
+            email: identity.email,
+            checkoutSessionId: null,
+            invoiceId: null
+          });
+          if (distinctId) {
+            await emitCanonicalBillingEvents({
+              stripeEventId: event.id,
+              stripeEventType: event.type,
+              distinctId,
+              eventProperties: {
+                source: 'stripe_webhook',
+                stripe_event_type: event.type,
+                amount,
+                amount_minor: amountMinor,
+                currency,
+                plan: normalizePlanValue(extractMetadataValue(metadata, ['plan', 'target_plan'])) || identity.account?.plan || 'unknown',
+                stripe_customer_id: stripeCustomerId,
+                account_id: identity.account?.id || identity.accountId || null,
+                user_id: identity.userId || identity.account?.id || null,
+                site_id: identity.siteId,
+                site_hash: identity.siteHash,
+                license_key: identity.licenseKey,
+                license_key_present: Boolean(identity.licenseKey)
+              },
+              metadata,
+              site: identity.site,
+              account: identity.account
+            });
           }
           logger.info('[billing] webhook_write_trace', billingTrace);
           break;
@@ -2455,6 +2607,46 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               site_id: payload.site?.id || null,
               site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
             };
+            const { distinctId } = resolveDistinctIdFromStripeEvent({
+              account: payload.account,
+              accountId: payload.eventProperties.account_id,
+              userId: payload.eventProperties.user_id,
+              licenseKey: payload.eventProperties.license_key,
+              site: payload.site,
+              siteId: payload.eventProperties.site_id,
+              siteHash: payload.eventProperties.site_hash,
+              stripeCustomerId: payload.eventProperties.stripe_customer_id,
+              stripeSubscriptionId: payload.eventProperties.stripe_subscription_id,
+              email: payload.eventProperties.email,
+              checkoutSessionId: null,
+              invoiceId: null
+            });
+            if (distinctId) {
+              await emitCanonicalBillingEvents({
+                stripeEventId: event.id,
+                stripeEventType: event.type,
+                distinctId,
+                eventProperties: {
+                  ...payload.eventProperties,
+                  previous_plan: payload.account?.plan || 'free',
+                  purchase_type: event.type === 'customer.subscription.deleted'
+                    ? 'cancellation'
+                    : inferPurchaseType({
+                      eventType: event.type,
+                      paymentMode: null,
+                      stripeSubscriptionId: payload.eventProperties.stripe_subscription_id,
+                      billingReason: 'subscription_update',
+                      plan: payload.eventProperties.plan,
+                      currentPlan: payload.account?.plan || 'free',
+                      metadataPurchaseType: null
+                    })
+                },
+                metadata: subscription.metadata || {},
+                site: payload.site,
+                account: payload.account,
+                subscriptionStatus: payload.subscription?.status || subscription?.status || null
+              });
+            }
           }
           logger.info('[billing] webhook_write_trace', billingTrace);
           break;
@@ -2705,6 +2897,9 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         site_hash: sanitizeStripeMetadataValue(siteRecord?.site_hash)
           || sanitizeStripeMetadataValue(siteKey)
           || requestedAttribution.siteHash,
+        site_install_id: sanitizeStripeMetadataValue(siteRecord?.site_hash)
+          || sanitizeStripeMetadataValue(siteKey)
+          || requestedAttribution.siteInstallId,
         user_id: sanitizeStripeMetadataValue(req.user?.id)
           || requestedAttribution.userId
           || sanitizeStripeMetadataValue(account?.id),
@@ -2717,7 +2912,17 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         trigger_location: requestedAttribution.triggerLocation,
         source_page: requestedAttribution.sourcePage,
         target_plan: selectedPlanId || requestedAttribution.targetPlan || undefined,
-        source: 'app'
+        source: 'app',
+        utm_source: requestedAttribution.utmSource,
+        utm_medium: requestedAttribution.utmMedium,
+        utm_campaign: requestedAttribution.utmCampaign,
+        utm_content: requestedAttribution.utmContent,
+        utm_term: requestedAttribution.utmTerm,
+        referrer: requestedAttribution.referrer,
+        landing_page: requestedAttribution.landingPage,
+        acquisition_channel: requestedAttribution.acquisitionChannel,
+        plugin_version: requestedAttribution.pluginVersion,
+        country: requestedAttribution.country
       };
       const metadata = Object.fromEntries(
         Object.entries(checkoutMetadata).filter(([, value]) => value !== undefined && value !== null && value !== '')

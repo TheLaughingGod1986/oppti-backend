@@ -7,7 +7,8 @@ jest.mock('../../lib/stripe', () => ({
 
 jest.mock('../../lib/posthog', () => ({
   captureServerEvent: jest.fn().mockResolvedValue({ ok: true, status: 200 }),
-  identifyServerUser: jest.fn().mockResolvedValue({ ok: true, status: 200 })
+  identifyServerUser: jest.fn().mockResolvedValue({ ok: true, status: 200 }),
+  aliasServerUser: jest.fn().mockResolvedValue({ ok: true, status: 200 })
 }));
 
 jest.mock('../../../src/services/loops', () => ({
@@ -992,7 +993,7 @@ describe('POST /billing/webhook', () => {
     });
   });
 
-  test('does not emit payment_succeeded for subscription checkout completion', async () => {
+  test('emits checkout_completed for subscription checkout completion without payment_succeeded', async () => {
     verifyWebhookSignature.mockReturnValue({
       id: 'evt_checkout_subscription',
       type: 'checkout.session.completed',
@@ -1009,7 +1010,13 @@ describe('POST /billing/webhook', () => {
     const res = await sendWebhook(app, 'evt_checkout_subscription');
 
     expect(res.status).toBe(200);
-    expect(captureServerEvent).not.toHaveBeenCalled();
+    expect(captureServerEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'checkout_completed',
+      distinctId: 'cs_sub_123'
+    }));
+    expect(captureServerEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: 'payment_succeeded'
+    }));
   });
 
   test('tracks invoice.payment_succeeded for subscription payments and persists stripe subscription mappings', async () => {

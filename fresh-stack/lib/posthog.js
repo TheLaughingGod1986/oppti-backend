@@ -74,8 +74,26 @@ async function identifyServerUser({ distinctId, properties = {} }) {
   });
 }
 
+async function aliasServerUser({ distinctId, alias }) {
+  if (!distinctId || !alias || distinctId === alias) {
+    return { ok: false, skipped: true };
+  }
+
+  return sendPostHogRequest({
+    path: '/capture/',
+    payload: {
+      event: '$create_alias',
+      distinct_id: distinctId,
+      properties: {
+        alias
+      }
+    }
+  });
+}
+
 module.exports = {
   captureServerEvent,
   identifyServerUser,
+  aliasServerUser,
   getPostHogConfig
 };
