@@ -218,10 +218,14 @@ async function summarizeTechnical({ startUrl, sitemapFound, allowPrivate }) {
       return false;
     }
   };
-  const robotsFound = await probe('/robots.txt');
-  const llmsFound = await probe('/llms.txt');
+  // Probe the three well-known files in parallel — they're independent fetches.
+  const [robotsFound, llmsFound, wpSitemap] = await Promise.all([
+    probe('/robots.txt'),
+    probe('/llms.txt'),
+    sitemapFound ? Promise.resolve(true) : probe('/wp-sitemap.xml')
+  ]);
   // WordPress serves /wp-sitemap.xml when /sitemap.xml is absent.
-  const sitemap = sitemapFound || await probe('/wp-sitemap.xml');
+  const sitemap = sitemapFound || wpSitemap;
 
   const score = clampScore((https ? 40 : 0) + (robotsFound ? 20 : 0) + (sitemap ? 25 : 0) + (llmsFound ? 15 : 0));
 

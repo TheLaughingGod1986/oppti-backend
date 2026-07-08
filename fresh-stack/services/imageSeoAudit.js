@@ -14,6 +14,9 @@ const {
 const DEFAULT_MAX_PAGES = Number(process.env.IMAGE_SEO_AUDIT_MAX_PAGES || 25);
 const DEFAULT_MAX_IMAGES = Number(process.env.IMAGE_SEO_AUDIT_MAX_IMAGES || 250);
 const FETCH_TIMEOUT_MS = Number(process.env.IMAGE_SEO_AUDIT_FETCH_TIMEOUT_MS || 8000);
+// Pages fetched concurrently per wave — the crawl is I/O-bound on the target
+// origin, so parallelism dominates total audit time.
+const CRAWL_CONCURRENCY = Number(process.env.IMAGE_SEO_AUDIT_CONCURRENCY || 6);
 const USER_AGENT = 'OpttiAI-Image-SEO-Audit/1.0 (+https://oppti.dev/image-seo-audit)';
 
 function normalizeEmail(email) {
@@ -577,44 +580,59 @@ async function crawlPublicSite(siteUrl, { maxPages = DEFAULT_MAX_PAGES, maxImage
     });
   }
 
+  // Crawl in parallel waves — pages are fetched concurrently (bounded) rather
+  // than one at a time, which dominates total audit time on slow origins.
   while (queue.length > 0 && pages.length < maxPages && images.length < maxImages) {
-    const url = queue.shift();
-    const key = url.toString();
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    if (!allowPrivate) await assertPublicUrl(url);
-    let fetched;
-    try {
-      fetched = await fetchText(url);
-    } catch (error) {
-      logger.warn('[image-seo-audit] page fetch failed', {
-        url: key,
-        error: error.code || error.message
-      });
-      continue;
+    // Fill a batch of unseen URLs up to the concurrency limit and remaining cap.
+    const batch = [];
+    while (
+      batch.length < CRAWL_CONCURRENCY
+      && queue.length > 0
+      && (pages.length + batch.length) < maxPages
+    ) {
+      const url = queue.shift();
+      const key = url.toString();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      batch.push(url);
     }
+    if (batch.length === 0) break;
 
-    if (fetched.url.origin !== startUrl.origin) continue;
-    const page = extractPageData(fetched.url, fetched.text);
-    pages.push({
-      url: fetched.url.toString(),
-      title: page.title,
-      imageCount: page.images.length,
-      // Outbound same-origin link targets (deduped) — lets consumers build an
-      // internal-link graph without re-crawling. Additive; email/PDF ignore it.
-      links: [...new Set(page.links.map((link) => link.toString()))],
-      // Per-page SEO/schema/a11y/perf signals for the optimizer audit.
-      signals: page.signals
-    });
+    const fetched = await Promise.all(batch.map(async (url) => {
+      if (!allowPrivate) {
+        try { await assertPublicUrl(url); } catch (error) { return null; }
+      }
+      try {
+        return { url, result: await fetchText(url) };
+      } catch (error) {
+        logger.warn('[image-seo-audit] page fetch failed', { url: url.toString(), error: error.code || error.message });
+        return null;
+      }
+    }));
 
-    for (const image of page.images) {
-      if (images.length >= maxImages) break;
-      images.push(image);
-    }
-
-    for (const link of page.links) {
-      uniquePush(queue, seen, link, maxPages);
+    for (const item of fetched) {
+      if (!item) continue;
+      const page = extractPageData(item.result.url, item.result.text);
+      if (item.result.url.origin !== startUrl.origin) continue;
+      if (pages.length < maxPages) {
+        pages.push({
+          url: item.result.url.toString(),
+          title: page.title,
+          imageCount: page.images.length,
+          // Outbound same-origin link targets (deduped) — lets consumers build an
+          // internal-link graph without re-crawling. Additive; email/PDF ignore it.
+          links: [...new Set(page.links.map((link) => link.toString()))],
+          // Per-page SEO/schema/a11y/perf signals for the optimizer audit.
+          signals: page.signals
+        });
+      }
+      for (const image of page.images) {
+        if (images.length >= maxImages) break;
+        images.push(image);
+      }
+      for (const link of page.links) {
+        uniquePush(queue, seen, link, maxPages);
+      }
     }
   }
 
