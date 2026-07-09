@@ -141,12 +141,32 @@ async function fetchText(url) {
   }
 }
 
+function hostKey(hostname) {
+  return String(hostname || '').toLowerCase().replace(/^www\./, '');
+}
+
+function isSameSite(urlA, urlB) {
+  if (!urlA || !urlB) return false;
+  try {
+    const a = urlA instanceof URL ? urlA : new URL(String(urlA));
+    const b = urlB instanceof URL ? urlB : new URL(String(urlB));
+    if (!['http:', 'https:'].includes(a.protocol) || !['http:', 'https:'].includes(b.protocol)) {
+      return false;
+    }
+    return hostKey(a.hostname) === hostKey(b.hostname);
+  } catch (_error) {
+    return false;
+  }
+}
+
 function sameOriginUrl(baseUrl, href) {
   if (!href) return null;
   try {
     const next = new URL(href, baseUrl);
     if (!['http:', 'https:'].includes(next.protocol)) return null;
-    if (next.origin !== baseUrl.origin) return null;
+    // Treat apex and www as the same site so sitemap/link discovery survives
+    // common canonical redirects (service95.com -> www.service95.com).
+    if (!isSameSite(next, baseUrl)) return null;
     next.hash = '';
     return next;
   } catch (_error) {
@@ -386,8 +406,14 @@ function hasRepeatedWord(words) {
   return false;
 }
 
-function summarizeAudit({ siteUrl, normalizedDomain, pages, images, maxPages, maxImages }) {
+function summarizeAudit({ siteUrl, normalizedDomain, pages, images, maxPages, maxImages, crawlError = null }) {
   const totalImages = images.length;
+  const pagesScanned = pages.length;
+  const crawlStatus = pagesScanned === 0
+    ? 'no_pages'
+    : totalImages === 0
+      ? 'no_images'
+      : 'ok';
   const missing = images.filter((image) => image.alt === null || String(image.alt || '').trim() === '').length;
   const weak = images.filter((image) => image.score < 70).length;
   const strong = images.filter((image) => image.score >= 85).length;
@@ -396,7 +422,10 @@ function summarizeAudit({ siteUrl, normalizedDomain, pages, images, maxPages, ma
     : 0;
   const coverageScore = totalImages ? Math.round(((totalImages - missing) / totalImages) * 100) : 0;
   const seoReadinessScore = totalImages ? Math.round(((totalImages - weak) / totalImages) * 100) : 0;
-  const score = Math.round((coverageScore * 0.4) + (averageQuality * 0.4) + (seoReadinessScore * 0.2));
+  // Do not invent a quality score when the crawl found nothing to score.
+  const score = crawlStatus === 'ok'
+    ? Math.round((coverageScore * 0.4) + (averageQuality * 0.4) + (seoReadinessScore * 0.2))
+    : 0;
   const missingAltPercent = totalImages ? Math.round((missing / totalImages) * 100) : 0;
 
   const issueCounts = new Map();
@@ -443,10 +472,13 @@ function summarizeAudit({ siteUrl, normalizedDomain, pages, images, maxPages, ma
   }
 
   const recommendations = buildAuditRecommendations({
+    pagesScanned,
     totalImages,
     missing,
     weak,
     averageQuality,
+    crawlStatus,
+    crawlError,
     topIssues: [...issueCounts.entries()]
       .sort((a, b) => b[1] - a[1])
       .map(([issue, count]) => ({ issue, count }))
@@ -456,7 +488,9 @@ function summarizeAudit({ siteUrl, normalizedDomain, pages, images, maxPages, ma
     siteUrl,
     normalizedDomain,
     score,
-    pagesScanned: pages.length,
+    crawlStatus,
+    crawlError,
+    pagesScanned,
     imagesScanned: totalImages,
     missingAltCount: missing,
     missingAltPercent,
@@ -472,7 +506,9 @@ function summarizeAudit({ siteUrl, normalizedDomain, pages, images, maxPages, ma
       .slice(0, 6)
       .map(([issue, count]) => ({ issue, count })),
     recommendations,
-    scoreBand: score >= 85 ? 'Strong' : score >= 70 ? 'Good' : score >= 45 ? 'Needs work' : 'High priority',
+    scoreBand: crawlStatus !== 'ok'
+      ? (crawlStatus === 'no_pages' ? 'Crawl incomplete' : 'No images found')
+      : score >= 85 ? 'Strong' : score >= 70 ? 'Good' : score >= 45 ? 'Needs work' : 'High priority',
     priorityPages: [...pagePriorityMap.values()]
       .map((page) => ({
         pageUrl: page.pageUrl,
@@ -503,13 +539,36 @@ function summarizeAudit({ siteUrl, normalizedDomain, pages, images, maxPages, ma
   };
 }
 
-function buildAuditRecommendations({ totalImages, missing, weak, averageQuality, topIssues }) {
+function buildAuditRecommendations({
+  pagesScanned = 0,
+  totalImages,
+  missing,
+  weak,
+  averageQuality,
+  topIssues,
+  crawlStatus = 'ok',
+  crawlError = null
+}) {
   const recommendations = [];
+  if (crawlStatus === 'no_pages' || pagesScanned === 0) {
+    return [
+      {
+        title: 'We could not crawl any public pages',
+        detail: crawlError
+          || 'The audit request reached your domain, but no public HTML pages were accepted into the crawl. Common causes include apex/www redirects, bot blocking, timeouts, or a non-HTML homepage response. Try the canonical www or non-www URL, then retry.'
+      },
+      {
+        title: 'Retry with the live public homepage',
+        detail: 'Open the URL in a private browser window, confirm it loads without a login wall, and submit that exact address again.'
+      }
+    ];
+  }
+
   if (!totalImages) {
     return [
       {
         title: 'Confirm images are crawlable',
-        detail: 'The public crawl did not find visible image tags. Check whether key images are rendered by scripts, blocked by robots rules, or hidden from public pages.'
+        detail: 'The crawl reached public pages but did not find visible <img> tags. Check whether key images are rendered only by client-side scripts, served as CSS backgrounds, blocked by robots rules, or hidden from public HTML.'
       }
     ];
   }
@@ -559,18 +618,26 @@ async function crawlPublicSite(siteUrl, { maxPages = DEFAULT_MAX_PAGES, maxImage
   // expose it to request input.
   if (!allowPrivate) await assertPublicUrl(startUrl);
 
-  const normalizedDomain = startUrl.hostname.replace(/^www\./, '').toLowerCase();
+  const normalizedDomain = hostKey(startUrl.hostname);
   const queue = [startUrl];
   const seen = new Set();
   const pages = [];
   const images = [];
+  let crawlError = null;
+  let fetchAttempts = 0;
+  let fetchFailures = 0;
+  // Follow apex <-> www redirects and keep crawling that canonical host.
+  let siteRoot = startUrl;
 
   let sitemapFound = false;
   const sitemapUrl = new URL('/sitemap.xml', startUrl.origin);
   try {
     const sitemap = await fetchText(sitemapUrl);
     sitemapFound = true;
-    for (const url of extractSitemapUrls(startUrl, sitemap.text, maxPages)) {
+    if (isSameSite(sitemap.url, startUrl)) {
+      siteRoot = new URL('/', sitemap.url.origin);
+    }
+    for (const url of extractSitemapUrls(siteRoot, sitemap.text, maxPages)) {
       uniquePush(queue, seen, url, maxPages);
     }
   } catch (error) {
@@ -600,26 +667,47 @@ async function crawlPublicSite(siteUrl, { maxPages = DEFAULT_MAX_PAGES, maxImage
 
     const fetched = await Promise.all(batch.map(async (url) => {
       if (!allowPrivate) {
-        try { await assertPublicUrl(url); } catch (error) { return null; }
+        try { await assertPublicUrl(url); } catch (error) { return { url, error }; }
       }
       try {
         return { url, result: await fetchText(url) };
       } catch (error) {
         logger.warn('[image-seo-audit] page fetch failed', { url: url.toString(), error: error.code || error.message });
-        return null;
+        return { url, error };
       }
     }));
 
     for (const item of fetched) {
-      if (!item) continue;
+      fetchAttempts += 1;
+      if (!item?.result) {
+        fetchFailures += 1;
+        if (!crawlError && item?.error) {
+          crawlError = item.error.code || item.error.message || 'PAGE_FETCH_FAILED';
+        }
+        continue;
+      }
+      if (!isSameSite(item.result.url, siteRoot)) {
+        logger.info('[image-seo-audit] skipping off-site redirect', {
+          requested: item.url.toString(),
+          final: item.result.url.toString(),
+          site_root: siteRoot.toString()
+        });
+        continue;
+      }
+
+      // Lock the crawl onto the first successful same-site host (usually after
+      // an apex -> www or www -> apex redirect).
+      if (item.result.url.origin !== siteRoot.origin) {
+        siteRoot = new URL('/', item.result.url.origin);
+      }
+
       const page = extractPageData(item.result.url, item.result.text);
-      if (item.result.url.origin !== startUrl.origin) continue;
       if (pages.length < maxPages) {
         pages.push({
           url: item.result.url.toString(),
           title: page.title,
           imageCount: page.images.length,
-          // Outbound same-origin link targets (deduped) — lets consumers build an
+          // Outbound same-site link targets (deduped) — lets consumers build an
           // internal-link graph without re-crawling. Additive; email/PDF ignore it.
           links: [...new Set(page.links.map((link) => link.toString()))],
           // Per-page SEO/schema/a11y/perf signals for the optimizer audit.
@@ -636,19 +724,31 @@ async function crawlPublicSite(siteUrl, { maxPages = DEFAULT_MAX_PAGES, maxImage
     }
   }
 
+  if (pages.length === 0 && !crawlError) {
+    crawlError = fetchAttempts === 0
+      ? 'NO_URLS_TO_CRAWL'
+      : fetchFailures >= fetchAttempts
+        ? 'ALL_PAGE_FETCHES_FAILED'
+        : 'NO_SAME_SITE_HTML_PAGES';
+  }
+
+  const finalSiteUrl = pages[0]?.url || siteRoot.toString();
+
   return {
-    siteUrl: startUrl.toString(),
+    siteUrl: finalSiteUrl,
+    requestedSiteUrl: startUrl.toString(),
     normalizedDomain,
     sitemapFound,
     pages,
     images,
     summary: summarizeAudit({
-      siteUrl: startUrl.toString(),
+      siteUrl: finalSiteUrl,
       normalizedDomain,
       pages,
       images,
       maxPages,
-      maxImages
+      maxImages,
+      crawlError
     })
   };
 }
@@ -712,10 +812,21 @@ function generateAuditPdfBuffer(summary) {
     doc.y = scoreCardY + 120;
 
     section('Executive summary');
-    doc.fillColor(muted).fontSize(11).text(
-      `This audit scanned public pages on ${summary.normalizedDomain} and scored visible image alt text for coverage, clarity, and SEO usefulness. The score combines alt text coverage (${summary.coverageScore}/100), average alt text quality (${summary.averageQuality}/100), and SEO readiness (${summary.seoReadinessScore}/100).`,
-      { width: pageWidth, lineGap: 3 }
-    );
+    if ((summary.pagesScanned || 0) === 0) {
+      doc.fillColor(muted).fontSize(11).text(
+        `The crawl for ${summary.normalizedDomain} did not successfully scan any public HTML pages, so this report cannot score image alt text. This is a crawl failure, not evidence that the site has perfect alt text.`,
+        { width: pageWidth, lineGap: 3 }
+      );
+      if (summary.crawlError) {
+        doc.moveDown(0.5);
+        doc.text(`Technical detail: ${summary.crawlError}`, { width: pageWidth, lineGap: 3 });
+      }
+    } else {
+      doc.fillColor(muted).fontSize(11).text(
+        `This audit scanned public pages on ${summary.normalizedDomain} and scored visible image alt text for coverage, clarity, and SEO usefulness. The score combines alt text coverage (${summary.coverageScore}/100), average alt text quality (${summary.averageQuality}/100), and SEO readiness (${summary.seoReadinessScore}/100).`,
+        { width: pageWidth, lineGap: 3 }
+      );
+    }
     if (summary.capped) {
       doc.moveDown(0.5);
       doc.text(`The crawl reached the configured cap of ${summary.crawlLimits.maxPages} pages or ${summary.crawlLimits.maxImages} images, so treat this as a prioritized sample rather than a full-site inventory.`, { width: pageWidth, lineGap: 3 });
@@ -724,7 +835,11 @@ function generateAuditPdfBuffer(summary) {
     section('What to fix first');
     const issueLines = summary.topIssues.length
       ? summary.topIssues.map((item) => `${item.issue}: ${item.count} image${item.count === 1 ? '' : 's'}`)
-      : ['No major alt text issues were found in the crawled pages.'];
+      : (summary.pagesScanned || 0) === 0
+        ? ['No pages were scanned, so alt text issues could not be measured.']
+        : (summary.imagesScanned || 0) === 0
+          ? ['Pages were scanned, but no visible image tags were found.']
+          : ['No major alt text issues were found in the crawled pages.'];
     for (const line of issueLines) {
       doc.fillColor(ink).fontSize(11).text(`- ${line}`, { width: pageWidth, lineGap: 2 });
     }
@@ -943,6 +1058,9 @@ module.exports = {
   isValidEmail,
   assertPublicUrl,
   fetchText,
+  hostKey,
+  isSameSite,
+  sameOriginUrl,
   scoreAltText,
   crawlPublicSite,
   generateAuditPdfBuffer,

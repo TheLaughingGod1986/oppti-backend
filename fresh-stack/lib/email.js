@@ -357,12 +357,17 @@ async function sendImageSeoAuditEmail({
   const topIssues = Array.isArray(summary?.topIssues) ? summary.topIssues.slice(0, 3) : [];
   const domain = normalizedDomain || siteUrl;
   const pluginUrl = process.env.WP_ALT_TEXT_PLUGIN_URL || 'https://wordpress.org/plugins/beepbeep-ai-alt-text-generator/';
+  const emptyCrawlMessage = pagesScanned === 0
+    ? 'The crawl did not scan any public pages, so alt text issues could not be measured. This is not a clean bill of health.'
+    : imagesScanned === 0
+      ? 'Pages were scanned, but no visible image tags were found in the public HTML.'
+      : 'No major issue pattern was found in the crawled sample.';
   const topIssuesHtml = topIssues.length
     ? `<ul style="margin: 10px 0 0; padding-left: 20px;">${topIssues.map((item) => `<li>${escapeHtml(item.issue)}: ${Number(item.count || 0)} image${Number(item.count || 0) === 1 ? '' : 's'}</li>`).join('')}</ul>`
-    : '<p style="margin: 10px 0 0;">No major issue pattern was found in the crawled sample.</p>';
+    : `<p style="margin: 10px 0 0;">${escapeHtml(emptyCrawlMessage)}</p>`;
   const topIssuesText = topIssues.length
     ? topIssues.map((item) => `- ${item.issue}: ${Number(item.count || 0)} image${Number(item.count || 0) === 1 ? '' : 's'}`).join('\n')
-    : '- No major issue pattern was found in the crawled sample.';
+    : `- ${emptyCrawlMessage}`;
 
   try {
     const { data, error } = await resend.emails.send({

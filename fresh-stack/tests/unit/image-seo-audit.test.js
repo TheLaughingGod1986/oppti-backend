@@ -78,6 +78,69 @@ describe('image SEO audit service', () => {
     expect(audit.summary.sampleImages.length).toBeGreaterThan(0);
   });
 
+  test('follows apex to www redirects and still scores images', async () => {
+    const { crawlPublicSite } = require('../../services/imageSeoAudit');
+
+    global.fetch = jest.fn(async (url) => {
+      const requested = String(url);
+      if (requested === 'https://example.com/sitemap.xml') {
+        return mockFetchResponse(
+          'https://www.example.com/sitemap.xml',
+          '<urlset><url><loc>https://www.example.com/about</loc></url></urlset>',
+          'application/xml'
+        );
+      }
+      if (requested === 'https://example.com/' || requested === 'https://example.com') {
+        return mockFetchResponse(
+          'https://www.example.com/',
+          '<html><head><title>Home</title></head><body><a href="/about">About</a><img src="/hero.jpg" alt=""><img src="/good.jpg" alt="Woman reviewing an image SEO report"></body></html>'
+        );
+      }
+      if (requested.includes('/about')) {
+        return mockFetchResponse(
+          'https://www.example.com/about',
+          '<html><head><title>About</title></head><body><img src="/team.jpg" alt="team"></body></html>'
+        );
+      }
+      return mockFetchResponse(
+        requested.replace('https://example.com', 'https://www.example.com'),
+        '<html><body><img src="/fallback.jpg"></body></html>'
+      );
+    });
+
+    const audit = await crawlPublicSite('https://example.com', { maxPages: 2, maxImages: 10 });
+
+    expect(audit.summary.pagesScanned).toBe(2);
+    expect(audit.summary.imagesScanned).toBeGreaterThan(0);
+    expect(audit.summary.crawlStatus).toBe('ok');
+    expect(audit.summary.score).toBeGreaterThan(0);
+    expect(audit.pages.every((page) => page.url.startsWith('https://www.example.com'))).toBe(true);
+  });
+
+  test('marks empty crawls as incomplete instead of clean', async () => {
+    const { crawlPublicSite } = require('../../services/imageSeoAudit');
+
+    global.fetch = jest.fn(async (url) => {
+      if (String(url).endsWith('/sitemap.xml')) {
+        const error = new Error('Fetch failed with 404');
+        error.code = 'FETCH_FAILED';
+        throw error;
+      }
+      const error = new Error('Fetch failed with 403');
+      error.code = 'FETCH_FAILED';
+      throw error;
+    });
+
+    const audit = await crawlPublicSite('https://example.com', { maxPages: 2, maxImages: 10 });
+
+    expect(audit.summary.pagesScanned).toBe(0);
+    expect(audit.summary.imagesScanned).toBe(0);
+    expect(audit.summary.score).toBe(0);
+    expect(audit.summary.crawlStatus).toBe('no_pages');
+    expect(audit.summary.scoreBand).toBe('Crawl incomplete');
+    expect(audit.summary.recommendations[0].title).toMatch(/could not crawl/i);
+  });
+
   test('generates a non-empty PDF report', async () => {
     const { generateAuditPdfBuffer } = require('../../services/imageSeoAudit');
 
