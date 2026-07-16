@@ -1,9 +1,14 @@
 const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
 
-// Formats the OpenAI vision API accepts. Anything else (avif, heic, bmp,
-// tiff, svg, ico…) is rejected by the provider with a 400, so we must fail
-// fast here instead of reserving quota and calling the provider.
+// Formats the OpenAI vision API accepts. Anything else (heic, bmp, tiff,
+// svg, ico…) is rejected by the provider with a 400, so we must fail fast
+// here instead of reserving quota and calling the provider.
 const SUPPORTED_IMAGE_FORMATS = new Set(['png', 'jpeg', 'gif', 'webp']);
+
+// Formats the provider rejects but lib/imageNormalization.js can safely
+// convert server-side (base64 payloads only — URL payloads are fetched by
+// the provider directly, so they must already be provider-supported).
+const CONVERTIBLE_IMAGE_FORMATS = new Set(['avif']);
 
 const UNSUPPORTED_EXTENSION_PATTERN = /\.(avif|heic|heif|bmp|tiff?|svg|ico)(\?.*)?$/i;
 
@@ -95,7 +100,9 @@ function validateImagePayload(image = {}) {
       errors.push('Base64 data contains invalid characters. Ensure it is a clean base64 string without URL or metadata.');
     } else {
       detectedFormat = detectImageFormat(rawBase64);
-      if (detectedFormat && !SUPPORTED_IMAGE_FORMATS.has(detectedFormat)) {
+      if (detectedFormat
+        && !SUPPORTED_IMAGE_FORMATS.has(detectedFormat)
+        && !CONVERTIBLE_IMAGE_FORMATS.has(detectedFormat)) {
         errors.push(unsupportedFormatError(detectedFormat));
       }
     }
@@ -183,9 +190,7 @@ function validateImagePayload(image = {}) {
     warnings.push('Image URL should be https to be fetchable by the model.');
   }
 
-  const detectedMime = detectedFormat && SUPPORTED_IMAGE_FORMATS.has(detectedFormat)
-    ? `image/${detectedFormat}`
-    : null;
+  const detectedMime = detectedFormat ? `image/${detectedFormat}` : null;
 
   const normalized = {
     base64: hasBase64 ? rawBase64 : null,
@@ -211,5 +216,6 @@ module.exports = {
   validateImagePayload,
   stripDataUrl,
   detectImageFormat,
-  SUPPORTED_IMAGE_FORMATS
+  SUPPORTED_IMAGE_FORMATS,
+  CONVERTIBLE_IMAGE_FORMATS
 };

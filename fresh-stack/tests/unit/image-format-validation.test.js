@@ -41,15 +41,15 @@ describe('validateImagePayload image-format guard', () => {
     }
   });
 
-  test('rejects AVIF base64 before it can reach the provider (July 2026 incident class)', () => {
+  test('allows AVIF base64 through for server-side conversion (converted downstream, never sent raw to the provider)', () => {
     const { errors, normalized } = validateImagePayload({
       base64: AVIF_B64,
       filename: 'Laundry.avif',
       width: 10,
       height: 10
     });
-    expect(errors.some((message) => /unsupported image format "avif"/i.test(message))).toBe(true);
-    expect(normalized).not.toBeNull();
+    expect(errors).toEqual([]);
+    expect(normalized.mime_type).toBe('image/avif');
   });
 
   test('rejects HEIC base64', () => {

@@ -28,6 +28,7 @@ const { resolveUsageAttributionUserId } = require('../services/usageAttribution'
 const { buildTrialGenerationForSingleRequest } = require('../lib/trialGenerationContract');
 const { buildEntitlementState } = require('../services/entitlementState');
 const { GENERATION_ERROR_CODES, publicMessageFor } = require('../lib/generationErrors');
+const { normalizeImageForProvider, ImageNormalizationError } = require('../lib/imageNormalization');
 
 function hashPayload(base64) {
   return crypto.createHash('md5').update(base64).digest('hex');
@@ -325,12 +326,14 @@ function createGenerationTelemetry({
   let terminalEmitted = false;
   let siteIdentityRef = null;
   let requestTelemetry = null;
+  let imageMeta = null;
 
   function capture(event, {
     entitlementState = null,
     outcome = null,
     errorCode = null,
     httpStatus = null,
+    retryable = null,
     isTerminal = false
   } = {}) {
     const distinctId = siteIdentityRef?.siteHash || null;
@@ -349,6 +352,14 @@ function createGenerationTelemetry({
         outcome,
         error_code: errorCode,
         http_status: httpStatus,
+        retryable,
+        original_format: imageMeta?.original_format ?? null,
+        provider_format: imageMeta?.provider_format ?? null,
+        image_converted: imageMeta?.image_converted ?? null,
+        conversion_duration_ms: imageMeta?.conversion_duration_ms ?? null,
+        image_width: imageMeta?.image_width ?? null,
+        image_height: imageMeta?.image_height ?? null,
+        has_alpha: imageMeta?.has_alpha ?? null,
         plugin_version: sanitizeTelemetryValue(req?.header?.('X-Plugin-Version'), 64),
         generation_mode: 'single',
         retry_count: retryCount,
@@ -370,9 +381,10 @@ function createGenerationTelemetry({
   }
 
   return {
-    bindContext({ siteIdentity = null, telemetry = null } = {}) {
+    bindContext({ siteIdentity = null, telemetry = null, imageMeta: nextImageMeta = null } = {}) {
       if (siteIdentity) siteIdentityRef = siteIdentity;
       if (telemetry) requestTelemetry = telemetry;
+      if (nextImageMeta) imageMeta = nextImageMeta;
     },
     emitTerminal(event, options = {}) {
       if (terminalEmitted) {
@@ -517,7 +529,8 @@ function createAltTextRouter({
       telemetry.emitTerminal('generation_failed', {
         outcome: 'INTERNAL_ERROR',
         errorCode: GENERATION_ERROR_CODES.INTERNAL_UNKNOWN_ERROR,
-        httpStatus: 500
+        httpStatus: 500,
+        retryable: false
       });
       if (!res.headersSent) {
         return res.status(500).json({
@@ -664,7 +677,8 @@ function createAltTextRouter({
       telemetry.emitTerminal('generation_failed', {
         outcome: 'INVALID_REQUEST',
         errorCode: GENERATION_ERROR_CODES.INVALID_REQUEST,
-        httpStatus: 400
+        httpStatus: 400,
+        retryable: false
       });
       return res.status(400).json({
         error: 'INVALID_REQUEST',
@@ -839,6 +853,73 @@ function createAltTextRouter({
           site_hash: siteIdentity.siteHash,
           anon_id: anonymousContext.anonId || null
         });
+      }
+    }
+
+    // Normalize the image for the provider (e.g. AVIF → WebP) BEFORE any
+    // quota is reserved: a conversion failure is a permanent input error
+    // that must never touch quota or reach the provider.
+    let providerImage = normalized;
+    if (normalized.base64) {
+      let normalization;
+      try {
+        normalization = await normalizeImageForProvider({
+          buffer: Buffer.from(normalized.base64, 'base64'),
+          declaredMimeType: normalized.mime_type,
+          filename: normalized.filename,
+          source: 'api/alt-text',
+          logContext: {
+            generation_run_id: generationRunId,
+            request_id: req.id || null
+          }
+        });
+      } catch (error) {
+        if (!(error instanceof ImageNormalizationError)) throw error;
+        logger.warn('[altText] Image normalization failed', {
+          generation_run_id: generationRunId,
+          request_id: req.id || null,
+          error_code: error.errorCode,
+          http_status: error.httpStatus,
+          site_hash: siteIdentity.siteHash || null,
+          error: error.message
+        });
+        telemetry.emitTerminal('generation_failed', {
+          outcome: error.errorCode,
+          errorCode: error.errorCode,
+          httpStatus: error.httpStatus,
+          retryable: false
+        });
+        return res.status(error.httpStatus).json({
+          success: false,
+          error: error.errorCode,
+          code: error.errorCode,
+          error_code: error.errorCode,
+          generation_run_id: generationRunId,
+          message: error.publicMessage,
+          retryable: false
+        });
+      }
+
+      telemetry.bindContext({
+        imageMeta: {
+          original_format: normalization.originalFormat,
+          provider_format: normalization.format,
+          image_converted: normalization.converted,
+          conversion_duration_ms: normalization.converted ? normalization.durationMs : null,
+          image_width: normalization.width,
+          image_height: normalization.height,
+          has_alpha: normalization.hasAlpha
+        }
+      });
+
+      if (normalization.converted) {
+        providerImage = {
+          ...normalized,
+          base64: normalization.buffer.toString('base64'),
+          mime_type: normalization.mimeType,
+          width: normalization.width || normalized.width,
+          height: normalization.height || normalized.height
+        };
       }
     }
 
@@ -1122,7 +1203,7 @@ function createAltTextRouter({
 
     try {
       const generationResult = await generateAltText({
-        image: normalized,
+        image: providerImage,
         context: { ...context, filename: normalized.filename }
       });
       altText = generationResult.altText;
@@ -1217,7 +1298,8 @@ function createAltTextRouter({
       telemetry.emitTerminal('generation_failed', {
         outcome: errorCode,
         errorCode: normalizedErrorCode,
-        httpStatus
+        httpStatus,
+        retryable: isRetryable
       });
 
       return res.status(httpStatus).json({

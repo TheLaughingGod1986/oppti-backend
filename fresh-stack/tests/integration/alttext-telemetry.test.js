@@ -1,5 +1,6 @@
 const express = require('express');
 const request = require('supertest');
+const sharp = require('sharp');
 const { generateAltText } = require('../../lib/openai');
 const { captureServerEvent } = require('../../lib/posthog');
 const quotaService = require('../../services/quota');
@@ -41,13 +42,30 @@ jest.mock('../../services/imageAltState', () => ({
 
 const { createAltTextRouter } = require('../../routes/altText');
 
-// AVIF magic bytes: ISO-BMFF box with an 'ftypavif' brand — the format that
-// caused the 15 July 2026 incident (5 images retried 3x each by the client).
-const AVIF_B64 = Buffer.concat([
+// Corrupt AVIF: valid 'ftypavif' magic bytes, garbage payload. Passes
+// format detection but fails to decode.
+const CORRUPT_AVIF_B64 = Buffer.concat([
   Buffer.from([0x00, 0x00, 0x00, 0x1c]),
   Buffer.from('ftypavif'),
-  Buffer.alloc(52, 1)
+  Buffer.alloc(2048, 1)
 ]).toString('base64');
+
+// Real AVIF fixtures (the format that caused the 15 July 2026 incident:
+// 5 images retried 3x each by the client after the backend returned 500).
+// Noise content keeps the encoded size realistic so the payload passes the
+// existing minimum-size validation guard.
+async function makeRealAvifB64(seed) {
+  const width = 64 + seed;
+  const height = 48;
+  const raw = Buffer.alloc(width * height * 3);
+  for (let i = 0; i < raw.length; i += 1) {
+    raw[i] = (i * (seed + 7) * 31) % 256;
+  }
+  const avif = await sharp(raw, { raw: { width, height, channels: 3 } })
+    .avif({ quality: 70 })
+    .toBuffer();
+  return avif.toString('base64');
+}
 
 function createChainableMock() {
   const chainable = {
@@ -105,7 +123,7 @@ function assertNoSensitiveProperties(event) {
     expect(FORBIDDEN_PROPERTY_KEYS).not.toContain(key);
   }
   const serialized = JSON.stringify(event);
-  expect(serialized).not.toContain(AVIF_B64.slice(0, 40));
+  expect(serialized).not.toContain(CORRUPT_AVIF_B64.slice(0, 40));
   expect(serialized).not.toContain('@');
 }
 
@@ -177,32 +195,83 @@ describe('alt-text generation telemetry', () => {
     });
   });
 
-  test('AVIF upload fails fast as terminal 400 without reserving quota or calling the provider (incident repro)', async () => {
+  test('incident regression: 5 real AVIF images convert to WebP and succeed — no unsupported-image errors, quota once each (incident repro)', async () => {
+    const app = buildApp();
+    const fixtures = await Promise.all([1, 2, 3, 4, 5].map((seed) => makeRealAvifB64(seed)));
+
+    const responses = [];
+    for (const [index, base64] of fixtures.entries()) {
+      responses.push(await request(app)
+        .post('/api/alt-text')
+        .set('X-Site-Key', 'site-hash-1')
+        .set('X-Generation-Run-ID', `run-avif-${index}`)
+        .send({ image: { base64, filename: `incident-${index}.avif`, width: 65 + index, height: 48 } }));
+    }
+    await flushAsyncEvents();
+
+    for (const res of responses) {
+      expect(res.status).toBe(200);
+      expect(res.body.altText).toBe('mock alt');
+    }
+
+    // The provider was called exactly once per image and received genuine
+    // WebP bytes with the WebP mime — never AVIF, never relabeled bytes.
+    expect(generateAltText).toHaveBeenCalledTimes(5);
+    for (const [{ image }] of generateAltText.mock.calls) {
+      expect(image.mime_type).toBe('image/webp');
+      const sent = Buffer.from(image.base64, 'base64');
+      expect(sent.slice(0, 4).toString('latin1')).toBe('RIFF');
+      expect(sent.slice(8, 12).toString('latin1')).toBe('WEBP');
+      const decoded = await sharp(sent).metadata();
+      expect(decoded.format).toBe('webp');
+    }
+
+    // Quota reserved exactly once per logical generation.
+    expect(quotaService.reserveGenerationQuota).toHaveBeenCalledTimes(5);
+
+    // One terminal completion per request, recording the conversion.
+    const terminals = terminalEvents();
+    expect(terminals).toHaveLength(5);
+    for (const event of terminals) {
+      expect(event.event).toBe('generation_completed');
+      expect(event.properties).toMatchObject({
+        original_format: 'avif',
+        provider_format: 'webp',
+        image_converted: true,
+        error_code: null
+      });
+      expect(event.properties.conversion_duration_ms).toEqual(expect.any(Number));
+      assertNoSensitiveProperties(event);
+    }
+  });
+
+  test('corrupt AVIF batch fails as terminal non-retryable 400s without reserving quota or calling the provider', async () => {
     const app = buildApp();
 
-    // Reproduce the client behaviour observed on 15 July 2026: the plugin
-    // retried each rejected image 3 times. With the fix every attempt is a
-    // cheap, terminal 400 — no provider call, no quota reservation, and no
-    // 5xx that invites more retries.
+    // Simulate the plugin retrying a corrupt image 3 times: every attempt
+    // is a cheap, terminal 400 — no provider call, no quota reservation,
+    // and no 5xx that invites more retries.
     const responses = [];
     for (let attempt = 0; attempt < 3; attempt += 1) {
       responses.push(await request(app)
         .post('/api/alt-text')
         .set('X-Site-Key', 'site-hash-1')
-        .set('X-Generation-Run-ID', 'run-avif-1')
+        .set('X-Generation-Run-ID', 'run-avif-corrupt')
         .set('X-Generation-Attempt', String(attempt))
-        .send({ image: { base64: AVIF_B64, filename: 'Laundry.avif', width: 10, height: 10 } }));
+        .send({ image: { base64: CORRUPT_AVIF_B64, filename: 'Laundry.avif', width: 10, height: 10 } }));
     }
     await flushAsyncEvents();
 
     for (const res of responses) {
       expect(res.status).toBe(400);
       expect(res.body).toMatchObject({
-        code: 'INVALID_REQUEST',
-        error_code: 'invalid_request',
-        generation_run_id: 'run-avif-1',
+        success: false,
+        code: 'image_decode_failed',
+        error_code: 'image_decode_failed',
+        generation_run_id: 'run-avif-corrupt',
         retryable: false
       });
+      expect(res.body.message).toMatch(/could not read this image/i);
     }
     expect(generateAltText).not.toHaveBeenCalled();
     expect(quotaService.reserveGenerationQuota).not.toHaveBeenCalled();
@@ -212,9 +281,10 @@ describe('alt-text generation telemetry', () => {
     for (const event of terminals) {
       expect(event.event).toBe('generation_failed');
       expect(event.properties).toMatchObject({
-        generation_run_id: 'run-avif-1',
-        error_code: 'invalid_request',
-        http_status: 400
+        generation_run_id: 'run-avif-corrupt',
+        error_code: 'image_decode_failed',
+        http_status: 400,
+        retryable: false
       });
       assertNoSensitiveProperties(event);
     }
