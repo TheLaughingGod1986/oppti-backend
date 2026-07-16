@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { verifyWebhookSignature } = require('../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../lib/posthog');
-const { buildSiteIdentity } = require('../lib/siteIdentity');
+const { buildSiteIdentity, isInternalTelemetryHost } = require('../lib/siteIdentity');
 const {
   reconcileBillingEntitlement,
   resolveCanonicalSite,
@@ -118,9 +118,9 @@ function maskSecret(value) {
   return stringValue.length <= 8 ? '[redacted]' : `${stringValue.slice(0, 8)}...`;
 }
 
-function buildCheckoutIdempotencyKey({ licenseKey, siteId, priceId, billingCycle }) {
+function buildCheckoutIdempotencyKey({ checkoutAttemptId, siteId, priceId, billingCycle }) {
   const stablePayload = [
-    licenseKey || 'anonymous',
+    checkoutAttemptId || 'unknown-attempt',
     siteId || 'unknown-site',
     priceId || 'unknown-price',
     billingCycle || 'unknown-cycle'
@@ -161,8 +161,55 @@ function normalizeCheckoutAttribution(body = {}) {
     triggerLocation: sanitizeStripeMetadataValue(body.trigger_location),
     sourcePage: sanitizeStripeMetadataValue(body.source_page),
     targetPlan: normalizePlanValue(targetPlan) || targetPlan,
-    source: sanitizeStripeMetadataValue(body.source)
+    source: sanitizeStripeMetadataValue(body.source),
+    checkoutAttemptId: sanitizeStripeMetadataValue(body.checkout_attempt_id, { maxLength: 128 }),
+    correlationId: sanitizeStripeMetadataValue(body.correlation_id, { maxLength: 128 }),
+    distinctId: sanitizeStripeMetadataValue(body.distinct_id, { maxLength: 255 }),
+    pluginVersion: sanitizeStripeMetadataValue(body.plugin_version, { maxLength: 64 }),
+    environment: sanitizeStripeMetadataValue(body.environment, { maxLength: 32 })
   };
+}
+
+function buildCheckoutTraceContext({
+  req,
+  account,
+  site,
+  priceId,
+  selectedPlan,
+  attribution,
+  checkoutAttemptId,
+  correlationId
+}) {
+  const siteUrl = req.header('X-Site-URL') || site?.site_url || null;
+  return {
+    correlation_id: correlationId,
+    checkout_attempt_id: checkoutAttemptId,
+    request_id: req.id || null,
+    application_user_id: account?.id || null,
+    anonymous_distinct_id: attribution.distinctId || null,
+    site_install_id: site?.id || null,
+    environment: process.env.NODE_ENV || attribution.environment || 'unknown',
+    is_internal: isInternalTelemetryHost({ siteUrl }),
+    plugin_version: req.header('X-Plugin-Version') || attribution.pluginVersion || null,
+    selected_plan: normalizePlanValue(selectedPlan?.id) || attribution.targetPlan || null,
+    stripe_price_id: priceId || null,
+    cta_source: attribution.triggerLocation || attribution.source || null
+  };
+}
+
+async function captureCheckoutEvent({ event, distinctId, properties }) {
+  if (!distinctId) return { ok: false, skipped: true };
+  try {
+    return await captureServerEvent({ event, distinctId, properties });
+  } catch (error) {
+    logger.warn('[billing] checkout analytics failed', {
+      event,
+      correlation_id: properties?.correlation_id || null,
+      checkout_attempt_id: properties?.checkout_attempt_id || null,
+      error_code: error.code || 'ANALYTICS_ERROR'
+    });
+    return { ok: false, error };
+  }
 }
 
 function resolveAttributionProperties(metadata = {}) {
@@ -1893,6 +1940,8 @@ async function emitPaymentSucceeded({
 
 function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webhookSecret = process.env.STRIPE_WEBHOOK_SECRET }) {
   return async function billingWebhookHandler(req, res) {
+    const startedAt = Date.now();
+    const requestId = req.id || req.header('x-request-id') || crypto.randomUUID();
     const signature = req.header('stripe-signature');
 
     if (!webhookSecret) {
@@ -1920,8 +1969,10 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
     }
 
     logger.info('[billing] webhook received', {
-      stripeEventId: event.id,
-      stripeEventType: event.type
+      request_id: requestId,
+      webhook_event_id: event.id,
+      webhook_event_type: event.type,
+      environment: event.livemode ? 'production' : 'test'
     });
 
     const stripeClient = typeof getStripe === 'function' ? getStripe() : null;
@@ -1972,6 +2023,21 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               account: payload.account,
               eventProperties: payload.eventProperties
             });
+            await captureCheckoutEvent({
+              event: 'checkout_completed',
+              distinctId: payload.distinctId,
+              properties: {
+                ...payload.eventProperties,
+                correlation_id: extractMetadataValue(session.metadata, ['correlation_id']),
+                checkout_attempt_id: extractMetadataValue(session.metadata, ['checkout_attempt_id']),
+                webhook_event_id: event.id,
+                webhook_event_type: event.type,
+                request_id: requestId,
+                processing_result: 'completed',
+                duration_ms: Date.now() - startedAt,
+                $insert_id: `${event.id}:checkout_completed`
+              }
+            });
           } else if (session?.mode === 'subscription') {
             const payload = await buildCheckoutSucceededPayload({
               supabase,
@@ -1996,6 +2062,21 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               site_id: payload.site?.id || null,
               site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
             };
+            await captureCheckoutEvent({
+              event: 'checkout_completed',
+              distinctId: payload.distinctId,
+              properties: {
+                ...payload.eventProperties,
+                correlation_id: extractMetadataValue(session.metadata, ['correlation_id']),
+                checkout_attempt_id: extractMetadataValue(session.metadata, ['checkout_attempt_id']),
+                webhook_event_id: event.id,
+                webhook_event_type: event.type,
+                request_id: requestId,
+                processing_result: 'completed_pending_subscription_confirmation',
+                duration_ms: Date.now() - startedAt,
+                $insert_id: `${event.id}:checkout_completed`
+              }
+            });
           }
           logger.info('[billing] webhook_write_trace', billingTrace);
           break;
@@ -2043,6 +2124,7 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
           break;
         }
         case 'customer.subscription.updated':
+        case 'customer.subscription.created':
         case 'customer.subscription.deleted': {
           const subscription = event.data?.object;
           if (subscription) {
@@ -2069,8 +2151,57 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               site_id: payload.site?.id || null,
               site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
             };
+            if (ACTIVE_BILLING_STATUSES.includes(payload.subscription?.status)) {
+              const distinctId = payload.account?.id || payload.site?.id || payload.eventProperties.stripe_subscription_id;
+              await captureCheckoutEvent({
+                event: 'subscription_activated',
+                distinctId,
+                properties: {
+                  ...payload.eventProperties,
+                  webhook_event_id: event.id,
+                  webhook_event_type: event.type,
+                  request_id: requestId,
+                  processing_result: 'subscription_confirmed',
+                  duration_ms: Date.now() - startedAt,
+                  $insert_id: `${event.id}:subscription_activated`
+                }
+              });
+            }
           }
           logger.info('[billing] webhook_write_trace', billingTrace);
+          break;
+        }
+        case 'checkout.session.expired':
+        case 'payment_intent.payment_failed':
+        case 'invoice.payment_failed': {
+          const object = event.data?.object || {};
+          const metadata = mergeStripeMetadata(object.metadata);
+          const checkoutAttemptId = extractMetadataValue(metadata, ['checkout_attempt_id']);
+          const correlationId = extractMetadataValue(metadata, ['correlation_id']);
+          const distinctId = extractMetadataValue(metadata, ['application_user_id', 'account_id'])
+            || extractMetadataValue(metadata, ['site_install_id', 'site_id'])
+            || checkoutAttemptId
+            || normalizeStripeId(object.customer)
+            || event.id;
+          const eventName = event.type === 'checkout.session.expired'
+            ? 'checkout_expired'
+            : 'checkout_payment_failed';
+          const trace = {
+            correlation_id: correlationId,
+            checkout_attempt_id: checkoutAttemptId,
+            stripe_checkout_session_id: event.type === 'checkout.session.expired' ? object.id : null,
+            stripe_customer_id: normalizeStripeId(object.customer),
+            request_id: requestId,
+            webhook_event_id: event.id,
+            webhook_event_type: event.type,
+            environment: event.livemode ? 'production' : 'test',
+            processing_result: eventName,
+            error_code: object.last_payment_error?.code || object.last_payment_error?.decline_code || null,
+            duration_ms: Date.now() - startedAt,
+            $insert_id: `${event.id}:${eventName}`
+          };
+          logger.info('[billing] checkout_terminal_event', trace);
+          await captureCheckoutEvent({ event: eventName, distinctId, properties: trace });
           break;
         }
         default:
@@ -2082,9 +2213,12 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
       }
     } catch (error) {
       logger.error('[billing] webhook handling failed', {
-        stripeEventId: event.id,
-        stripeEventType: event.type,
-        error: error.message
+        request_id: requestId,
+        webhook_event_id: event.id,
+        webhook_event_type: event.type,
+        processing_result: 'failed',
+        error_code: error.code || 'WEBHOOK_HANDLING_FAILED',
+        duration_ms: Date.now() - startedAt
       });
       return res.status(500).json({
         received: false,
@@ -2176,12 +2310,15 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
   });
 
   router.post('/checkout', async (req, res) => {
+    const startedAt = Date.now();
     if (!requireBillingAuth(req, res)) return;
     const { priceId, successUrl, cancelUrl } = req.body || {};
     const siteKey = req.header('X-Site-Key');
     const account = req.license || req.user || null;
     const selectedPlan = plans.find((plan) => plan.priceId === priceId) || null;
     const requestedAttribution = normalizeCheckoutAttribution(req.body);
+    const checkoutAttemptId = requestedAttribution.checkoutAttemptId || crypto.randomUUID();
+    const correlationId = requestedAttribution.correlationId || req.id || crypto.randomUUID();
 
     if (!priceId || !Object.values(priceIds).includes(priceId)) {
       return res.status(400).json({ error: 'Invalid or missing priceId', valid: priceIds });
@@ -2215,6 +2352,13 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
 
     const stripeClient = getStripe();
     if (!stripeClient) {
+      logger.error('[billing] checkout_session_create_failed', {
+        correlation_id: correlationId,
+        checkout_attempt_id: checkoutAttemptId,
+        request_id: req.id || null,
+        error_code: 'STRIPE_NOT_CONFIGURED',
+        duration_ms: Date.now() - startedAt
+      });
       return res.status(501).json({ error: 'Stripe not configured' });
     }
     try {
@@ -2298,18 +2442,23 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         metadataPurchaseType: null
       });
       const checkoutMetadata = {
-        account_id: sanitizeStripeMetadataValue(account?.id) || requestedAttribution.accountId,
-        license_key: sanitizeStripeMetadataValue(account?.license_key)
-          || sanitizeStripeMetadataValue(siteRecord?.license_key)
-          || requestedAttribution.licenseKey,
-        site_id: sanitizeStripeMetadataValue(siteRecord?.id) || requestedAttribution.siteId,
+        application_user_id: sanitizeStripeMetadataValue(account?.id),
+        site_install_id: sanitizeStripeMetadataValue(siteRecord?.id),
+        checkout_attempt_id: checkoutAttemptId,
+        selected_plan: selectedPlanId || undefined,
+        plugin_version: sanitizeStripeMetadataValue(
+          req.header('X-Plugin-Version') || requestedAttribution.pluginVersion,
+          { maxLength: 64 }
+        ),
+        environment: sanitizeStripeMetadataValue(process.env.NODE_ENV || requestedAttribution.environment || 'unknown'),
+        correlation_id: correlationId,
+        account_id: sanitizeStripeMetadataValue(account?.id),
+        site_id: sanitizeStripeMetadataValue(siteRecord?.id),
         site_hash: sanitizeStripeMetadataValue(siteRecord?.site_hash)
           || sanitizeStripeMetadataValue(siteKey)
           || requestedAttribution.siteHash,
         user_id: sanitizeStripeMetadataValue(req.user?.id)
-          || requestedAttribution.userId
           || sanitizeStripeMetadataValue(account?.id),
-        email: sanitizeStripeMetadataValue(account?.email, { lowercase: true }) || requestedAttribution.email,
         plan: selectedPlanId || undefined,
         current_plan: currentPlan || undefined,
         billing_interval: resolveCheckoutBillingInterval(selectedPlan, selectedPlanId),
@@ -2345,16 +2494,68 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       }
 
       const idempotencyKey = buildCheckoutIdempotencyKey({
-        licenseKey: metadata.license_key,
+        checkoutAttemptId,
         siteId: metadata.site_id,
         priceId,
         billingCycle: metadata.billing_interval
       });
       const session = await stripeClient.checkout.sessions.create(checkoutPayload, { idempotencyKey });
-      res.json({ success: true, url: session.url, sessionId: session.id });
+      const trace = {
+        ...buildCheckoutTraceContext({
+          req,
+          account,
+          site: siteRecord,
+          priceId,
+          selectedPlan,
+          attribution: requestedAttribution,
+          checkoutAttemptId,
+          correlationId
+        }),
+        stripe_checkout_session_id: session.id,
+        stripe_customer_id: normalizeStripeId(session.customer) || account?.stripe_customer_id || null,
+        processing_result: 'session_created',
+        duration_ms: Date.now() - startedAt
+      };
+      logger.info('[billing] checkout_session_created', trace);
+      await captureCheckoutEvent({
+        event: 'checkout_started',
+        distinctId: account?.id || requestedAttribution.distinctId || siteRecord?.id || checkoutAttemptId,
+        properties: trace
+      });
+      res.json({
+        success: true,
+        url: session.url,
+        sessionId: session.id,
+        checkoutAttemptId,
+        correlationId
+      });
     } catch (error) {
-      logger.error('[billing] checkout error', error.message);
-      res.status(500).json({ error: 'Failed to create checkout session' });
+      const trace = {
+        ...buildCheckoutTraceContext({
+          req,
+          account,
+          site: siteRecord,
+          priceId,
+          selectedPlan,
+          attribution: requestedAttribution,
+          checkoutAttemptId,
+          correlationId
+        }),
+        processing_result: 'session_create_failed',
+        error_code: error.code || error.type || 'CHECKOUT_SESSION_CREATE_FAILED',
+        duration_ms: Date.now() - startedAt
+      };
+      logger.error('[billing] checkout_session_create_failed', trace);
+      await captureCheckoutEvent({
+        event: 'checkout_failed',
+        distinctId: account?.id || requestedAttribution.distinctId || siteRecord?.id || checkoutAttemptId,
+        properties: trace
+      });
+      res.status(500).json({
+        error: 'Failed to create checkout session',
+        checkoutAttemptId,
+        correlationId
+      });
     }
   });
 

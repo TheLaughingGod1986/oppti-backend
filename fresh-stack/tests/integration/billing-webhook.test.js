@@ -768,7 +768,15 @@ describe('POST /billing/webhook', () => {
     const res = await sendWebhook(app, 'evt_checkout_subscription');
 
     expect(res.status).toBe(200);
-    expect(captureServerEvent).not.toHaveBeenCalled();
+    expect(captureServerEvent).toHaveBeenCalledWith({
+      event: 'checkout_completed',
+      distinctId: 'cs_sub_123',
+      properties: expect.objectContaining({
+        webhook_event_id: 'evt_checkout_subscription',
+        processing_result: 'completed_pending_subscription_confirmation',
+        $insert_id: 'evt_checkout_subscription:checkout_completed'
+      })
+    });
   });
 
   test('tracks invoice.payment_succeeded for subscription payments and persists stripe subscription mappings', async () => {

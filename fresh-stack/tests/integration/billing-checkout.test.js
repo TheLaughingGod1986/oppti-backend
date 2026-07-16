@@ -1,6 +1,12 @@
 const express = require('express');
 const request = require('supertest');
 
+jest.mock('../../lib/posthog', () => ({
+  captureServerEvent: jest.fn().mockResolvedValue({ ok: true, status: 200 }),
+  identifyServerUser: jest.fn().mockResolvedValue({ ok: true, status: 200 })
+}));
+
+const { captureServerEvent } = require('../../lib/posthog');
 const { createBillingRouter } = require('../../routes/billing');
 
 function createSupabaseMock({ siteRecord = null, siteSubscriptions = [], licenses = [] } = {}) {
@@ -175,6 +181,10 @@ function createApp({ supabase, stripeClient, license, user }) {
 }
 
 describe('POST /billing/checkout', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   test('propagates internal metadata onto subscription checkout sessions', async () => {
     const stripeClient = {
       checkout: {
@@ -235,12 +245,16 @@ describe('POST /billing/checkout', () => {
       success_url: 'https://app.example.com/success',
       cancel_url: 'https://app.example.com/cancel',
       metadata: expect.objectContaining({
+        application_user_id: 'account_123',
+        site_install_id: 'site_123',
+        checkout_attempt_id: expect.any(String),
+        selected_plan: 'agency',
+        environment: expect.any(String),
+        correlation_id: expect.any(String),
         account_id: 'account_123',
-        license_key: 'lic_123',
         site_id: 'site_123',
         site_hash: 'site_hash_123',
-        user_id: 'user_987',
-        email: 'buyer@example.com',
+        user_id: 'account_123',
         plan: 'agency',
         current_plan: 'free',
         billing_interval: 'month',
@@ -253,12 +267,14 @@ describe('POST /billing/checkout', () => {
       }),
       subscription_data: {
         metadata: expect.objectContaining({
+          application_user_id: 'account_123',
+          site_install_id: 'site_123',
+          checkout_attempt_id: expect.any(String),
+          selected_plan: 'agency',
           account_id: 'account_123',
-          license_key: 'lic_123',
           site_id: 'site_123',
           site_hash: 'site_hash_123',
-          user_id: 'user_987',
-          email: 'buyer@example.com',
+          user_id: 'account_123',
           plan: 'agency',
           current_plan: 'free',
           billing_interval: 'month',
@@ -319,12 +335,14 @@ describe('POST /billing/checkout', () => {
       customer_email: 'credits@example.com',
       client_reference_id: 'account_credits',
       metadata: expect.objectContaining({
+        application_user_id: 'account_credits',
+        site_install_id: 'site_credits',
+        checkout_attempt_id: expect.any(String),
+        selected_plan: 'credits',
         account_id: 'account_credits',
-        license_key: 'lic_credits',
         site_id: 'site_credits',
         site_hash: 'site_hash_credits',
         user_id: 'account_credits',
-        email: 'credits@example.com',
         plan: 'credits',
         current_plan: 'pro',
         billing_interval: 'one_time',
@@ -333,12 +351,14 @@ describe('POST /billing/checkout', () => {
       }),
       payment_intent_data: {
         metadata: expect.objectContaining({
+          application_user_id: 'account_credits',
+          site_install_id: 'site_credits',
+          checkout_attempt_id: expect.any(String),
+          selected_plan: 'credits',
           account_id: 'account_credits',
-          license_key: 'lic_credits',
           site_id: 'site_credits',
           site_hash: 'site_hash_credits',
           user_id: 'account_credits',
-          email: 'credits@example.com',
           plan: 'credits',
           current_plan: 'pro',
           billing_interval: 'one_time',
@@ -397,8 +417,11 @@ describe('POST /billing/checkout', () => {
       customer_email: 'starter@example.com',
       line_items: [{ price: 'price_starter', quantity: 1 }],
       metadata: expect.objectContaining({
+        application_user_id: 'account_starter',
+        site_install_id: 'site_starter',
+        checkout_attempt_id: expect.any(String),
+        selected_plan: 'starter',
         account_id: 'account_starter',
-        license_key: 'lic_starter',
         site_id: 'site_starter',
         site_hash: 'site_hash_starter',
         plan: 'starter',
@@ -416,6 +439,111 @@ describe('POST /billing/checkout', () => {
     }), expect.objectContaining({
       idempotencyKey: expect.stringMatching(/^checkout:/)
     }));
+  });
+
+  test('propagates caller correlation and attempt IDs and emits checkout_started', async () => {
+    const stripeClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn().mockResolvedValue({
+            id: 'cs_trace',
+            url: 'https://stripe.test/trace',
+            customer: 'cus_trace'
+          })
+        }
+      }
+    };
+    const supabase = createSupabaseMock({
+      siteRecord: {
+        id: 'site_trace',
+        site_hash: 'site_hash_trace',
+        site_url: 'https://trace.example.org'
+      }
+    });
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: {
+        id: 'account_trace',
+        email: 'trace@example.com',
+        license_key: 'lic_trace',
+        plan: 'free'
+      }
+    });
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_trace')
+      .set('X-Plugin-Version', '2.4.1')
+      .send({
+        priceId: 'price_pro',
+        checkout_attempt_id: 'attempt_trace',
+        correlation_id: 'corr_trace',
+        distinct_id: 'anonymous_trace',
+        trigger_location: 'dashboard-upgrade-cta'
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      sessionId: 'cs_trace',
+      checkoutAttemptId: 'attempt_trace',
+      correlationId: 'corr_trace'
+    }));
+    expect(captureServerEvent).toHaveBeenCalledWith({
+      event: 'checkout_started',
+      distinctId: 'account_trace',
+      properties: expect.objectContaining({
+        correlation_id: 'corr_trace',
+        checkout_attempt_id: 'attempt_trace',
+        stripe_checkout_session_id: 'cs_trace',
+        stripe_customer_id: 'cus_trace',
+        plugin_version: '2.4.1',
+        cta_source: 'dashboard-upgrade-cta',
+        processing_result: 'session_created'
+      })
+    });
+  });
+
+  test('returns trace IDs and does not expose Stripe errors when session creation fails', async () => {
+    const stripeClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn().mockRejectedValue(Object.assign(new Error('raw Stripe response'), {
+            code: 'resource_missing'
+          }))
+        }
+      }
+    };
+    const app = createApp({
+      supabase: createSupabaseMock(),
+      stripeClient,
+      license: { id: 'account_failed', plan: 'free' }
+    });
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_failed')
+      .send({
+        priceId: 'price_pro',
+        checkout_attempt_id: 'attempt_failed',
+        correlation_id: 'corr_failed'
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({
+      error: 'Failed to create checkout session',
+      checkoutAttemptId: 'attempt_failed',
+      correlationId: 'corr_failed'
+    });
+    expect(JSON.stringify(res.body)).not.toContain('raw Stripe response');
+    expect(captureServerEvent).toHaveBeenCalledWith({
+      event: 'checkout_failed',
+      distinctId: 'account_failed',
+      properties: expect.objectContaining({
+        error_code: 'resource_missing',
+        processing_result: 'session_create_failed'
+      })
+    });
   });
 
   test('redirects active subscription customers to the billing portal instead of creating checkout', async () => {
