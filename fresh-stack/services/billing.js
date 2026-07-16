@@ -20,11 +20,11 @@ async function handleSubscriptionCreated(supabase, { licenseKey, stripeCustomerI
   if (!error) {
     const { data: license } = await supabase
       .from('licenses')
-      .select('email')
+      .select('id, email')
       .eq('license_key', licenseKey)
       .single();
     if (license?.email) {
-      trackPlanUpgraded({ email: license.email, planName: planType }).catch(() => {});
+      trackPlanUpgraded({ email: license.email, userId: license.id, planName: planType }).catch(() => {});
     }
   }
 
@@ -44,11 +44,11 @@ async function handleSubscriptionUpdated(supabase, { licenseKey, planType, curre
   if (!error) {
     const { data: license } = await supabase
       .from('licenses')
-      .select('email')
+      .select('id, email')
       .eq('license_key', licenseKey)
       .single();
     if (license?.email) {
-      trackPlanUpgraded({ email: license.email, planName: planType }).catch(() => {});
+      trackPlanUpgraded({ email: license.email, userId: license.id, planName: planType }).catch(() => {});
     }
   }
 

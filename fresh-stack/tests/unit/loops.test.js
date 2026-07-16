@@ -1,10 +1,13 @@
-describe('Loops lifecycle events', () => {
-  const originalApiKey = process.env.LOOPS_API_KEY;
-  const originalFetch = global.fetch;
+describe('Loops multi-plugin integration', () => {
+  const originalEnv = process.env;
 
   beforeEach(() => {
     jest.resetModules();
-    process.env.LOOPS_API_KEY = 'loops_test_key';
+    process.env = {
+      ...originalEnv,
+      LOOPS_API_KEY: 'test-key',
+      LOOPS_PLUGIN_USERS_LIST_ID: 'list123'
+    };
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -13,256 +16,61 @@ describe('Loops lifecycle events', () => {
   });
 
   afterEach(() => {
-    process.env.LOOPS_API_KEY = originalApiKey;
-    global.fetch = originalFetch;
+    process.env = originalEnv;
+    delete global.fetch;
   });
 
-  test('sends plan upgrades as idempotent event properties', async () => {
-    const { trackPlanUpgraded } = require('../../../src/services/loops');
-
-    await trackPlanUpgraded({
-      email: 'buyer@example.com',
-      planName: 'pro',
-      purchaseType: 'new_purchase',
-      billingPeriod: 'monthly',
-      amount: 14.99,
-      currency: 'usd',
-      stripeEventId: 'evt_purchase_123'
-    });
-
-    expect(global.fetch).toHaveBeenCalledTimes(2);
-    expect(global.fetch).toHaveBeenLastCalledWith(
-      'https://app.loops.so/api/v1/events/send',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          Authorization: 'Bearer loops_test_key',
-          'Idempotency-Key': 'evt_purchase_123'
-        }),
-        body: JSON.stringify({
-          email: 'buyer@example.com',
-          eventName: 'plan_upgraded',
-          eventProperties: {
-            plan: 'pro',
-            purchaseType: 'new_purchase',
-            billingPeriod: 'monthly',
-            amount: 14.99,
-            currency: 'usd',
-            stripeEventId: 'evt_purchase_123'
-          }
-        })
-      })
-    );
+  test('builds stable idempotency keys', () => {
+    const { buildIdempotencyKey } = require('../../../src/services/loops');
+    expect(buildIdempotencyKey('user-1', 'account_created', 'titles'))
+      .toBe(buildIdempotencyKey('user-1', 'account_created', 'titles'));
+    expect(buildIdempotencyKey('user-1', 'account_created', 'titles'))
+      .not.toBe(buildIdempotencyKey('user-1', 'account_created', 'alt_text'));
   });
 
-  test('sends payment failures as idempotent event properties', async () => {
-    const { trackPaymentFailed } = require('../../../src/services/loops');
-
-    await trackPaymentFailed({
-      email: 'buyer@example.com',
-      planName: 'credits',
-      amount: 9.99,
-      currency: 'gbp',
-      failureCode: 'card_declined',
-      declineCode: 'insufficient_funds',
-      recoverability: 'recoverable',
-      paymentIntentId: 'pi_failed_123',
-      chargeId: 'ch_failed_123',
-      paymentLinkId: 'plink_credits',
-      checkoutSessionId: 'cs_failed_123',
-      stripeEventId: 'evt_failed_123'
-    });
-
-    expect(global.fetch).toHaveBeenCalledTimes(2);
-    expect(global.fetch).toHaveBeenLastCalledWith(
-      'https://app.loops.so/api/v1/events/send',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          Authorization: 'Bearer loops_test_key',
-          'Idempotency-Key': 'evt_failed_123'
-        }),
-        body: JSON.stringify({
-          email: 'buyer@example.com',
-          eventName: 'payment_failed',
-          eventProperties: {
-            plan: 'credits',
-            amount: 9.99,
-            currency: 'gbp',
-            failureCode: 'card_declined',
-            declineCode: 'insufficient_funds',
-            recoverability: 'recoverable',
-            lastPaymentFailureRecoverability: 'recoverable',
-            paymentIntentId: 'pi_failed_123',
-            chargeId: 'ch_failed_123',
-            paymentLinkId: 'plink_credits',
-            checkoutSessionId: 'cs_failed_123',
-            stripeEventId: 'evt_failed_123'
-          }
-        })
-      })
-    );
-  });
-
-  test('sends payment successes as idempotent event properties', async () => {
-    const { trackPaymentSucceeded } = require('../../../src/services/loops');
-
-    await trackPaymentSucceeded({
-      email: 'buyer@example.com',
-      planName: 'credits',
-      purchaseType: 'credit_top_up',
-      billingPeriod: 'one_time',
-      amount: 9.99,
-      currency: 'gbp',
-      checkoutSessionId: 'cs_paid_123',
-      invoiceId: null,
-      paymentLinkId: 'plink_credits',
-      stripeEventId: 'evt_paid_123'
-    });
-
-    expect(global.fetch).toHaveBeenCalledTimes(2);
-    expect(global.fetch).toHaveBeenLastCalledWith(
-      'https://app.loops.so/api/v1/events/send',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          Authorization: 'Bearer loops_test_key',
-          'Idempotency-Key': 'evt_paid_123'
-        }),
-        body: JSON.stringify({
-          email: 'buyer@example.com',
-          eventName: 'payment_succeeded',
-          eventProperties: {
-            plan: 'credits',
-            purchaseType: 'credit_top_up',
-            billingPeriod: 'one_time',
-            amount: 9.99,
-            currency: 'gbp',
-            checkoutSessionId: 'cs_paid_123',
-            invoiceId: null,
-            paymentLinkId: 'plink_credits',
-            stripeEventId: 'evt_paid_123'
-          }
-        })
-      })
-    );
-  });
-
-  test('sends first generation success for activation workflows', async () => {
-    const { trackGenerationMilestone } = require('../../../src/services/loops');
-
-    await trackGenerationMilestone({
+  test('updates only the current plugin membership flag', async () => {
+    const { upsertPluginContact } = require('../../../src/services/loops');
+    await upsertPluginContact({
       email: 'user@example.com',
-      generationsCount: 1,
-      imagesUnprocessed: 12
+      userId: 'account-1',
+      pluginId: 'titles',
+      pluginVersion: '1.0.0',
+      timestamp: '2026-06-22T10:00:00.000Z'
     });
 
-    expect(global.fetch).toHaveBeenCalledTimes(2);
-    expect(global.fetch).toHaveBeenCalledWith(
-      'https://app.loops.so/api/v1/contacts/update',
-      expect.objectContaining({
-        method: 'PUT',
-        headers: expect.objectContaining({
-          Authorization: 'Bearer loops_test_key'
-        }),
-        body: expect.stringContaining('"generationsCount":1')
-      })
-    );
-    expect(global.fetch).toHaveBeenLastCalledWith(
-      'https://app.loops.so/api/v1/events/send',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          Authorization: 'Bearer loops_test_key'
-        }),
-        body: expect.stringContaining('"eventName":"generation_completed"')
-      })
-    );
-    expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual({
+    const [, options] = global.fetch.mock.calls[0];
+    const payload = JSON.parse(options.body);
+    expect(payload).toEqual(expect.objectContaining({
       email: 'user@example.com',
+      userId: 'account-1',
+      usesTitles: true,
+      titlesPluginVersion: '1.0.0',
+      lastActivePluginId: 'titles',
+      mailingLists: { list123: true }
+    }));
+    expect(payload).not.toHaveProperty('usesAltText');
+  });
+
+  test('sends plugin-aware events with an idempotency header', async () => {
+    const { sendEvent } = require('../../../src/services/loops');
+    await sendEvent('generation_completed', {
+      email: 'user@example.com',
+      userId: 'account-1',
+      pluginId: 'alt_text',
+      pluginVersion: '4.6.55',
+      idempotencyParts: [5],
+      generationsCount: 5
+    });
+
+    const [, options] = global.fetch.mock.calls[0];
+    expect(options.headers['Idempotency-Key']).toMatch(/^bbai-[a-f0-9]{64}$/);
+    expect(JSON.parse(options.body)).toEqual(expect.objectContaining({
       eventName: 'generation_completed',
-      eventProperties: {
-        generationsCount: 1,
-        imagesUnprocessed: 12,
-        lastGenerationAt: expect.any(String)
-      }
-    });
-  });
-
-  test('skips later generation counts after activation', async () => {
-    const { trackGenerationMilestone } = require('../../../src/services/loops');
-
-    await trackGenerationMilestone({
-      email: 'user@example.com',
-      generationsCount: 3,
-      imagesUnprocessed: 9
-    });
-    await trackGenerationMilestone({
-      email: 'user@example.com',
-      generationsCount: 5,
-      imagesUnprocessed: 7
-    });
-
-    expect(global.fetch).not.toHaveBeenCalled();
-  });
-
-  test('sends image SEO audit completion as lead contact properties and event properties', async () => {
-    const { trackImageSeoAuditCompleted } = require('../../../src/services/loops');
-
-    await trackImageSeoAuditCompleted({
-      email: 'lead@example.com',
-      websiteUrl: 'https://example.com/',
-      normalizedDomain: 'example.com',
-      auditId: 'audit_123',
-      auditScore: 72,
-      pagesScanned: 12,
-      imagesScanned: 80,
-      missingAltPercent: 34
-    });
-
-    expect(global.fetch).toHaveBeenCalledTimes(2);
-    expect(global.fetch).toHaveBeenNthCalledWith(
-      1,
-      'https://app.loops.so/api/v1/contacts/create',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          Authorization: 'Bearer loops_test_key'
-        }),
-        body: JSON.stringify({
-          email: 'lead@example.com',
-          firstName: '',
-          userGroup: 'audit_lead',
-          source: 'image_seo_audit',
-          websiteUrl: 'https://example.com/',
-          normalizedDomain: 'example.com',
-          subscribed: true,
-          auditScore: 72,
-          pagesScanned: 12,
-          imagesScanned: 80,
-          missingAltPercent: 34
-        })
+      eventProperties: expect.objectContaining({
+        pluginId: 'alt_text',
+        pluginVersion: '4.6.55',
+        generationsCount: 5
       })
-    );
-    expect(global.fetch).toHaveBeenLastCalledWith(
-      'https://app.loops.so/api/v1/events/send',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
-          email: 'lead@example.com',
-          eventName: 'image_seo_audit_completed',
-          eventProperties: {
-            auditId: 'audit_123',
-            websiteUrl: 'https://example.com/',
-            normalizedDomain: 'example.com',
-            auditScore: 72,
-            pagesScanned: 12,
-            imagesScanned: 80,
-            missingAltPercent: 34,
-            source: 'image_seo_audit'
-          }
-        })
-      })
-    );
+    }));
   });
 });

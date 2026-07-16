@@ -66,6 +66,12 @@ services:
         sync: false
       - key: RESEND_CONTACT_EMAIL
         sync: false
+      - key: LOOPS_API_KEY
+        sync: false
+      - key: LOOPS_PLUGIN_USERS_LIST_ID
+        sync: false
+      - key: LOOPS_SIGNING_SECRET
+        sync: false
       - key: ADMIN_KEY
         sync: false
       - key: ALT_API_TOKEN

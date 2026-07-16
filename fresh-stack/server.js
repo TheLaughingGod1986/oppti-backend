@@ -23,6 +23,7 @@ const { createAdminRouter } = require('./routes/admin');
 const { createContactRouter } = require('./routes/contact');
 const { createImageSeoAuditRouter } = require('./routes/imageSeoAudit');
 const { createOptimizerRouter } = require('./routes/optimizer');
+const { createLoopsWebhookHandler } = require('./routes/loopsWebhook');
 const { inspectV2Schema, logV2SchemaStartupStatus } = require('./services/v2Diagnostics');
 const {
   getRuntimeIdentity,
@@ -114,7 +115,8 @@ function createApp({
 
   app.use(cors({
     origin: allowedOrigins.length ? allowedOrigins : (config.isProd ? false : true),
-    credentials: true
+    credentials: true,
+    allowedHeaders: config.allowedHeaders
   }));
 
   app.use(compression());
@@ -127,6 +129,11 @@ function createApp({
     '/billing/webhook',
     express.raw({ type: 'application/json', limit: '2mb' }),
     createBillingWebhookHandler({ supabase: supabaseClient, getStripe, priceIds })
+  );
+  app.post(
+    '/webhooks/loops',
+    express.raw({ type: 'application/json', limit: '2mb' }),
+    createLoopsWebhookHandler({ supabase: supabaseClient })
   );
 
   app.use(express.json({ limit: '8mb' }));
