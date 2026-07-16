@@ -8,6 +8,20 @@ function getPostHogConfig() {
   };
 }
 
+function withWebsitePersonProperties(properties = {}) {
+  const domain = typeof properties.domain === 'string' ? properties.domain.trim() : '';
+  if (!domain) return properties;
+
+  return {
+    ...properties,
+    $set: {
+      name: domain,
+      website: properties.site_url || domain,
+      ...(properties.$set || {})
+    }
+  };
+}
+
 async function sendPostHogRequest({ path, payload }) {
   const { apiKey, host } = getPostHogConfig();
 
@@ -55,7 +69,7 @@ async function captureServerEvent({ event, distinctId, properties = {} }) {
     payload: {
       event,
       distinct_id: distinctId,
-      properties
+      properties: withWebsitePersonProperties(properties)
     }
   });
 }
@@ -95,5 +109,6 @@ module.exports = {
   captureServerEvent,
   identifyServerUser,
   aliasServerUser,
-  getPostHogConfig
+  getPostHogConfig,
+  withWebsitePersonProperties
 };

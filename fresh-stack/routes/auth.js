@@ -19,7 +19,9 @@ const {
   syncLegacySitePointers
 } = require('../services/siteQuota');
 
-const { trackAccountCreated } = require('../../src/services/loops');
+const { trackAccountCreated, trackPluginConnected } = require('../../src/services/loops');
+const { PLUGIN_IDS } = require('../../src/services/pluginIdentity');
+const { recordPluginConnection } = require('../services/pluginConnections');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = '30d';
@@ -150,7 +152,7 @@ function emitAuthWriteTrace(connectionSource, trace) {
   logger[level](`[${prefix}] ${connectionSource}_write_verification`, trace);
 }
 
-async function fireLoopsAccountCreated({ email, requestId }) {
+async function fireLoopsAccountCreated({ email, userId, pluginId, pluginVersion, requestId }) {
   const trace = {
     attempted: Boolean(process.env.LOOPS_API_KEY),
     success: null,
@@ -168,7 +170,15 @@ async function fireLoopsAccountCreated({ email, requestId }) {
   }
 
   try {
-    await trackAccountCreated({ email, firstName: '', isWooCommerce: false, imagesUnprocessed: 0 });
+    await trackAccountCreated({
+      email,
+      userId,
+      firstName: '',
+      pluginId,
+      pluginVersion,
+      isWooCommerce: false,
+      imagesUnprocessed: 0
+    });
     trace.success = true;
     trace.error = null;
     logger.info('[signup] account_created_loops_succeeded', {
@@ -186,6 +196,43 @@ async function fireLoopsAccountCreated({ email, requestId }) {
       status: error.status || null
     });
     return trace;
+  }
+}
+
+async function fireLoopsPluginConnected({ supabase, email, userId, pluginId, pluginVersion, requestId }) {
+  if (!process.env.LOOPS_API_KEY || typeof trackPluginConnected !== 'function') return;
+  try {
+    const connection = await recordPluginConnection(supabase, {
+      accountId: userId,
+      pluginId,
+      pluginVersion
+    });
+    if (connection.error) {
+      logger.warn('[login] plugin_connection_state_failed', {
+        user_id: userId,
+        plugin_id: pluginId,
+        error: connection.error.message || String(connection.error)
+      });
+    }
+    await trackPluginConnected({
+      email,
+      userId,
+      pluginId,
+      pluginVersion,
+      emitEvent: connection.isFirstConnection
+    });
+    logger.info('[login] plugin_connected_loops_succeeded', {
+      email: maskEmail(email),
+      plugin_id: pluginId,
+      request_id: requestId || null
+    });
+  } catch (error) {
+    logger.error('[login] plugin_connected_loops_failed', {
+      email: maskEmail(email),
+      plugin_id: pluginId,
+      request_id: requestId || null,
+      error: error.message
+    });
   }
 }
 
@@ -461,6 +508,7 @@ function createAuthRouter({ supabase }) {
       network_id: z.number().optional(),
       is_multisite: z.boolean().optional(),
       plugin_version: z.string().optional(),
+      plugin_id: z.enum(PLUGIN_IDS).optional().default('alt_text'),
       wordpress_version: z.string().optional()
     });
 
@@ -596,8 +644,18 @@ function createAuthRouter({ supabase }) {
       registerTrace.license_write.error = null;
       registerTrace.user_id = user.id;
       registerTrace.license_key_prefix = redactLicenseKey(user.license_key);
+      if (process.env.LOOPS_API_KEY) {
+        await recordPluginConnection(supabase, {
+          accountId: user.id,
+          pluginId: parsed.data.plugin_id,
+          pluginVersion: parsed.data.plugin_version
+        });
+      }
       registerTrace.loops_account_created = await fireLoopsAccountCreated({
         email,
+        userId: user.id,
+        pluginId: parsed.data.plugin_id,
+        pluginVersion: parsed.data.plugin_version,
         requestId: req.id || null
       });
 
@@ -758,6 +816,7 @@ function createAuthRouter({ supabase }) {
       network_id: z.number().optional(),
       is_multisite: z.boolean().optional(),
       plugin_version: z.string().optional(),
+      plugin_id: z.enum(PLUGIN_IDS).optional().default('alt_text'),
       wordpress_version: z.string().optional()
     });
 
@@ -908,6 +967,15 @@ function createAuthRouter({ supabase }) {
           message: 'Development and localhost sites cannot claim production free quota.'
         });
       }
+
+      await fireLoopsPluginConnected({
+        supabase,
+        email: user.email,
+        userId: user.id,
+        pluginId: parsed.data.plugin_id,
+        pluginVersion: parsed.data.plugin_version,
+        requestId: req.id || null
+      });
 
       // Generate JWT token
       const token = jwt.sign(
