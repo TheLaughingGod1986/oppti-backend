@@ -27,6 +27,7 @@ const { extractUserInfo } = require('../middleware/auth');
 const { resolveUsageAttributionUserId } = require('../services/usageAttribution');
 const { buildTrialGenerationForSingleRequest } = require('../lib/trialGenerationContract');
 const { buildEntitlementState } = require('../services/entitlementState');
+const { GENERATION_ERROR_CODES, publicMessageFor } = require('../lib/generationErrors');
 
 function hashPayload(base64) {
   return crypto.createHash('md5').update(base64).digest('hex');
@@ -286,33 +287,113 @@ function buildGenerationEntitlementState(req, {
   });
 }
 
-function captureGenerationEvent(event, {
-  req,
-  siteIdentity,
-  entitlementState = null,
-  outcome = null
-} = {}) {
-  const distinctId = siteIdentity?.siteHash || null;
-  if (!distinctId) return;
+function extractGenerationRunId(req) {
+  return sanitizeTelemetryValue(
+    req.header('X-Generation-Run-ID'),
+    req.header('X-Generation-Run-Id'),
+    req.body?.generation_run_id,
+    req.body?.generationRunId,
+    128
+  ) || crypto.randomUUID();
+}
 
-  captureServerEvent({
-    event,
-    distinctId,
-    properties: {
-      request_id: req?.id || null,
-      auth_state: req?.trialMode ? 'guest_trial' : 'authenticated',
-      plan: entitlementState?.plan || null,
-      quota_state: entitlementState?.quota_state || null,
-      tokens_remaining: entitlementState?.tokens_remaining ?? null,
-      outcome
-    }
-  }).catch((error) => {
-    logger.warn('[analytics] generation_event_capture_failed', {
+function extractRetryCount(req) {
+  const raw = firstString(
+    req.header('X-Generation-Attempt'),
+    req.header('X-Retry-Count'),
+    typeof req.body?.retry_count === 'number' ? String(req.body.retry_count) : req.body?.retry_count
+  );
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+/**
+ * Per-request generation telemetry.
+ *
+ * Guarantees exactly one terminal analytics event per HTTP request: once a
+ * terminal event (generation_completed, generation_failed, or the legacy
+ * generation_blocked_no_credits) has been emitted, later terminal emissions
+ * are no-ops. All events carry the generation_run_id so client retries of
+ * the same logical operation can be grouped in PostHog and in logs.
+ */
+function createGenerationTelemetry({
+  req,
+  generationRunId,
+  retryCount,
+  startedAt
+}) {
+  let terminalEmitted = false;
+  let siteIdentityRef = null;
+  let requestTelemetry = null;
+
+  function capture(event, {
+    entitlementState = null,
+    outcome = null,
+    errorCode = null,
+    httpStatus = null,
+    isTerminal = false
+  } = {}) {
+    const distinctId = siteIdentityRef?.siteHash || null;
+    if (!distinctId) return;
+
+    captureServerEvent({
       event,
-      request_id: req?.id || null,
-      error: error.message
+      distinctId,
+      properties: {
+        generation_run_id: generationRunId,
+        request_id: req?.id || null,
+        auth_state: req?.trialMode ? 'guest_trial' : 'authenticated',
+        plan: entitlementState?.plan || null,
+        quota_state: entitlementState?.quota_state || null,
+        tokens_remaining: entitlementState?.tokens_remaining ?? null,
+        outcome,
+        error_code: errorCode,
+        http_status: httpStatus,
+        plugin_version: sanitizeTelemetryValue(req?.header?.('X-Plugin-Version'), 64),
+        generation_mode: 'single',
+        retry_count: retryCount,
+        duration_ms: Date.now() - startedAt,
+        provider: 'openai',
+        environment: requestTelemetry?.environment || process.env.NODE_ENV || null,
+        request_source: requestTelemetry?.request_source || 'wordpress_plugin',
+        is_terminal: isTerminal,
+        site_hash: distinctId
+      }
+    }).catch((error) => {
+      logger.warn('[analytics] generation_event_capture_failed', {
+        event,
+        generation_run_id: generationRunId,
+        request_id: req?.id || null,
+        error: error.message
+      });
     });
-  });
+  }
+
+  return {
+    bindContext({ siteIdentity = null, telemetry = null } = {}) {
+      if (siteIdentity) siteIdentityRef = siteIdentity;
+      if (telemetry) requestTelemetry = telemetry;
+    },
+    emitTerminal(event, options = {}) {
+      if (terminalEmitted) {
+        logger.warn('[analytics] duplicate_terminal_generation_event_suppressed', {
+          event,
+          generation_run_id: generationRunId,
+          request_id: req?.id || null
+        });
+        return false;
+      }
+      terminalEmitted = true;
+      capture(event, { ...options, isTerminal: true });
+      return true;
+    },
+    emitSignal(event, options = {}) {
+      capture(event, { ...options, isTerminal: false });
+    },
+    hasEmittedTerminal() {
+      return terminalEmitted;
+    }
+  };
 }
 
 function resolveQuotaPathLabel(reservation) {
@@ -414,15 +495,57 @@ function createAltTextRouter({
   const router = express.Router();
 
   router.post('/', async (req, res) => {
+    const startedAt = Date.now();
+    const generationRunId = extractGenerationRunId(req);
+    const retryCount = extractRetryCount(req);
+    const telemetry = createGenerationTelemetry({ req, generationRunId, retryCount, startedAt });
+    res.setHeader('X-Generation-Run-Id', generationRunId);
+
+    try {
+      return await handleGeneration(req, res, { generationRunId, retryCount, telemetry });
+    } catch (error) {
+      // Last-resort handler: an unexpected exception anywhere in the flow
+      // must still resolve to exactly one terminal analytics event and a
+      // single HTTP response. Unknown failures are generation_failed with
+      // error_code internal_unknown_error (never a second event type).
+      logger.error('[altText] Unhandled generation exception', {
+        generation_run_id: generationRunId,
+        request_id: req.id || null,
+        error: error.message,
+        stack: error.stack
+      });
+      telemetry.emitTerminal('generation_failed', {
+        outcome: 'INTERNAL_ERROR',
+        errorCode: GENERATION_ERROR_CODES.INTERNAL_UNKNOWN_ERROR,
+        httpStatus: 500
+      });
+      if (!res.headersSent) {
+        return res.status(500).json({
+          error: 'INTERNAL_ERROR',
+          code: 'INTERNAL_ERROR',
+          error_code: GENERATION_ERROR_CODES.INTERNAL_UNKNOWN_ERROR,
+          generation_run_id: generationRunId,
+          message: 'Failed to generate alt text.',
+          retryable: false
+        });
+      }
+      return undefined;
+    }
+  });
+
+  async function handleGeneration(req, res, { generationRunId, retryCount, telemetry }) {
     const parsed = requestSchema.safeParse(req.body);
     if (!parsed.success) {
       logger.error('[altText] Schema validation failed', {
+        generation_run_id: generationRunId,
         errors: parsed.error.flatten(),
         payload: summarizeInvalidAltTextPayload(req.body)
       });
       return res.status(400).json({
         error: 'INVALID_REQUEST',
         code: 'INVALID_REQUEST',
+        error_code: GENERATION_ERROR_CODES.INVALID_REQUEST,
+        generation_run_id: generationRunId,
         message: 'Invalid payload - request does not match expected schema',
         details: parsed.error.flatten()
       });
@@ -452,6 +575,7 @@ function createAltTextRouter({
       siteIdentity
     });
     const requestTelemetry = extractRequestTelemetry(req, req.body || {});
+    telemetry.bindContext({ siteIdentity, telemetry: requestTelemetry });
 
     if (req.trialMode) {
       logger.info('[altText] Anonymous identity resolved', {
@@ -465,6 +589,8 @@ function createAltTextRouter({
     }
 
     logger.info('[altText] Request received', {
+      generation_run_id: generationRunId,
+      retry_count: retryCount,
       mode: req.trialMode ? 'trial' : (req.authMethod || 'unknown'),
       site_hash: req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || null),
       site_fingerprint: req.header('X-Site-Fingerprint') ? 'present' : 'absent',
@@ -517,10 +643,15 @@ function createAltTextRouter({
       });
     }
 
-    // Validate and normalize image payload FIRST to get clean base64
+    // Validate and normalize image payload FIRST to get clean base64.
+    // Unsupported formats (e.g. AVIF/HEIC) are rejected here, before any
+    // quota reservation or provider call, as a terminal 400 the client
+    // must not retry.
     const { errors, warnings, normalized } = validateImagePayload(image);
     if (errors.length) {
       logger.error('[altText] Image validation failed', {
+        generation_run_id: generationRunId,
+        request_id: req.id || null,
         errors,
         warnings,
         imageKeys: Object.keys(image),
@@ -530,10 +661,18 @@ function createAltTextRouter({
         width: image.width,
         height: image.height
       });
+      telemetry.emitTerminal('generation_failed', {
+        outcome: 'INVALID_REQUEST',
+        errorCode: GENERATION_ERROR_CODES.INVALID_REQUEST,
+        httpStatus: 400
+      });
       return res.status(400).json({
         error: 'INVALID_REQUEST',
         code: 'INVALID_REQUEST',
+        error_code: GENERATION_ERROR_CODES.INVALID_REQUEST,
+        generation_run_id: generationRunId,
         message: 'Image validation failed',
+        retryable: false,
         errors,
         warnings
       });
@@ -715,6 +854,8 @@ function createAltTextRouter({
 
     const quotaMetadata = {
       request_id: req.id || null,
+      generation_run_id: generationRunId,
+      retry_count: retryCount,
       endpoint: 'api/alt-text',
       image_filename: normalized.filename || null,
       image_url: normalized.url || null,
@@ -955,17 +1096,19 @@ function createAltTextRouter({
         anonymousResponseFields,
         responseFields: deniedResponseFields
       });
-      captureGenerationEvent('generation_blocked_no_credits', {
-        req,
-        siteIdentity,
+      telemetry.emitTerminal('generation_blocked_no_credits', {
         entitlementState: deniedResponseFields.entitlement_state,
-        outcome: reservation.error
+        outcome: reservation.error,
+        errorCode: GENERATION_ERROR_CODES.QUOTA_EXHAUSTED,
+        httpStatus: reservation.status || 402
       });
 
+      deniedResponseFields.generation_run_id = generationRunId;
       return res.status(reservation.status || 402).json(deniedResponseFields);
     }
 
     logger.info('[altText] Quota reserved, calling OpenAI', {
+      generation_run_id: generationRunId,
       mode: req.trialMode ? 'trial' : 'site',
       quota_source: reservation.reservation?.quota_source || 'unknown',
       site_hash: siteIdentity.siteHash,
@@ -987,28 +1130,41 @@ function createAltTextRouter({
       meta = generationResult.meta;
       generationTime = Date.now() - startTime;
     } catch (error) {
+      const normalizedErrorCode = error.errorCode || GENERATION_ERROR_CODES.INTERNAL_ERROR;
+      const errorCode = error.code || 'GENERATION_FAILED';
+      const isRetryable = error.isRetryable === true;
+      // Prefer the classified client status; a non-retryable provider 400
+      // (e.g. unsupported image) must surface as 4xx, never 500, so client
+      // retry loops don't amplify one bad image into many failed attempts.
+      const httpStatus = error.httpStatusForClient
+        || (errorCode === 'BACKEND_CONFIG_ERROR' ? 502
+          : errorCode === 'UPSTREAM_RATE_LIMITED' ? 503
+          : errorCode === 'UPSTREAM_GENERATION_ERROR' ? 502
+          : 500);
+
       const finalizeResult = await finalizeGenerationQuotaReservation(supabase, {
         generationRequestId: reservation.reservation?.generation_request_id || null,
         success: false,
         finalMetadata: {
           error_message: error.message,
-          error_code: error.code || 'GENERATION_FAILED',
+          error_code: errorCode,
+          normalized_error_code: normalizedErrorCode,
+          generation_run_id: generationRunId,
+          retry_count: retryCount,
           request_id: req.id || null
         }
       });
 
-      const errorCode = error.code || 'GENERATION_FAILED';
-      const isRetryable = error.isRetryable === true;
-      const httpStatus = errorCode === 'BACKEND_CONFIG_ERROR' ? 502
-        : errorCode === 'UPSTREAM_RATE_LIMITED' ? 503
-        : errorCode === 'UPSTREAM_GENERATION_ERROR' ? 502
-        : 500;
-
       logger.error('[altText] Alt text generation failed', {
         error: error.message,
         code: errorCode,
+        error_code: normalizedErrorCode,
+        http_status: httpStatus,
+        provider_status: error.httpStatus || null,
         isRetryable,
         trialMode: !!req.trialMode,
+        generation_run_id: generationRunId,
+        retry_count: retryCount,
         requestId: req.id || null,
         siteHash: siteKey,
         generation_request_id: reservation.reservation?.generation_request_id || null,
@@ -1058,20 +1214,18 @@ function createAltTextRouter({
         })
         : null;
 
-      captureGenerationEvent('generation_failed', {
-        req,
-        siteIdentity,
-        outcome: errorCode
+      telemetry.emitTerminal('generation_failed', {
+        outcome: errorCode,
+        errorCode: normalizedErrorCode,
+        httpStatus
       });
 
       return res.status(httpStatus).json({
         error: errorCode,
         code: errorCode,
-        message: errorCode === 'BACKEND_CONFIG_ERROR'
-          ? 'The alt text service is temporarily misconfigured. Please try again later.'
-          : isRetryable
-            ? 'Alt text generation temporarily unavailable. Please retry.'
-            : 'Failed to generate alt text.',
+        error_code: normalizedErrorCode,
+        generation_run_id: generationRunId,
+        message: publicMessageFor(normalizedErrorCode),
         retryable: isRetryable,
         ...(trialInfo || {}),
         ...(anonymousResponseFields || {}),
@@ -1099,6 +1253,8 @@ function createAltTextRouter({
       success: true,
       finalMetadata: {
         request_id: req.id || null,
+        generation_run_id: generationRunId,
+        retry_count: retryCount,
         cached: false,
         model_used: meta?.modelUsed || null,
         total_tokens: usage?.total_tokens || null
@@ -1428,6 +1584,7 @@ function createAltTextRouter({
     const response = {
       success: true,
       altText,
+      generation_run_id: generationRunId,
       credits_used: creditsUsed,
       credits_remaining: creditsRemaining !== null ? creditsRemaining : undefined,
       credits_total: totalLimit !== null ? totalLimit : undefined,
@@ -1451,18 +1608,16 @@ function createAltTextRouter({
       anonymousResponseFields,
       responseFields: response
     });
-    captureGenerationEvent('generation_completed', {
-      req,
-      siteIdentity,
+    telemetry.emitTerminal('generation_completed', {
       entitlementState: response.entitlement_state,
-      outcome: 'success'
+      outcome: 'success',
+      httpStatus: 200
     });
     if (!response.entitlement_state.can_generate && response.entitlement_state.tokens_remaining === 0) {
-      captureGenerationEvent('credits_exhausted', {
-        req,
-        siteIdentity,
+      telemetry.emitSignal('credits_exhausted', {
         entitlementState: response.entitlement_state,
-        outcome: 'final_generation'
+        outcome: 'final_generation',
+        httpStatus: 200
       });
     }
 
@@ -1487,6 +1642,7 @@ function createAltTextRouter({
 
     // Log the response being sent
     logger.info('[altText] Sending response', {
+      generation_run_id: generationRunId,
       mode: req.trialMode ? 'trial' : 'site',
       success: true,
       has_altText: !!response.altText,
@@ -1513,7 +1669,8 @@ function createAltTextRouter({
     }
     
     res.json(response);
-  });
+    return undefined;
+  }
 
   // Admin endpoint to flush alt text cache
   router.post('/flush-cache', async (req, res) => {

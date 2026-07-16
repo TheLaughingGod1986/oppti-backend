@@ -1,5 +1,73 @@
 const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
 
+// Formats the OpenAI vision API accepts. Anything else (avif, heic, bmp,
+// tiff, svg, ico…) is rejected by the provider with a 400, so we must fail
+// fast here instead of reserving quota and calling the provider.
+const SUPPORTED_IMAGE_FORMATS = new Set(['png', 'jpeg', 'gif', 'webp']);
+
+const UNSUPPORTED_EXTENSION_PATTERN = /\.(avif|heic|heif|bmp|tiff?|svg|ico)(\?.*)?$/i;
+
+const MIME_TO_FORMAT = {
+  'image/png': 'png',
+  'image/jpeg': 'jpeg',
+  'image/jpg': 'jpeg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/avif': 'avif',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+  'image/bmp': 'bmp',
+  'image/tiff': 'tiff',
+  'image/svg+xml': 'svg',
+  'image/x-icon': 'ico',
+  'image/vnd.microsoft.icon': 'ico'
+};
+
+/**
+ * Identify the real image format from base64 magic bytes.
+ * Returns a format string ('png', 'jpeg', 'avif', …) or null when unknown.
+ */
+function detectImageFormat(base64 = '') {
+  if (!base64 || typeof base64 !== 'string') return null;
+
+  let header;
+  try {
+    header = Buffer.from(base64.slice(0, 48), 'base64');
+  } catch (_error) {
+    return null;
+  }
+  if (!header || header.length < 4) return null;
+
+  if (header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) return 'jpeg';
+  if (header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e && header[3] === 0x47) return 'png';
+  if (header.slice(0, 4).toString('latin1') === 'GIF8') return 'gif';
+  if (header.length >= 12
+    && header.slice(0, 4).toString('latin1') === 'RIFF'
+    && header.slice(8, 12).toString('latin1') === 'WEBP') return 'webp';
+
+  // ISO-BMFF container: bytes 4-8 are 'ftyp' and the brand names the codec.
+  if (header.length >= 12 && header.slice(4, 8).toString('latin1') === 'ftyp') {
+    const brand = header.slice(8, 12).toString('latin1').toLowerCase();
+    if (brand.startsWith('avi')) return 'avif';
+    if (brand.startsWith('hei') || brand.startsWith('hev') || brand === 'mif1' || brand === 'msf1') return 'heic';
+    return 'iso-bmff';
+  }
+
+  if (header[0] === 0x42 && header[1] === 0x4d) return 'bmp';
+  if ((header[0] === 0x49 && header[1] === 0x49 && header[2] === 0x2a && header[3] === 0x00)
+    || (header[0] === 0x4d && header[1] === 0x4d && header[2] === 0x00 && header[3] === 0x2a)) return 'tiff';
+  if (header[0] === 0x00 && header[1] === 0x00 && header[2] === 0x01 && header[3] === 0x00) return 'ico';
+
+  const asText = header.toString('latin1').trimStart().toLowerCase();
+  if (asText.startsWith('<?xml') || asText.startsWith('<svg')) return 'svg';
+
+  return null;
+}
+
+function unsupportedFormatError(format) {
+  return `Unsupported image format "${format}". Supported formats: png, jpeg, gif, webp. Convert the image (e.g. from AVIF/HEIC) before requesting alt text.`;
+}
+
 function stripDataUrl(value = '') {
   if (value.startsWith('data:')) {
     const [, base64Part] = value.split('base64,');
@@ -21,9 +89,23 @@ function validateImagePayload(image = {}) {
     return { errors, warnings, normalized: null };
   }
 
+  let detectedFormat = null;
   if (hasBase64) {
     if (!BASE64_PATTERN.test(rawBase64.trim())) {
       errors.push('Base64 data contains invalid characters. Ensure it is a clean base64 string without URL or metadata.');
+    } else {
+      detectedFormat = detectImageFormat(rawBase64);
+      if (detectedFormat && !SUPPORTED_IMAGE_FORMATS.has(detectedFormat)) {
+        errors.push(unsupportedFormatError(detectedFormat));
+      }
+    }
+  } else if (hasUrl) {
+    const declaredFormat = MIME_TO_FORMAT[String(image.mime_type || '').toLowerCase()] || null;
+    const urlMatch = String(image.url).match(UNSUPPORTED_EXTENSION_PATTERN);
+    if (declaredFormat && !SUPPORTED_IMAGE_FORMATS.has(declaredFormat)) {
+      errors.push(unsupportedFormatError(declaredFormat));
+    } else if (urlMatch) {
+      errors.push(unsupportedFormatError(urlMatch[1].toLowerCase()));
     }
   }
 
@@ -101,13 +183,17 @@ function validateImagePayload(image = {}) {
     warnings.push('Image URL should be https to be fetchable by the model.');
   }
 
+  const detectedMime = detectedFormat && SUPPORTED_IMAGE_FORMATS.has(detectedFormat)
+    ? `image/${detectedFormat}`
+    : null;
+
   const normalized = {
     base64: hasBase64 ? rawBase64 : null,
     url: hasUrl ? image.url : null,
     width,
     height,
     filename: image.filename || null,
-    mime_type: image.mime_type || (image.url && guessMimeFromUrl(image.url)) || 'image/jpeg'
+    mime_type: detectedMime || image.mime_type || (image.url && guessMimeFromUrl(image.url)) || 'image/jpeg'
   };
 
   return { errors, warnings, normalized };
@@ -123,5 +209,7 @@ function guessMimeFromUrl(url = '') {
 
 module.exports = {
   validateImagePayload,
-  stripDataUrl
+  stripDataUrl,
+  detectImageFormat,
+  SUPPORTED_IMAGE_FORMATS
 };
