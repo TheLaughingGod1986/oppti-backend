@@ -11,7 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [18.x, 20.x]
+        # package.json declares engines.node >=20; Node 18 lacks the global
+        # File class that cheerio's undici dependency requires at load time.
+        node-version: [20.x]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
