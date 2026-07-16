@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { classifyProviderError } = require('./generationErrors');
 
 function buildPrompt(context = {}) {
   const lines = [
@@ -104,6 +105,8 @@ async function generateAltText({ image, context }) {
     logger.error('[OpenAI] Missing API key - check OPENAI_API_KEY or ALTTEXT_OPENAI_API_KEY in .env.local');
     const configError = new Error('OpenAI API key is not configured. Set ALTTEXT_OPENAI_API_KEY or OPENAI_API_KEY.');
     configError.code = 'BACKEND_CONFIG_ERROR';
+    configError.errorCode = 'provider_auth_error';
+    configError.httpStatusForClient = 502;
     configError.isRetryable = false;
     throw configError;
   }
@@ -239,31 +242,29 @@ async function generateAltText({ image, context }) {
     };
   } catch (error) {
     const message = error?.response?.data?.error?.message || error.message || 'OpenAI request failed';
-    const errorCode = error?.response?.data?.error?.code || error?.response?.status || 'UNKNOWN';
+    const providerErrorCode = error?.response?.data?.error?.code || error?.response?.status || 'UNKNOWN';
     const httpStatus = error?.response?.status || null;
-    const isApiKeyError = /incorrect.*api.*key|invalid.*api.*key|authentication.*failed/i.test(message);
-    const isRateLimit = httpStatus === 429;
-    const isServerError = httpStatus >= 500;
+    const classified = classifyProviderError(error);
+    const isApiKeyError = classified.errorCode === 'provider_auth_error';
 
     const failMeta = isProdLogging
       ? {
-        code: errorCode,
+        code: providerErrorCode,
+        error_code: classified.errorCode,
         status: httpStatus,
         model: modelUsed,
-        isApiKeyError,
-        isRateLimit,
-        isServerError
+        latencyMs: Date.now() - tsStart,
+        retryable: classified.retryable
       }
       : {
         error: message,
-        code: errorCode,
+        code: providerErrorCode,
+        error_code: classified.errorCode,
         status: httpStatus,
         model: modelUsed,
         hasApiKey: !!apiKey,
         apiKeyPrefix: apiKey ? apiKey.substring(0, 10) + '...' : 'missing',
-        isApiKeyError,
-        isRateLimit,
-        isServerError
+        retryable: classified.retryable
       };
     logger.error('[OpenAI] Alt text generation failed', failMeta);
 
@@ -275,12 +276,11 @@ async function generateAltText({ image, context }) {
     // Previously this silently returned fallback text, which burned trial
     // credits on placeholder text and masked upstream failures.
     const genError = new Error(message);
-    genError.code = isApiKeyError ? 'BACKEND_CONFIG_ERROR'
-      : isRateLimit ? 'UPSTREAM_RATE_LIMITED'
-      : isServerError ? 'UPSTREAM_GENERATION_ERROR'
-      : 'GENERATION_FAILED';
+    genError.code = classified.legacyCode;
+    genError.errorCode = classified.errorCode;
     genError.httpStatus = httpStatus;
-    genError.isRetryable = isRateLimit || isServerError;
+    genError.httpStatusForClient = classified.httpStatus;
+    genError.isRetryable = classified.retryable;
     throw genError;
   }
 }

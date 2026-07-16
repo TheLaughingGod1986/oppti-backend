@@ -25,6 +25,15 @@ npm start        # uses fresh-stack/server.js
 - Optional: `ADMIN_KEY`, `ALT_API_TOKEN`, `FRONTEND_URL`, `FRONTEND_DASHBOARD_URL`
 - Optional: `RATE_LIMIT_PER_SITE`, `RATE_LIMIT_GLOBAL`, `JOB_CONCURRENCY`, `JOB_TTL_SECONDS`, `SKIP_QUOTA_CHECK_SITE_IDS`
 
+## Image processing (`sharp`)
+AVIF uploads are converted server-side to WebP before the OpenAI call
+(`fresh-stack/lib/imageNormalization.js`). This uses `sharp`, which ships
+prebuilt Linux x64 binaries — `npm install` on Render needs no extra build
+steps or system packages. Limits (4 MB input, 24 MP decoded, 8192 px per
+side, single frame, 10 s timeout, 4 concurrent conversions) are sized for
+the 512 MB starter instance. HEIC/HEIF is *not* decodable with the prebuilt
+binaries and stays rejected at validation.
+
 ## API
 - `POST /api/alt-text`
   - Body:

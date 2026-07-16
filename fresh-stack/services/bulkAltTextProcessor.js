@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { normalizeItemIdentifier } = require('../lib/queue');
 const { validateImagePayload } = require('../lib/validation');
+const { normalizeImageForProvider, ImageNormalizationError } = require('../lib/imageNormalization');
 const { generateAltText } = require('../lib/openai');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { hashRequestFingerprint } = require('./siteQuota');
@@ -165,6 +166,41 @@ async function processLicensedBulkItem({
     };
   }
 
+  // Convert provider-unsupported formats (AVIF → WebP) before reserving
+  // quota, mirroring the single-request route: conversion failures are
+  // permanent input errors and must not touch quota or the provider.
+  let providerImage = normalized;
+  if (normalized.base64) {
+    try {
+      const normalization = await normalizeImageForProvider({
+        buffer: Buffer.from(normalized.base64, 'base64'),
+        declaredMimeType: normalized.mime_type,
+        filename: normalized.filename,
+        source: 'api/jobs/bulk',
+        logContext: { batch_job_id: jobId, item_index: itemIndex }
+      });
+      if (normalization.converted) {
+        providerImage = {
+          ...normalized,
+          base64: normalization.buffer.toString('base64'),
+          mime_type: normalization.mimeType,
+          width: normalization.width || normalized.width,
+          height: normalization.height || normalized.height
+        };
+      }
+    } catch (error) {
+      if (!(error instanceof ImageNormalizationError)) throw error;
+      return {
+        success: false,
+        code: error.errorCode,
+        message: error.publicMessage,
+        status: error.httpStatus,
+        isRetryable: false,
+        warnings
+      };
+    }
+  }
+
   const id = clientItemId != null ? String(clientItemId) : String(itemIndex);
   const idempotencyKey = `bulk:${jobId}:${id}`;
   const requestFingerprint = buildItemFingerprint({
@@ -221,7 +257,7 @@ async function processLicensedBulkItem({
   const genStart = Date.now();
   try {
     const generationResult = await generateAltText({
-      image: normalized,
+      image: providerImage,
       context: { ...itemContext, filename: normalized.filename }
     });
     const generationTimeMs = Date.now() - genStart;
