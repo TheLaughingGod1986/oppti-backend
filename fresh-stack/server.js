@@ -23,6 +23,8 @@ const { createAdminRouter } = require('./routes/admin');
 const { createContactRouter } = require('./routes/contact');
 const { createImageSeoAuditRouter } = require('./routes/imageSeoAudit');
 const { createOptimizerRouter } = require('./routes/optimizer');
+const { createAccountDashboardRouter } = require('./routes/accountDashboard');
+const { createAnalyticsRouter } = require('./routes/analytics');
 const { createLoopsWebhookHandler } = require('./routes/loopsWebhook');
 const { inspectV2Schema, logV2SchemaStartupStatus } = require('./services/v2Diagnostics');
 const {
@@ -283,6 +285,14 @@ function createApp({
   });
 
   app.use(authMiddleware({ supabase: supabaseClient }));
+
+  // Account dashboard routes intentionally live at their historical root paths.
+  // The oppti.dev same-origin proxy forwards /api/backend/<path> to /<path>.
+  app.use('/', createAccountDashboardRouter({
+    supabase: supabaseClient,
+    getStripe
+  }));
+  app.use('/analytics', createAnalyticsRouter());
 
   async function checkRateLimit(siteKey) {
     const windowMs = 60_000;
