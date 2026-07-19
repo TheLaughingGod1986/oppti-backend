@@ -241,36 +241,19 @@ function createAccountDashboardService({ supabase, getStripe }) {
       }));
     },
 
-    async getOrganizations(request) {
-      const account = getAccount(request);
-      const result = await supabase
-        .from('organizations')
-        .select('id, name, created_at')
-        .eq('license_key', account.license_key)
-        .order('created_at', { ascending: false });
-      const organizations = assertQuery(result, 'Failed to fetch organizations');
-      const sites = await listRawSites(account);
-      return organizations.map((organization) => ({
-        ...organization,
-        sites_count: sites.length,
-        licenses_count: 1
-      }));
+    async getOrganizations() {
+      // Organizations were removed when the V2 account model made one license
+      // the account/workspace boundary. Keep the historical endpoint empty-safe
+      // for older clients without querying the retired table.
+      return [];
     },
 
-    async createOrganization(request, name) {
-      const account = getAccount(request);
-      const result = await supabase
-        .from('organizations')
-        .insert({
-          name,
-          license_key: account.license_key,
-          plan: account.plan || 'free',
-          max_sites: account.max_sites || 1
-        })
-        .select('id, name, created_at')
-        .single();
-      if (result.error) throw createServiceError(result.error.message || 'Failed to create organization');
-      return result.data;
+    async createOrganization() {
+      throw createServiceError(
+        'Organizations are managed through the account license and connected sites',
+        410,
+        'ORGANIZATIONS_RETIRED'
+      );
     }
   };
 }

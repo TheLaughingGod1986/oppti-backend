@@ -2,6 +2,7 @@ const express = require('express');
 const request = require('supertest');
 const { createAccountDashboardRouter } = require('../../routes/accountDashboard');
 const { createAnalyticsRouter } = require('../../routes/analytics');
+const { createAccountDashboardService } = require('../../services/accountDashboard');
 
 function createService(overrides = {}) {
   return {
@@ -87,6 +88,36 @@ describe('account dashboard route contracts', () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual([]);
+  });
+
+  test('organizations compatibility response does not query the retired table', async () => {
+    const supabase = { from: jest.fn() };
+    const service = createAccountDashboardService({ supabase, getStripe: jest.fn() });
+
+    await expect(service.getOrganizations({ user: { license_key: 'license-1' } })).resolves.toEqual([]);
+    expect(supabase.from).not.toHaveBeenCalled();
+  });
+
+  test('organization creation reports the retired V2 capability instead of a server error', async () => {
+    const service = createAccountDashboardService({ supabase: {}, getStripe: jest.fn() });
+
+    await expect(service.createOrganization()).rejects.toMatchObject({
+      status: 410,
+      code: 'ORGANIZATIONS_RETIRED'
+    });
+  });
+
+  test('POST /organizations exposes the retired capability as 410', async () => {
+    const service = createAccountDashboardService({ supabase: {}, getStripe: jest.fn() });
+    const response = await request(createApp({ service }))
+      .post('/organizations')
+      .set('X-Request-ID', 'req-account-test')
+      .send({ name: 'Legacy agency' });
+
+    expect(response.status).toBe(410);
+    expect(response.body).toMatchObject({
+      code: 'ORGANIZATIONS_RETIRED'
+    });
   });
 
   test('service failures remain errors and are not converted to empty 200 responses', async () => {
