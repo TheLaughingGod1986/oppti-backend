@@ -1050,9 +1050,139 @@ async function runImageSeoAudit({
   }
 }
 
+const DEFAULT_PUBLISH_THRESHOLD = Number(process.env.IMAGE_SEO_STATS_PUBLISH_THRESHOLD || 25);
+
+/**
+ * Anonymised aggregate for the public State of Image SEO report.
+ * Never returns emails, domains, URLs, or page samples.
+ */
+async function getAnonymisedImageSeoSnapshot(supabase, { publishThreshold = DEFAULT_PUBLISH_THRESHOLD } = {}) {
+  const threshold = Math.max(Number(publishThreshold) || DEFAULT_PUBLISH_THRESHOLD, 1);
+
+  if (!supabase) {
+    return {
+      status: 'collecting',
+      publishThreshold: threshold,
+      eligibleSampleSize: 0,
+      sampleSize: null,
+      asOf: null,
+      metrics: null,
+      topIssues: null,
+      note: `Collecting anonymised free-audit samples. Metrics publish after ${threshold} distinct sites with successful image crawls (currently 0).`
+    };
+  }
+
+  const { data: rpcData, error: rpcError } = await supabase.rpc('image_seo_audit_anonymised_snapshot', {
+    publish_threshold: threshold
+  });
+
+  if (!rpcError && rpcData) {
+    return typeof rpcData === 'string' ? JSON.parse(rpcData) : rpcData;
+  }
+
+  if (rpcError) {
+    logger.warn('[image-seo-audit] anonymised snapshot RPC failed; using JS fallback', {
+      error: rpcError.message
+    });
+  }
+
+  return buildAnonymisedSnapshotFromRows(supabase, threshold);
+}
+
+async function buildAnonymisedSnapshotFromRows(supabase, threshold) {
+  const { data, error } = await supabase
+    .from('image_seo_audit_requests')
+    .select('normalized_domain, score, images_scanned, summary_json, completed_at')
+    .eq('status', 'completed')
+    .gt('images_scanned', 0)
+    .order('completed_at', { ascending: false });
+
+  if (error) {
+    throw error;
+  }
+
+  const byDomain = new Map();
+  for (const row of data || []) {
+    const domain = String(row.normalized_domain || '').toLowerCase();
+    if (!domain || byDomain.has(domain)) continue;
+    const summary = row.summary_json || {};
+    if (summary.crawlStatus !== 'ok') continue;
+    byDomain.set(domain, row);
+  }
+
+  const eligible = [...byDomain.values()];
+  const sampleSize = eligible.length;
+  const published = sampleSize >= threshold;
+
+  let asOf = null;
+  for (const row of eligible) {
+    if (!row.completed_at) continue;
+    if (!asOf || row.completed_at > asOf) asOf = row.completed_at;
+  }
+
+  const base = {
+    status: published ? 'published' : 'collecting',
+    publishThreshold: threshold,
+    eligibleSampleSize: sampleSize,
+    sampleSize: published ? sampleSize : null,
+    asOf: asOf ? String(asOf).slice(0, 10) : null,
+    metrics: null,
+    topIssues: null,
+    note: published
+      ? 'Anonymised averages across distinct sites from OpptiAI free public-page audits. Domains, emails, and page URLs are never published.'
+      : `Collecting anonymised free-audit samples. Metrics publish after ${threshold} distinct sites with successful image crawls (currently ${sampleSize}).`
+  };
+
+  if (!published) return base;
+
+  const avg = (values) => {
+    const nums = values.filter((v) => Number.isFinite(v));
+    if (!nums.length) return 0;
+    return Math.round(nums.reduce((sum, v) => sum + v, 0) / nums.length);
+  };
+
+  const issueTotals = new Map();
+  for (const row of eligible) {
+    const summary = row.summary_json || {};
+    for (const item of summary.topIssues || []) {
+      const issue = String(item.issue || '').trim();
+      if (!issue) continue;
+      issueTotals.set(issue, (issueTotals.get(issue) || 0) + Number(item.count || 0));
+    }
+  }
+
+  const issueSum = Math.max([...issueTotals.values()].reduce((a, b) => a + b, 0), 1);
+  const topIssues = [...issueTotals.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([issue, total]) => ({
+      issue,
+      sharePercent: Math.round((total / issueSum) * 100)
+    }));
+
+  return {
+    ...base,
+    metrics: {
+      avgScore: avg(eligible.map((r) => Number(r.score))),
+      avgMissingAltPercent: avg(eligible.map((r) => Number(r.summary_json?.missingAltPercent))),
+      avgWeakAltPercent: avg(
+        eligible.map((r) => {
+          const images = Number(r.images_scanned) || 0;
+          const weak = Number(r.summary_json?.weakAltCount) || 0;
+          return images > 0 ? (weak / images) * 100 : NaN;
+        })
+      ),
+      avgCoverageScore: avg(eligible.map((r) => Number(r.summary_json?.coverageScore))),
+      avgQualityScore: avg(eligible.map((r) => Number(r.summary_json?.averageQuality)))
+    },
+    topIssues
+  };
+}
+
 module.exports = {
   DEFAULT_MAX_IMAGES,
   DEFAULT_MAX_PAGES,
+  DEFAULT_PUBLISH_THRESHOLD,
   normalizeAuditUrl,
   normalizeEmail,
   isValidEmail,
@@ -1064,5 +1194,6 @@ module.exports = {
   scoreAltText,
   crawlPublicSite,
   generateAuditPdfBuffer,
-  runImageSeoAudit
+  runImageSeoAudit,
+  getAnonymisedImageSeoSnapshot
 };

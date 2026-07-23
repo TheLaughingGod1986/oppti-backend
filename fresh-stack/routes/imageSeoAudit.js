@@ -7,7 +7,9 @@ const {
   normalizeEmail,
   isValidEmail,
   assertPublicUrl,
-  runImageSeoAudit
+  runImageSeoAudit,
+  getAnonymisedImageSeoSnapshot,
+  DEFAULT_PUBLISH_THRESHOLD
 } = require('../services/imageSeoAudit');
 
 function createImageSeoAuditRouter({ supabase, runAudit = runImageSeoAudit } = {}) {
@@ -32,6 +34,24 @@ function createImageSeoAuditRouter({ supabase, runAudit = runImageSeoAudit } = {
     rateLimitMap.set(key, timestamps);
     return true;
   }
+
+  /** Public anonymised aggregates for the State of Image SEO report. No PII. */
+  router.get('/stats', async (_req, res) => {
+    try {
+      const snapshot = await getAnonymisedImageSeoSnapshot(supabase, {
+        publishThreshold: DEFAULT_PUBLISH_THRESHOLD
+      });
+      res.set('Cache-Control', 'public, max-age=300, s-maxage=3600');
+      return res.status(200).json({ ok: true, snapshot });
+    } catch (error) {
+      logger.error('[image-seo-audit] stats failed', { error: error.message });
+      return res.status(500).json({
+        ok: false,
+        error: 'STATS_UNAVAILABLE',
+        message: 'Unable to load anonymised audit stats.'
+      });
+    }
+  });
 
   router.post('/', async (req, res) => {
     const auditId = crypto.randomUUID();

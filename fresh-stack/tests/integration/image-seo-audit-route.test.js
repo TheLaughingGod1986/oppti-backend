@@ -63,4 +63,35 @@ describe('image SEO audit route', () => {
       .send({ email: 'lead@example.com', siteUrl: 'http://127.0.0.1:3000', consent: true })
       .expect(400);
   });
+
+  test('returns anonymised stats without PII', async () => {
+    const rpc = jest.fn().mockResolvedValue({
+      data: {
+        status: 'collecting',
+        publishThreshold: 25,
+        eligibleSampleSize: 0,
+        sampleSize: null,
+        asOf: null,
+        metrics: null,
+        topIssues: null,
+        note: 'Collecting'
+      },
+      error: null
+    });
+    const app = express();
+    app.use(express.json());
+    app.use('/api/image-seo-audit', createImageSeoAuditRouter({
+      supabase: { rpc },
+      runAudit: jest.fn()
+    }));
+
+    const res = await request(app).get('/api/image-seo-audit/stats').expect(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.snapshot.status).toBe('collecting');
+    expect(res.body.snapshot).not.toHaveProperty('email');
+    expect(JSON.stringify(res.body)).not.toMatch(/@|https?:\/\//i);
+    expect(rpc).toHaveBeenCalledWith('image_seo_audit_anonymised_snapshot', {
+      publish_threshold: expect.any(Number)
+    });
+  });
 });
