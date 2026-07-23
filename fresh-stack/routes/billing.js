@@ -1726,7 +1726,7 @@ async function syncCanceledSubscriptionPointers(supabase, { account, site, strip
     const { error } = await supabase
       .from('sites')
       .update({
-        quota_limit: 50,
+        quota_limit: 15,
         status: 'active'
       })
       .eq('id', site.id);
