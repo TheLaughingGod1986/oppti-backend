@@ -1,10 +1,15 @@
 const { getSites } = require('./site');
 const { getQuotaStatus, computePeriodStart } = require('./quota');
+const { recordPluginConnection } = require('./pluginConnections');
 
 const FEATURE_LABELS = {
   alt_text: 'OpptiAI Alt Text',
   title_meta: 'OpptiAI Titles'
 };
+
+const LABEL_TO_FEATURE = Object.fromEntries(
+  Object.entries(FEATURE_LABELS).map(([id, label]) => [label, id])
+);
 
 function createServiceError(message, status = 500, code = 'SERVER_ERROR') {
   const error = new Error(message);
@@ -201,8 +206,50 @@ function createAccountDashboardService({ supabase, getStripe }) {
           .eq('license_id', account.id)
           .order('first_connected_at', { ascending: true })
       ]);
-      const connections = assertQuery(connectionsResult, 'Failed to fetch plugin connections');
+      let connections = assertQuery(connectionsResult, 'Failed to fetch plugin connections');
       const statsByLabel = new Map(pluginStats.map((stats) => [stats.plugin_name, stats]));
+
+      // Older accounts may have usage/sites but no account_plugin_connections row
+      // (connection writes used to be gated on Loops). Self-heal so My Plugins is not blank.
+      if (connections.length === 0 && account?.id) {
+        const pluginIds = new Set();
+        for (const stats of pluginStats) {
+          const fromLabel = LABEL_TO_FEATURE[stats.plugin_name];
+          if (fromLabel) pluginIds.add(fromLabel);
+        }
+        if (sites.length > 0 || pluginStats.length > 0 || account.license_key) {
+          pluginIds.add('alt_text');
+        }
+        for (const pluginId of pluginIds) {
+          await recordPluginConnection(supabase, {
+            accountId: account.id,
+            pluginId
+          });
+        }
+        if (pluginIds.size > 0) {
+          const healed = await supabase
+            .from('account_plugin_connections')
+            .select('id, plugin_id, first_connected_at')
+            .eq('license_id', account.id)
+            .order('first_connected_at', { ascending: true });
+          connections = assertQuery(healed, 'Failed to fetch plugin connections');
+        }
+      }
+
+      if (connections.length === 0 && account?.license_key) {
+        return [
+          {
+            id: account.id,
+            plugin_name: FEATURE_LABELS.alt_text,
+            license_key: account.license_key,
+            status: account.status || 'active',
+            sites_count: sites.length,
+            credits_used_this_month: Number(statsByLabel.get(FEATURE_LABELS.alt_text)?.credits_used || 0),
+            created_at: account.created_at || new Date().toISOString(),
+            expires_at: account.expires_at || null
+          }
+        ];
+      }
 
       return connections.map((connection) => {
         const pluginName = FEATURE_LABELS[connection.plugin_id] || connection.plugin_id;

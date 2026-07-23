@@ -199,21 +199,34 @@ async function fireLoopsAccountCreated({ email, userId, pluginId, pluginVersion,
   }
 }
 
+async function ensurePluginConnection({ supabase, userId, pluginId, pluginVersion }) {
+  if (!pluginId) return { isFirstConnection: false, error: null };
+  const connection = await recordPluginConnection(supabase, {
+    accountId: userId,
+    pluginId,
+    pluginVersion
+  });
+  if (connection.error) {
+    logger.warn('[auth] plugin_connection_state_failed', {
+      user_id: userId,
+      plugin_id: pluginId,
+      error: connection.error.message || String(connection.error)
+    });
+  }
+  return connection;
+}
+
 async function fireLoopsPluginConnected({ supabase, email, userId, pluginId, pluginVersion, requestId }) {
+  // Always persist the account↔plugin link for the dashboard My Plugins page.
+  // Loops telemetry stays optional and must not gate that write.
+  const connection = await ensurePluginConnection({
+    supabase,
+    userId,
+    pluginId,
+    pluginVersion
+  });
   if (!process.env.LOOPS_API_KEY || typeof trackPluginConnected !== 'function') return;
   try {
-    const connection = await recordPluginConnection(supabase, {
-      accountId: userId,
-      pluginId,
-      pluginVersion
-    });
-    if (connection.error) {
-      logger.warn('[login] plugin_connection_state_failed', {
-        user_id: userId,
-        plugin_id: pluginId,
-        error: connection.error.message || String(connection.error)
-      });
-    }
     await trackPluginConnected({
       email,
       userId,
@@ -644,13 +657,12 @@ function createAuthRouter({ supabase }) {
       registerTrace.license_write.error = null;
       registerTrace.user_id = user.id;
       registerTrace.license_key_prefix = redactLicenseKey(user.license_key);
-      if (process.env.LOOPS_API_KEY) {
-        await recordPluginConnection(supabase, {
-          accountId: user.id,
-          pluginId: parsed.data.plugin_id,
-          pluginVersion: parsed.data.plugin_version
-        });
-      }
+      await ensurePluginConnection({
+        supabase,
+        userId: user.id,
+        pluginId: parsed.data.plugin_id,
+        pluginVersion: parsed.data.plugin_version
+      });
       registerTrace.loops_account_created = await fireLoopsAccountCreated({
         email,
         userId: user.id,
