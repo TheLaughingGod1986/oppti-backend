@@ -38,11 +38,20 @@ function toDomain(siteUrl) {
   }
 }
 
+function formatPlanName(planId) {
+  const raw = String(planId || 'free').trim();
+  if (!raw || raw.toLowerCase() === 'free') return 'Free';
+  return raw
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 function mapSubscription(subscription) {
   const interval = subscription.billing_interval || subscription.billing_cycle || null;
+  const planId = subscription.plan_id || subscription.plan || 'free';
   const mapped = {
-    id: subscription.id || subscription.stripe_subscription_id,
-    plan_name: subscription.plan_id || subscription.plan || 'free',
+    id: subscription.id || subscription.stripe_subscription_id || `plan-${planId}`,
+    plan_name: formatPlanName(planId),
     interval: interval === 'monthly' ? 'month' : interval === 'yearly' ? 'year' : interval,
     status: subscription.status || 'active',
     current_period_start: subscription.current_period_start || subscription.created_at || null,
@@ -51,7 +60,12 @@ function mapSubscription(subscription) {
     stripe_subscription_id: subscription.stripe_subscription_id || null
   };
 
-  if (Number.isFinite(Number(subscription.price))) mapped.price = Number(subscription.price);
+  if (Number.isFinite(Number(subscription.price))) {
+    mapped.price = Number(subscription.price);
+  } else if (String(planId).toLowerCase() === 'free') {
+    mapped.price = 0;
+    mapped.currency = subscription.currency || 'gbp';
+  }
   if (subscription.currency) mapped.currency = subscription.currency;
   return mapped;
 }
@@ -104,8 +118,21 @@ function createAccountDashboardService({ supabase, getStripe }) {
       subscriptions = assertQuery(result, 'Failed to fetch subscription');
     }
 
-    if (subscriptions.length === 0 && account.plan && account.plan !== 'free') {
-      subscriptions = [account];
+    // Free-tier accounts have no Stripe/site_subscriptions row — still return their plan.
+    if (subscriptions.length === 0 && account) {
+      subscriptions = [
+        {
+          id: account.id || 'free-plan',
+          plan: account.plan || 'free',
+          plan_id: account.plan || 'free',
+          status: account.status || 'active',
+          created_at: account.created_at || null,
+          expires_at: account.expires_at || null,
+          stripe_subscription_id: account.stripe_subscription_id || null,
+          price: account.plan && account.plan !== 'free' ? account.price : 0,
+          currency: account.currency || 'gbp'
+        }
+      ];
     }
 
     return subscriptions.map(mapSubscription);
