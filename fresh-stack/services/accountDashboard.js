@@ -1,5 +1,6 @@
 const { getSites } = require('./site');
 const { getQuotaStatus, computePeriodStart } = require('./quota');
+const { getLimits } = require('./planLimits');
 const { recordPluginConnection } = require('./pluginConnections');
 
 const FEATURE_LABELS = {
@@ -70,14 +71,121 @@ function mapSubscription(subscription) {
   return mapped;
 }
 
+function getBillingPeriod(account, now = new Date()) {
+  const periodStart = computePeriodStart(account?.billing_day_of_month || 1, now);
+  const periodEnd = new Date(periodStart);
+  periodEnd.setUTCMonth(periodEnd.getUTCMonth() + 1);
+  return { periodStart, periodEnd };
+}
+
+function buildAccountPlanSubscription(account) {
+  return {
+    id: account.id || 'account-plan',
+    plan: account.plan || 'free',
+    plan_id: account.plan || 'free',
+    status: account.status || 'active',
+    created_at: account.created_at || null,
+    expires_at: account.expires_at || null,
+    stripe_subscription_id: account.stripe_subscription_id || null,
+    price: account.plan && account.plan !== 'free' ? account.price : 0,
+    currency: account.currency || 'gbp'
+  };
+}
+
+function aggregatePluginStats(rows, pluginName) {
+  const stats = new Map();
+
+  for (const row of rows) {
+    const feature = row.feature_type || 'alt_text';
+    if (pluginName && feature !== pluginName) continue;
+
+    const current = stats.get(feature) || {
+      plugin_name: FEATURE_LABELS[feature] || feature,
+      credits_used: 0,
+      images_processed: 0
+    };
+    current.credits_used += Number(row.credits_used || 1);
+    current.images_processed += 1;
+    if (feature === 'alt_text') current.alt_text_generated = current.images_processed;
+    if (feature === 'title_meta') current.meta_tags_generated = current.images_processed;
+    stats.set(feature, current);
+  }
+
+  return [...stats.values()];
+}
+
 function createAccountDashboardService({ supabase, getStripe }) {
   async function listRawSites(account) {
+    if (!account?.license_key && !account?.id) return [];
     if (!account?.license_key) return [];
     const result = await getSites(supabase, { licenseKey: account.license_key });
     if (result.error) {
       throw createServiceError(result.error.message || 'Failed to fetch sites');
     }
     return result.data || [];
+  }
+
+  /**
+   * Account-level usage across every linked site/plugin.
+   * Memberships can attach sites that don't all share the same license_key on
+   * every historical usage_logs row, so query by license_key, license_id, and
+   * site_hash and de-dupe by row id.
+   */
+  async function listUsageLogRows(account, sites = []) {
+    const { periodStart, periodEnd } = getBillingPeriod(account);
+    const siteHashes = [...new Set(
+      (sites || []).map((site) => site.site_hash).filter(Boolean)
+    )];
+
+    const filters = [];
+    if (account?.license_key) {
+      filters.push(`license_key.eq.${account.license_key}`);
+    }
+    if (account?.id) {
+      filters.push(`license_id.eq.${account.id}`);
+    }
+    if (siteHashes.length > 0) {
+      filters.push(`site_hash.in.(${siteHashes.join(',')})`);
+    }
+
+    if (filters.length === 0) {
+      return { rows: [], periodStart, periodEnd };
+    }
+
+    const result = await supabase
+      .from('usage_logs')
+      .select('id, feature_type, credits_used, site_hash, license_key, license_id')
+      .or(filters.join(','))
+      .gte('created_at', periodStart.toISOString())
+      .lt('created_at', periodEnd.toISOString());
+
+    const rows = assertQuery(result, 'Failed to fetch account usage logs');
+    const deduped = new Map();
+    for (const row of rows) {
+      const key = row.id || `${row.site_hash || 'none'}:${row.feature_type || 'alt_text'}:${row.credits_used}`;
+      if (!deduped.has(key)) deduped.set(key, row);
+    }
+
+    return { rows: [...deduped.values()], periodStart, periodEnd };
+  }
+
+  async function getAccountUsage(account, sites = []) {
+    const limits = getLimits(account?.plan || 'free');
+    const { rows, periodStart, periodEnd } = await listUsageLogRows(account, sites);
+    const creditsUsed = rows.reduce((sum, row) => sum + Number(row.credits_used || 1), 0);
+    const creditsIncluded = Number(limits.credits || 0);
+    const creditsRemaining = Math.max(creditsIncluded - creditsUsed, 0);
+
+    return {
+      credits_used: creditsUsed,
+      credits_included: creditsIncluded,
+      credits_remaining: creditsRemaining,
+      images_optimized: rows.length,
+      period_start: periodStart.toISOString(),
+      period_end: periodEnd.toISOString(),
+      reset_date: periodEnd.toISOString(),
+      rows
+    };
   }
 
   async function getQuota(account) {
@@ -118,85 +226,100 @@ function createAccountDashboardService({ supabase, getStripe }) {
       subscriptions = assertQuery(result, 'Failed to fetch subscription');
     }
 
-    // Free-tier accounts have no Stripe/site_subscriptions row — still return their plan.
-    if (subscriptions.length === 0 && account) {
-      subscriptions = [
-        {
-          id: account.id || 'free-plan',
-          plan: account.plan || 'free',
-          plan_id: account.plan || 'free',
-          status: account.status || 'active',
-          created_at: account.created_at || null,
-          expires_at: account.expires_at || null,
-          stripe_subscription_id: account.stripe_subscription_id || null,
-          price: account.plan && account.plan !== 'free' ? account.price : 0,
-          currency: account.currency || 'gbp'
-        }
-      ];
+    const mapped = subscriptions.map(mapSubscription);
+    const activePaid = mapped.filter((sub) => (
+      (sub.status === 'active' || sub.status === 'trialing')
+      && Boolean(sub.stripe_subscription_id)
+    ));
+
+    // Prefer a live Stripe subscription when present; otherwise surface the
+    // account plan (free/pro/etc.) so the dashboard never looks plan-less.
+    if (activePaid.length > 0) {
+      return activePaid;
     }
 
-    return subscriptions.map(mapSubscription);
+    if (account) {
+      return [mapSubscription(buildAccountPlanSubscription(account))];
+    }
+
+    return mapped;
   }
 
-  async function listPluginStats(account, pluginName) {
-    const periodStart = computePeriodStart(account.billing_day_of_month || 1, new Date());
-    const periodEnd = new Date(periodStart);
-    periodEnd.setUTCMonth(periodEnd.getUTCMonth() + 1);
-
-    let query = supabase
-      .from('usage_logs')
-      .select('feature_type, credits_used')
-      .eq('license_key', account.license_key)
-      .gte('created_at', periodStart.toISOString())
-      .lt('created_at', periodEnd.toISOString());
-
-    if (pluginName) {
-      query = query.eq('feature_type', pluginName);
-    }
-
-    const rows = assertQuery(await query, 'Failed to fetch plugin statistics');
-    const stats = new Map();
-
-    for (const row of rows) {
-      const feature = row.feature_type || 'alt_text';
-      const current = stats.get(feature) || {
-        plugin_name: FEATURE_LABELS[feature] || feature,
-        credits_used: 0,
-        images_processed: 0
-      };
-      current.credits_used += Number(row.credits_used || 1);
-      current.images_processed += 1;
-      if (feature === 'alt_text') current.alt_text_generated = current.images_processed;
-      if (feature === 'title_meta') current.meta_tags_generated = current.images_processed;
-      stats.set(feature, current);
-    }
-
-    return [...stats.values()];
+  async function listPluginStats(account, pluginName, sites = null) {
+    const resolvedSites = Array.isArray(sites) ? sites : await listRawSites(account);
+    const { rows } = await listUsageLogRows(account, resolvedSites);
+    return aggregatePluginStats(rows, pluginName);
   }
 
   return {
     async getDashboard(request) {
       const account = getAccount(request);
-      const [sites, quota] = await Promise.all([listRawSites(account), getQuota(account)]);
-      const [subscriptions, pluginStats] = await Promise.all([
-        listSubscriptions(account, sites),
-        listPluginStats(account)
-      ]);
+      let sites = [];
+      try {
+        sites = await listRawSites(account);
+      } catch (_error) {
+        sites = [];
+      }
+
+      let usageSummary;
+      try {
+        usageSummary = await getAccountUsage(account, sites);
+      } catch (_error) {
+        const { periodStart, periodEnd } = getBillingPeriod(account);
+        const limits = getLimits(account?.plan || 'free');
+        usageSummary = {
+          credits_used: 0,
+          credits_included: Number(limits.credits || 0),
+          credits_remaining: Number(limits.credits || 0),
+          images_optimized: 0,
+          period_start: periodStart.toISOString(),
+          period_end: periodEnd.toISOString(),
+          reset_date: periodEnd.toISOString(),
+          rows: []
+        };
+      }
+
+      let subscriptions = [];
+      try {
+        subscriptions = await listSubscriptions(account, sites);
+      } catch (_error) {
+        subscriptions = account ? [mapSubscription(buildAccountPlanSubscription(account))] : [];
+      }
+
+      const pluginStats = aggregatePluginStats(usageSummary.rows || []);
+
+      // Optional enrichment from legacy quota path (purchased credit balance).
+      let creditBalance = usageSummary.credits_remaining;
+      try {
+        const quota = await getQuota(account);
+        if (Number.isFinite(Number(quota?.credits_remaining))) {
+          creditBalance = Number(quota.credits_remaining);
+        }
+      } catch (_error) {
+        // Account usage summary is enough for the overview cards.
+      }
 
       return {
         ok: true,
         installations: [],
         subscription: subscriptions[0] || null,
         usage: {
-          credits_used: Number(quota.credits_used || 0),
-          credits_included: Number(quota.total_limit || 0),
-          images_optimized: pluginStats.reduce((total, row) => total + row.images_processed, 0),
-          period_start: quota.site_quota?.quota_period_start || computePeriodStart(account.billing_day_of_month || 1).toISOString(),
-          period_end: quota.reset_date,
-          resetDate: quota.reset_date
+          credits_used: Number(usageSummary.credits_used || 0),
+          credits_included: Number(usageSummary.credits_included || 0),
+          images_optimized: Number(
+            pluginStats.reduce((total, row) => total + row.images_processed, 0)
+            || usageSummary.images_optimized
+            || 0
+          ),
+          time_saved_hours: Number(
+            ((pluginStats.reduce((total, row) => total + row.images_processed, 0) || 0) * 0.05).toFixed(1)
+          ),
+          period_start: usageSummary.period_start,
+          period_end: usageSummary.period_end,
+          resetDate: usageSummary.reset_date
         },
         credits: {
-          balance: Number(quota.credits_remaining || 0)
+          balance: Number(creditBalance || 0)
         }
       };
     },
@@ -219,7 +342,9 @@ function createAccountDashboardService({ supabase, getStripe }) {
     },
 
     async getPluginStats(request, pluginName) {
-      return listPluginStats(getAccount(request), pluginName);
+      const account = getAccount(request);
+      const sites = await listRawSites(account);
+      return listPluginStats(account, pluginName, sites);
     },
 
     async getLicenses(request) {
@@ -336,5 +461,7 @@ module.exports = {
   createAccountDashboardService,
   createServiceError,
   mapSubscription,
-  toDomain
+  toDomain,
+  aggregatePluginStats,
+  getBillingPeriod
 };
