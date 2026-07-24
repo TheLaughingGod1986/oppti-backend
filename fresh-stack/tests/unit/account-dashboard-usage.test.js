@@ -131,6 +131,21 @@ describe('account dashboard usage aggregation', () => {
     expect(dashboard.subscription.plan_name).toBe('Pro');
   });
 
+  test('getInvoices returns an empty list when Stripe is unavailable', async () => {
+    const service = createAccountDashboardService({
+      supabase: { from: jest.fn() },
+      getStripe: () => null
+    });
+
+    await expect(service.getInvoices({
+      user: { id: 'acct-1', stripe_customer_id: 'cus_123', plan: 'pro' }
+    })).resolves.toEqual([]);
+
+    await expect(service.getInvoices({
+      user: { id: 'acct-1', stripe_customer_id: null, plan: 'free' }
+    })).resolves.toEqual([]);
+  });
+
   test('getPluginStats returns per-plugin rows for account-wide usage', async () => {
     const usageRows = [
       { id: '1', feature_type: 'alt_text', credits_used: 1, site_hash: 'site-a' },

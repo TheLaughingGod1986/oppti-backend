@@ -420,24 +420,35 @@ function createAccountDashboardService({ supabase, getStripe }) {
 
     async getInvoices(request) {
       const account = getAccount(request);
-      if (!account.stripe_customer_id) return [];
+      if (!account?.stripe_customer_id) return [];
 
       const stripe = getStripe();
       if (!stripe?.invoices?.list) {
-        throw createServiceError('Billing service is not configured', 503, 'SERVICE_UNAVAILABLE');
+        // Free / non-Stripe accounts should still get an empty invoices page.
+        return [];
       }
 
-      const result = await stripe.invoices.list({ customer: account.stripe_customer_id, limit: 100 });
-      return (result.data || []).map((invoice) => ({
-        id: invoice.id,
-        amount: invoice.amount_paid ?? invoice.amount_due ?? 0,
-        currency: invoice.currency,
-        status: invoice.status,
-        created: new Date(invoice.created * 1000).toISOString(),
-        invoice_pdf: invoice.invoice_pdf || null,
-        hosted_invoice_url: invoice.hosted_invoice_url || null,
-        description: invoice.description || null
-      }));
+      try {
+        const result = await Promise.race([
+          stripe.invoices.list({ customer: account.stripe_customer_id, limit: 100 }),
+          new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Stripe invoices list timed out')), 8000);
+          })
+        ]);
+        return (result.data || []).map((invoice) => ({
+          id: invoice.id,
+          amount: invoice.amount_paid ?? invoice.amount_due ?? 0,
+          currency: invoice.currency,
+          status: invoice.status,
+          created: new Date(invoice.created * 1000).toISOString(),
+          invoice_pdf: invoice.invoice_pdf || null,
+          hosted_invoice_url: invoice.hosted_invoice_url || null,
+          description: invoice.description || null
+        }));
+      } catch (_error) {
+        // Never leave the dashboard invoices page hanging on Stripe failures.
+        return [];
+      }
     },
 
     async getOrganizations() {
