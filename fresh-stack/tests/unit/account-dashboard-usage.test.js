@@ -131,6 +131,97 @@ describe('account dashboard usage aggregation', () => {
     expect(dashboard.subscription.plan_name).toBe('Pro');
   });
 
+  test('getSites returns plugin names and credit usage per site', async () => {
+    const usageRows = [
+      { id: '1', feature_type: 'alt_text', credits_used: 15, site_hash: 'site-a' },
+      { id: '2', feature_type: 'title_meta', credits_used: 6, site_hash: 'site-a' },
+      { id: '3', feature_type: 'alt_text', credits_used: 4, site_hash: 'site-b' }
+    ];
+
+    const supabase = {
+      from: jest.fn((table) => {
+        if (table === 'site_memberships') {
+          return createThenable({ data: [], error: null });
+        }
+        if (table === 'usage_logs') {
+          return createThenable({ data: usageRows, error: null });
+        }
+        if (table === 'account_plugin_connections') {
+          return createThenable({
+            data: [{ plugin_id: 'alt_text' }, { plugin_id: 'title_meta' }],
+            error: null
+          });
+        }
+        if (table === 'sites') {
+          return createThenable({
+            data: [
+              {
+                id: 's1',
+                site_hash: 'site-a',
+                site_url: 'https://unkemptzoo.example',
+                license_key: 'lic-1',
+                status: 'active',
+                last_seen_at: '2026-07-21T00:00:00.000Z'
+              },
+              {
+                id: 's2',
+                site_hash: 'site-b',
+                site_url: 'https://fearfulgrade.example',
+                license_key: 'lic-1',
+                status: 'active',
+                last_seen_at: '2026-07-20T00:00:00.000Z'
+              },
+              {
+                id: 's3',
+                site_hash: 'site-c',
+                site_url: 'https://idle.example',
+                license_key: 'lic-1',
+                status: 'active',
+                last_seen_at: null
+              }
+            ],
+            error: null
+          });
+        }
+        return createThenable({ data: [], error: null });
+      })
+    };
+
+    const service = createAccountDashboardService({
+      supabase,
+      getStripe: jest.fn()
+    });
+
+    const sites = await service.getSites({
+      user: {
+        id: 'acct-1',
+        license_key: 'lic-1',
+        plan: 'pro',
+        status: 'active',
+        billing_day_of_month: 1
+      }
+    });
+
+    expect(sites).toHaveLength(3);
+    expect(sites[0]).toMatchObject({
+      domain: 'unkemptzoo.example',
+      credits_used: 21,
+      plugins: expect.arrayContaining([
+        expect.objectContaining({ plugin_name: 'OpptiAI Alt Text', credits_used: 15 }),
+        expect.objectContaining({ plugin_name: 'OpptiAI Titles', credits_used: 6 })
+      ])
+    });
+    expect(sites[1]).toMatchObject({
+      domain: 'fearfulgrade.example',
+      credits_used: 4
+    });
+    expect(sites[2].plugins.map((plugin) => plugin.plugin_name)).toEqual([
+      'OpptiAI Alt Text',
+      'OpptiAI Titles'
+    ]);
+    expect(sites[2].credits_used).toBe(0);
+  });
+
   test('getInvoices returns an empty list when Stripe is unavailable', async () => {
     const service = createAccountDashboardService({
       supabase: { from: jest.fn() },

@@ -330,15 +330,82 @@ function createAccountDashboardService({ supabase, getStripe }) {
     },
 
     async getSites(request) {
-      const sites = await listRawSites(getAccount(request));
-      return sites.map((site) => ({
-        id: site.id,
-        domain: toDomain(site.site_url),
-        status: site.status === 'deactivated' ? 'suspended' : (site.status || 'active'),
-        license_ids: site.license_key ? [site.license_key] : [],
-        created_at: site.created_at || site.activated_at,
-        last_connected: site.last_seen_at || site.last_activity_at || null
-      }));
+      const account = getAccount(request);
+      const sites = await listRawSites(account);
+      let usageRows = [];
+      try {
+        ({ rows: usageRows } = await listUsageLogRows(account, sites));
+      } catch (_error) {
+        usageRows = [];
+      }
+
+      const usageBySite = new Map();
+      for (const row of usageRows) {
+        const siteHash = row.site_hash;
+        if (!siteHash) continue;
+        const feature = row.feature_type || 'alt_text';
+        const current = usageBySite.get(siteHash) || new Map();
+        current.set(feature, (current.get(feature) || 0) + Number(row.credits_used || 1));
+        usageBySite.set(siteHash, current);
+      }
+
+      // Prefer connected plugins as the zero-usage fallback so a linked site
+      // still shows real plugin names before the first generation this period.
+      let connectedPluginIds = ['alt_text'];
+      try {
+        if (account?.id) {
+          const connectionsResult = await supabase
+            .from('account_plugin_connections')
+            .select('plugin_id')
+            .eq('license_id', account.id);
+          const connections = assertQuery(connectionsResult, 'Failed to fetch plugin connections');
+          if (connections.length > 0) {
+            connectedPluginIds = [...new Set(
+              connections.map((row) => row.plugin_id).filter(Boolean)
+            )];
+          }
+        }
+      } catch (_error) {
+        connectedPluginIds = ['alt_text'];
+      }
+
+      return sites.map((site) => {
+        const siteUsage = usageBySite.get(site.site_hash) || new Map();
+        const plugins = [];
+
+        for (const [feature, creditsUsed] of siteUsage.entries()) {
+          plugins.push({
+            plugin_id: feature,
+            plugin_name: FEATURE_LABELS[feature] || feature,
+            credits_used: creditsUsed
+          });
+        }
+
+        if (plugins.length === 0 && (site.license_key || account?.license_key)) {
+          for (const pluginId of connectedPluginIds) {
+            plugins.push({
+              plugin_id: pluginId,
+              plugin_name: FEATURE_LABELS[pluginId] || pluginId,
+              credits_used: 0
+            });
+          }
+        }
+
+        plugins.sort((a, b) => b.credits_used - a.credits_used || a.plugin_name.localeCompare(b.plugin_name));
+        const creditsUsed = plugins.reduce((total, plugin) => total + plugin.credits_used, 0);
+
+        return {
+          id: site.id,
+          domain: toDomain(site.site_url),
+          status: site.status === 'deactivated' ? 'suspended' : (site.status || 'active'),
+          site_hash: site.site_hash || null,
+          license_ids: account?.id ? [account.id] : (site.license_key ? [site.license_key] : []),
+          plugins,
+          credits_used: creditsUsed,
+          created_at: site.created_at || site.activated_at,
+          last_connected: site.last_seen_at || site.last_activity_at || null
+        };
+      });
     },
 
     async getPluginStats(request, pluginName) {
