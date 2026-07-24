@@ -1,7 +1,22 @@
+jest.mock('../../services/site', () => {
+  const actual = jest.requireActual('../../services/site');
+  return {
+    ...actual,
+    getSites: jest.fn(actual.getSites),
+    deactivateSite: jest.fn(actual.deactivateSite)
+  };
+});
+
+const siteService = require('../../services/site');
 const {
   createAccountDashboardService,
   aggregatePluginStats
 } = require('../../services/accountDashboard');
+
+beforeEach(() => {
+  siteService.getSites.mockImplementation(jest.requireActual('../../services/site').getSites);
+  siteService.deactivateSite.mockReset();
+});
 
 function createThenable(result) {
   const builder = {
@@ -220,6 +235,39 @@ describe('account dashboard usage aggregation', () => {
       'OpptiAI Titles'
     ]);
     expect(sites[2].credits_used).toBe(0);
+  });
+
+  test('detachSite removes a connected site from the account', async () => {
+    siteService.getSites.mockResolvedValue({
+      data: [{
+        id: 'site-1',
+        site_hash: 'hash-1',
+        site_url: 'https://example.com',
+        license_key: 'lic-1',
+        status: 'active'
+      }],
+      error: null
+    });
+    siteService.deactivateSite.mockResolvedValue({ data: { id: 'site-1' }, error: null });
+
+    const service = createAccountDashboardService({
+      supabase: { from: jest.fn() },
+      getStripe: jest.fn()
+    });
+
+    await expect(service.detachSite({
+      user: { id: 'acct-1', license_key: 'lic-1' },
+      body: { site_id: 'site-1' }
+    })).resolves.toEqual({
+      ok: true,
+      site_id: 'site-1',
+      site_hash: 'hash-1'
+    });
+
+    expect(siteService.deactivateSite).toHaveBeenCalledWith(expect.anything(), {
+      licenseKey: 'lic-1',
+      siteHash: 'hash-1'
+    });
   });
 
   test('getInvoices returns an empty list when Stripe is unavailable', async () => {

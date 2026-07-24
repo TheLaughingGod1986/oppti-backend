@@ -21,6 +21,7 @@ function createService(overrides = {}) {
     }),
     getSubscriptions: jest.fn().mockResolvedValue([]),
     getSites: jest.fn().mockResolvedValue([]),
+    detachSite: jest.fn().mockResolvedValue({ ok: true, site_id: 'site-1' }),
     getPluginStats: jest.fn().mockResolvedValue([]),
     getLicenses: jest.fn().mockResolvedValue([]),
     getInvoices: jest.fn().mockResolvedValue([]),
@@ -88,6 +89,17 @@ describe('account dashboard route contracts', () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual([]);
+  });
+
+  test('POST /me/sites/detach detaches a connected site', async () => {
+    const service = createService();
+    const response = await request(createApp({ service }))
+      .post('/me/sites/detach')
+      .send({ site_id: 'site-1' });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ ok: true, site_id: 'site-1' });
+    expect(service.detachSite).toHaveBeenCalledTimes(1);
   });
 
   test('organizations compatibility response does not query the retired table', async () => {

@@ -1,4 +1,4 @@
-const { getSites } = require('./site');
+const { getSites, deactivateSite } = require('./site');
 const { getQuotaStatus, computePeriodStart } = require('./quota');
 const { getLimits } = require('./planLimits');
 const { recordPluginConnection } = require('./pluginConnections');
@@ -412,6 +412,41 @@ function createAccountDashboardService({ supabase, getStripe }) {
       const account = getAccount(request);
       const sites = await listRawSites(account);
       return listPluginStats(account, pluginName, sites);
+    },
+
+    async detachSite(request) {
+      const account = getAccount(request);
+      const siteId = typeof request.body?.site_id === 'string' ? request.body.site_id.trim() : '';
+      if (!siteId) {
+        throw createServiceError('site_id is required', 400, 'VALIDATION_ERROR');
+      }
+      if (!account?.license_key) {
+        throw createServiceError('Account license is required', 400, 'VALIDATION_ERROR');
+      }
+
+      const sites = await listRawSites(account);
+      const site = sites.find((row) => row.id === siteId);
+      if (!site?.site_hash) {
+        throw createServiceError('Site not found on this account', 404, 'SITE_NOT_FOUND');
+      }
+
+      const result = await deactivateSite(supabase, {
+        licenseKey: account.license_key,
+        siteHash: site.site_hash
+      });
+      if (result?.error) {
+        throw createServiceError(
+          result.message || 'Failed to detach site',
+          result.status || 500,
+          result.error
+        );
+      }
+
+      return {
+        ok: true,
+        site_id: siteId,
+        site_hash: site.site_hash
+      };
     },
 
     async getLicenses(request) {

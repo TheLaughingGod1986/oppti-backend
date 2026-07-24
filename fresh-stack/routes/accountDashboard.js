@@ -54,6 +54,9 @@ function createAccountDashboardRouter({ supabase, getStripe, service } = {}) {
     ok: true,
     sites: await accountService.getSites(req)
   })));
+  router.post('/me/sites/detach', accountRoute('me.sites.detach', async (req) => (
+    accountService.detachSite(req)
+  )));
   router.get('/me/plugins/stats', accountRoute('me.plugins.stats', async (req) => accountService.getPluginStats(req)));
   router.get('/me/plugins/:pluginName/stats', accountRoute('me.plugins.stats.by_plugin', async (req) => (
     accountService.getPluginStats(req, req.params.pluginName)
