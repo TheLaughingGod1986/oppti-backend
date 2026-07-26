@@ -75,6 +75,7 @@ function createSupabaseMock({
   const siteMemberships = [];
   const siteAuditLogs = [];
   const siteTrials = [];
+  const pluginConnections = [];
   let licenseCounter = 1;
   let siteCounter = 1;
   let membershipCounter = 1;
@@ -336,6 +337,38 @@ function createSupabaseMock({
         return {
           select() {
             return buildFilterableChain([]);
+          }
+        };
+      }
+
+      // Registration and login record which OpptiAI plugin connected, via
+      // services/pluginConnections.js: select -> update (existing) or insert.
+      // Without this handler the mock threw `Unexpected table`, the auth route
+      // caught it and returned SERVER_ERROR — but sendRegisterResponse always
+      // replies 200, so `expect(res.status).toBe(200)` still passed and the
+      // failure only surfaced as missing response fields.
+      if (table === 'account_plugin_connections') {
+        return {
+          select() {
+            return buildFilterableChain(pluginConnections);
+          },
+          insert(payload) {
+            const row = {
+              id: `plugin_connection_${pluginConnections.length + 1}`,
+              first_connected_at: new Date().toISOString(),
+              ...payload
+            };
+            pluginConnections.push(row);
+            return Promise.resolve({ data: row, error: null });
+          },
+          update(patch) {
+            return {
+              eq(column, value) {
+                const row = pluginConnections.find((entry) => entry[column] === value);
+                if (row) Object.assign(row, patch);
+                return Promise.resolve({ data: row || null, error: null });
+              }
+            };
           }
         };
       }
