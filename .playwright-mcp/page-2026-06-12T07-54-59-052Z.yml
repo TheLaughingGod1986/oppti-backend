@@ -1,0 +1,77 @@
+- generic [ref=e1]:
+  - generic [ref=e5]:
+    - generic:
+      - generic:
+        - img
+    - link [ref=e9] [cursor=pointer]:
+      - /url: https://stripe.com/
+      - img [ref=e10]
+    - generic [ref=e14]:
+      - main [ref=e21]:
+        - generic [ref=e23]:
+          - generic [ref=e25]: Sign in to your account
+          - generic [ref=e27]:
+            - generic:
+              - generic:
+                - generic [ref=e28]:
+                  - generic:
+                    - generic:
+                      - generic [ref=e33] [cursor=pointer]: Email
+                      - generic [ref=e36]:
+                        - generic [ref=e37]: email input
+                        - textbox "email input" [active] [ref=e39]
+                - generic [ref=e42]:
+                  - generic [ref=e44]:
+                    - generic:
+                      - generic:
+                        - generic [ref=e47] [cursor=pointer]:
+                          - generic:
+                            - generic:
+                              - generic [ref=e48]: Password
+                              - link "Forgot your password?" [ref=e50]:
+                                - /url: /reset
+                                - generic [ref=e53]: Forgot your password?
+                        - generic [ref=e56]:
+                          - generic [ref=e57]: password input
+                          - textbox "password input" [ref=e59]
+                  - generic [ref=e65]:
+                    - generic [ref=e66]: Remember me on this device
+                    - generic [ref=e68]:
+                      - checkbox "Remember me on this device" [checked] [ref=e69] [cursor=pointer]
+                      - img
+                - generic [ref=e73]:
+                  - button "Sign in" [disabled] [ref=e74]
+                  - button "Submit" [disabled] [ref=e75]
+                - generic [ref=e77]:
+                  - generic [ref=e78]:
+                    - separator [ref=e79]
+                    - generic [ref=e80]: Or sign in with
+                  - generic [ref=e82]:
+                    - button "Google" [ref=e86] [cursor=pointer]:
+                      - img [ref=e87]
+                      - generic [ref=e92]: Google
+                    - button "Passkey" [ref=e95] [cursor=pointer]:
+                      - img [ref=e96]
+                      - text: Passkey
+                    - button "SSO" [ref=e101] [cursor=pointer]:
+                      - img [ref=e102]
+                      - text: SSO
+      - generic [ref=e106]:
+        - text: New to Stripe?
+        - link "Create account" [ref=e107] [cursor=pointer]:
+          - /url: /register?redirect=%2Facct_1RiPpcJl9Rm418cM%2Fproducts
+    - generic [ref=e112]:
+      - generic:
+        - generic:
+          - link "© Stripe" [ref=e114] [cursor=pointer]:
+            - /url: https://stripe.com/
+            - generic [ref=e117]: © Stripe
+          - link "Privacy & terms" [ref=e120] [cursor=pointer]:
+            - /url: https://stripe.com/privacy
+            - generic [ref=e123]: Privacy & terms
+  - generic:
+    - iframe
+  - generic:
+    - iframe
+  - generic:
+    - iframe

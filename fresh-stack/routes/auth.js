@@ -19,7 +19,16 @@ const {
   syncLegacySitePointers
 } = require('../services/siteQuota');
 
-const { trackAccountCreated } = require('../../src/services/loops');
+const { trackAccountCreated, trackPluginConnected } = require('../../src/services/loops');
+const { PLUGIN_IDS } = require('../../src/services/pluginIdentity');
+const { recordPluginConnection } = require('../services/pluginConnections');
+const { captureServerEvent } = require('../lib/posthog');
+const {
+  authLog,
+  captureAuthEvent,
+  getCorrelationId,
+  getErrorDefinition
+} = require('../lib/authTelemetry');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = '30d';
@@ -123,7 +132,7 @@ function emitAuthWriteTrace(connectionSource, trace) {
   logger[level](`[${prefix}] ${connectionSource}_write_verification`, trace);
 }
 
-async function fireLoopsAccountCreated({ email, requestId }) {
+async function fireLoopsAccountCreated({ email, userId, pluginId, pluginVersion, requestId }) {
   const trace = {
     attempted: Boolean(process.env.LOOPS_API_KEY),
     success: null,
@@ -141,7 +150,15 @@ async function fireLoopsAccountCreated({ email, requestId }) {
   }
 
   try {
-    await trackAccountCreated({ email, firstName: '', isWooCommerce: false, imagesUnprocessed: 0 });
+    await trackAccountCreated({
+      email,
+      userId,
+      firstName: '',
+      pluginId,
+      pluginVersion,
+      isWooCommerce: false,
+      imagesUnprocessed: 0
+    });
     trace.success = true;
     trace.error = null;
     logger.info('[signup] account_created_loops_succeeded', {
@@ -159,6 +176,43 @@ async function fireLoopsAccountCreated({ email, requestId }) {
       status: error.status || null
     });
     return trace;
+  }
+}
+
+async function fireLoopsPluginConnected({ supabase, email, userId, pluginId, pluginVersion, requestId }) {
+  if (!process.env.LOOPS_API_KEY || typeof trackPluginConnected !== 'function') return;
+  try {
+    const connection = await recordPluginConnection(supabase, {
+      accountId: userId,
+      pluginId,
+      pluginVersion
+    });
+    if (connection.error) {
+      logger.warn('[login] plugin_connection_state_failed', {
+        user_id: userId,
+        plugin_id: pluginId,
+        error: connection.error.message || String(connection.error)
+      });
+    }
+    await trackPluginConnected({
+      email,
+      userId,
+      pluginId,
+      pluginVersion,
+      emitEvent: connection.isFirstConnection
+    });
+    logger.info('[login] plugin_connected_loops_succeeded', {
+      email: maskEmail(email),
+      plugin_id: pluginId,
+      request_id: requestId || null
+    });
+  } catch (error) {
+    logger.error('[login] plugin_connected_loops_failed', {
+      email: maskEmail(email),
+      plugin_id: pluginId,
+      request_id: requestId || null,
+      error: error.message
+    });
   }
 }
 
@@ -419,6 +473,7 @@ function createAuthRouter({ supabase }) {
       network_id: z.number().optional(),
       is_multisite: z.boolean().optional(),
       plugin_version: z.string().optional(),
+      plugin_id: z.enum(PLUGIN_IDS).optional().default('alt_text'),
       wordpress_version: z.string().optional()
     });
 
@@ -554,8 +609,34 @@ function createAuthRouter({ supabase }) {
       registerTrace.license_write.error = null;
       registerTrace.user_id = user.id;
       registerTrace.license_key_prefix = redactLicenseKey(user.license_key);
+      await captureServerEvent({
+        event: 'signup_succeeded',
+        distinctId: user.id,
+        properties: {
+          account_id: user.id,
+          signup_attempt_id: req.header('X-Signup-Attempt-ID') || req.id || null,
+          correlation_id: req.id || null,
+          request_id: req.id || null,
+          plugin_version: parsed.data.plugin_version || null,
+          site_install_id: req.header('X-Install-UUID') || req.header('X-Install-Hash') || null,
+          site_url: req.header('X-Site-URL') || parsed.data.site_url || null,
+          source: 'backend',
+          success: true,
+          $insert_id: `signup_succeeded:${user.id}`
+        }
+      });
+      if (process.env.LOOPS_API_KEY) {
+        await recordPluginConnection(supabase, {
+          accountId: user.id,
+          pluginId: parsed.data.plugin_id,
+          pluginVersion: parsed.data.plugin_version
+        });
+      }
       registerTrace.loops_account_created = await fireLoopsAccountCreated({
         email,
+        userId: user.id,
+        pluginId: parsed.data.plugin_id,
+        pluginVersion: parsed.data.plugin_version,
         requestId: req.id || null
       });
 
@@ -689,6 +770,11 @@ function createAuthRouter({ supabase }) {
 
   // Login
   router.post('/login', async (req, res) => {
+    const startedAt = Date.now();
+    const correlationId = getCorrelationId(req);
+    res.setHeader('X-Correlation-ID', correlationId);
+    authLog('info', req, { operation: 'login_request_received', result: 'received' });
+    void captureAuthEvent({ req, event: 'login_submitted' });
     const schema = z.object({
       email: z.string().email(),
       password: z.string(),
@@ -701,24 +787,51 @@ function createAuthRouter({ supabase }) {
       network_id: z.number().optional(),
       is_multisite: z.boolean().optional(),
       plugin_version: z.string().optional(),
+      plugin_id: z.enum(PLUGIN_IDS).optional().default('alt_text'),
       wordpress_version: z.string().optional()
     });
 
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) {
+      const authError = getErrorDefinition('validation_failed');
+      authLog('warn', req, {
+        operation: 'login_validation',
+        result: 'failed',
+        errorCode: 'validation_failed',
+        durationMs: Date.now() - startedAt
+      });
+      void captureAuthEvent({
+        req,
+        event: 'login_failed',
+        properties: { error_code: 'validation_failed', request_duration_ms: Date.now() - startedAt }
+      });
       return res.status(400).json({
         error: 'INVALID_REQUEST',
         code: 'INVALID_REQUEST',
         message: 'Invalid request data',
-        details: parsed.error.flatten(),
+        auth_error: { code: 'validation_failed', category: authError.category, retryable: authError.retryable },
+        correlation_id: correlationId
       });
     }
 
     if (!supabase) {
+      authLog('error', req, {
+        operation: 'authentication_provider',
+        result: 'unavailable',
+        errorCode: 'api_unavailable',
+        durationMs: Date.now() - startedAt
+      });
+      void captureAuthEvent({
+        req,
+        event: 'login_failed',
+        properties: { error_code: 'api_unavailable', request_duration_ms: Date.now() - startedAt }
+      });
       return res.status(503).json({
         error: 'SERVICE_UNAVAILABLE',
         code: 'SERVICE_UNAVAILABLE',
         message: 'Service temporarily unavailable. Please try again later.',
+        auth_error: { code: 'api_unavailable', category: 'upstream_service', retryable: true },
+        correlation_id: correlationId
       });
     }
 
@@ -738,13 +851,47 @@ function createAuthRouter({ supabase }) {
         .eq('email', email)
         .maybeSingle();
 
-      if (error || !user) {
+      if (error) {
+        authLog('error', req, {
+          operation: 'authentication_provider_response',
+          result: 'failed',
+          errorCode: 'api_unavailable',
+          durationMs: Date.now() - startedAt
+        });
+        void captureAuthEvent({
+          req,
+          event: 'login_failed',
+          properties: { error_code: 'api_unavailable', request_duration_ms: Date.now() - startedAt }
+        });
+        return res.status(503).json({
+          error: 'SERVICE_UNAVAILABLE',
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Unable to sign in right now. Please try again later.',
+          auth_error: { code: 'api_unavailable', category: 'upstream_service', retryable: true },
+          correlation_id: correlationId
+        });
+      }
+
+      if (!user) {
         loginTrace.final_state = 'invalid_credentials';
         emitAuthWriteTrace('login', loginTrace);
+        authLog('warn', req, {
+          operation: 'credential_verification',
+          result: 'failed',
+          errorCode: 'account_not_found',
+          durationMs: Date.now() - startedAt
+        });
+        void captureAuthEvent({
+          req,
+          event: 'login_failed',
+          properties: { error_code: 'account_not_found', request_duration_ms: Date.now() - startedAt }
+        });
         return res.status(401).json({
           error: 'INVALID_CREDENTIALS',
           code: 'INVALID_CREDENTIALS',
           message: 'Invalid email or password',
+          auth_error: { code: 'invalid_credentials', category: 'authentication', retryable: false },
+          correlation_id: correlationId
         });
       }
 
@@ -752,31 +899,52 @@ function createAuthRouter({ supabase }) {
       if (!user.password_hash) {
         loginTrace.final_state = 'no_password';
         emitAuthWriteTrace('login', loginTrace);
+        authLog('warn', req, {
+          operation: 'credential_verification',
+          result: 'failed',
+          errorCode: 'invalid_credentials',
+          durationMs: Date.now() - startedAt
+        });
+        void captureAuthEvent({
+          req,
+          event: 'login_failed',
+          properties: { error_code: 'invalid_credentials', request_duration_ms: Date.now() - startedAt }
+        });
         return res.status(401).json({
-          error: 'NO_PASSWORD',
-          code: 'NO_PASSWORD',
-          message: 'This account uses license key authentication. Please contact your administrator for the license key.',
+          error: 'INVALID_CREDENTIALS',
+          code: 'INVALID_CREDENTIALS',
+          message: 'Invalid email or password',
+          auth_error: { code: 'invalid_credentials', category: 'authentication', retryable: false },
+          correlation_id: correlationId
         });
       }
 
       // Verify password
       const isValid = await bcrypt.compare(password, user.password_hash);
       if (!isValid) {
-        logger.warn('[Auth] Login failed - password mismatch', { 
-          email,
-          hasPasswordHash: !!user.password_hash,
-          passwordHashLength: user.password_hash?.length || 0
-        });
         loginTrace.final_state = 'invalid_credentials';
         emitAuthWriteTrace('login', loginTrace);
+        authLog('warn', req, {
+          operation: 'credential_verification',
+          result: 'failed',
+          errorCode: 'invalid_credentials',
+          durationMs: Date.now() - startedAt
+        });
+        void captureAuthEvent({
+          req,
+          event: 'login_failed',
+          properties: { error_code: 'invalid_credentials', request_duration_ms: Date.now() - startedAt }
+        });
         return res.status(401).json({
           error: 'INVALID_CREDENTIALS',
           code: 'INVALID_CREDENTIALS',
           message: 'Invalid email or password',
+          auth_error: { code: 'invalid_credentials', category: 'authentication', retryable: false },
+          correlation_id: correlationId
         });
       }
 
-      logger.info('[Auth] Login successful', { email, userId: user.id });
+      authLog('info', req, { operation: 'credential_verification', result: 'succeeded' });
       loginTrace.user_id = user.id;
       loginTrace.license_key_prefix = redactLicenseKey(user.license_key);
 
@@ -784,11 +952,28 @@ function createAuthRouter({ supabase }) {
       if (user.status !== 'active') {
         loginTrace.final_state = 'account_inactive';
         emitAuthWriteTrace('login', loginTrace);
+        authLog('warn', req, {
+          operation: 'account_state_check',
+          result: 'failed',
+          errorCode: 'account_disabled',
+          durationMs: Date.now() - startedAt
+        });
+        void captureAuthEvent({
+          req,
+          event: 'login_failed',
+          distinctId: user.id,
+          properties: {
+            error_code: 'account_disabled',
+            user_id: user.id,
+            request_duration_ms: Date.now() - startedAt
+          }
+        });
         return res.status(403).json({
           error: 'ACCOUNT_INACTIVE',
           code: 'ACCOUNT_INACTIVE',
-          message: 'Your account is not active',
-          status: user.status,
+          message: 'Unable to sign in with these credentials.',
+          auth_error: { code: 'account_disabled', category: 'account_state', retryable: false },
+          correlation_id: correlationId
         });
       }
 
@@ -852,16 +1037,54 @@ function createAuthRouter({ supabase }) {
         });
       }
 
+      await fireLoopsPluginConnected({
+        supabase,
+        email: user.email,
+        userId: user.id,
+        pluginId: parsed.data.plugin_id,
+        pluginVersion: parsed.data.plugin_version,
+        requestId: req.id || null
+      });
+
       // Generate JWT token
-      const token = jwt.sign(
-        {
-          user_id: user.id,
-          email: user.email,
-          license_key: user.license_key,
-        },
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRES_IN }
-      );
+      let token;
+      try {
+        token = jwt.sign(
+          {
+            user_id: user.id,
+            email: user.email,
+            license_key: user.license_key,
+          },
+          JWT_SECRET,
+          { expiresIn: JWT_EXPIRES_IN }
+        );
+      } catch (_error) {
+        authLog('error', req, {
+          operation: 'token_creation',
+          result: 'failed',
+          errorCode: 'token_creation_failed',
+          failureStage: 'token_creation',
+          durationMs: Date.now() - startedAt
+        });
+        void captureAuthEvent({
+          req,
+          event: 'login_failed',
+          distinctId: user.id,
+          properties: {
+            error_code: 'token_creation_failed',
+            failure_stage: 'token_creation',
+            user_id: user.id,
+            request_duration_ms: Date.now() - startedAt
+          }
+        });
+        return res.status(500).json({
+          error: 'LOGIN_FAILED',
+          code: 'LOGIN_FAILED',
+          message: 'Unable to sign in right now. Please try again later.',
+          auth_error: { code: 'token_creation_failed', category: 'session', retryable: true },
+          correlation_id: correlationId
+        });
+      }
 
       loginTrace.final_state = 'success';
       emitAuthWriteTrace('login', loginTrace);
@@ -871,6 +1094,22 @@ function createAuthRouter({ supabase }) {
         site: siteLink.site,
         siteIdentity,
         requestId: req.id || null
+      });
+      authLog('info', req, {
+        operation: 'login_response',
+        result: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        user_id: user.id
+      });
+      void captureAuthEvent({
+        req,
+        event: 'login_succeeded',
+        distinctId: user.id,
+        properties: {
+          user_id: user.id,
+          http_status: 200,
+          request_duration_ms: Date.now() - startedAt
+        }
       });
 
       return res.json({
@@ -902,17 +1141,30 @@ function createAuthRouter({ supabase }) {
         site: siteLink.site || null,
         shared_site: siteLink.sharedSite,
         existing_email: maskEmail(siteLink.existingAccount?.email || null),
-        ...(entitlementState ? { entitlement_state: entitlementState } : {})
+        ...(entitlementState ? { entitlement_state: entitlementState } : {}),
+        correlation_id: correlationId
       });
     } catch (err) {
       loginTrace.final_state = 'server_error';
       loginTrace.server_error = err.message;
       emitAuthWriteTrace('login', loginTrace);
-      logger.error('[Auth] Login error:', err);
+      authLog('error', req, {
+        operation: 'unexpected_failure',
+        result: 'failed',
+        errorCode: 'server_error',
+        durationMs: Date.now() - startedAt
+      });
+      void captureAuthEvent({
+        req,
+        event: 'login_failed',
+        properties: { error_code: 'server_error', request_duration_ms: Date.now() - startedAt }
+      });
       return res.status(500).json({
         error: 'SERVER_ERROR',
         code: 'SERVER_ERROR',
         message: 'An error occurred during login',
+        auth_error: { code: 'server_error', category: 'server', retryable: true },
+        correlation_id: correlationId
       });
     }
   });

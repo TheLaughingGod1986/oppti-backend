@@ -17,7 +17,10 @@
     "diagnostics:data-integrity": "node fresh-stack/scripts/print-data-integrity-diagnostics.js",
     "ledger:sync": "node fresh-stack/scripts/sync-image-alt-states.js",
     "verify:site-quota-v2": "node fresh-stack/scripts/verify-site-quota-v2-schema.js --pretty",
-    "repair:stripe-entitlement": "node scripts/repair-stripe-subscription-entitlement.js"
+    "repair:stripe-entitlement": "node scripts/repair-stripe-subscription-entitlement.js",
+    "backfill:loops-contacts": "node scripts/backfill-loops-contacts.js",
+    "sync:kit-looker-data": "node scripts/sync-kit-looker-data.js --pretty",
+    "import:kit-page-daily": "node scripts/import-kit-page-daily-to-sheet.js --pretty"
   },
   "keywords": [
     "alttext",
@@ -31,12 +34,13 @@
     "@supabase/supabase-js": "^2.84.0",
     "axios": "^1.6.2",
     "bcryptjs": "^2.4.3",
+    "compression": "^1.7.4",
     "cors": "^2.8.5",
     "dayjs": "^1.11.13",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
-    "compression": "^1.7.4",
+    "googleapis": "^148.0.0",
     "helmet": "^7.1.0",
     "ioredis": "^5.4.2",
     "jsonwebtoken": "^9.0.2",

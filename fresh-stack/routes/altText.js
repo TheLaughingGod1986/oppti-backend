@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { z } = require('zod');
 const logger = require('../lib/logger');
-const { captureServerEvent } = require('../lib/posthog');
+const { captureServerEvent, normalizeGenerationMode } = require('../lib/posthog');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const { validateImagePayload } = require('../lib/validation');
@@ -290,21 +290,46 @@ function captureGenerationEvent(event, {
   req,
   siteIdentity,
   entitlementState = null,
-  outcome = null
+  outcome = null,
+  generationRunId = null,
+  generationItemId = null,
+  generationMode = 'unknown',
+  durationMs = null,
+  success = null,
+  errorCode = null,
+  insertId = null
 } = {}) {
   const distinctId = siteIdentity?.siteHash || null;
   if (!distinctId) return;
+  const siteUrl = siteIdentity?.siteUrl || req?.header?.('X-Site-URL') || null;
 
   captureServerEvent({
     event,
     distinctId,
     properties: {
       request_id: req?.id || null,
+      correlation_id: req?.id || null,
+      site_url: siteUrl,
+      domain: normalizeDomain(siteUrl),
+      site_install_id: siteIdentity?.wpInstallUuid || siteIdentity?.siteHash || null,
+      plugin_version: req?.header?.('X-Plugin-Version') || null,
+      session_id: req?.header?.('X-Session-ID') || null,
       auth_state: req?.trialMode ? 'guest_trial' : 'authenticated',
       plan: entitlementState?.plan || null,
       quota_state: entitlementState?.quota_state || null,
       tokens_remaining: entitlementState?.tokens_remaining ?? null,
-      outcome
+      outcome,
+      generation_run_id: generationRunId,
+      generation_item_id: generationItemId,
+      generation_mode: normalizeGenerationMode(generationMode),
+      item_count: 1,
+      completed_item_count: success === true ? 1 : 0,
+      failed_item_count: success === false ? 1 : 0,
+      duration_ms: durationMs,
+      success,
+      error_code: errorCode,
+      source: 'backend',
+      ...(insertId ? { $insert_id: insertId } : {})
     }
   }).catch((error) => {
     logger.warn('[analytics] generation_event_capture_failed', {
@@ -712,6 +737,7 @@ function createAltTextRouter({
       regenerate,
       anonymousContext
     });
+    const requestedGenerationMode = regenerate ? 'regeneration' : 'single';
 
     const quotaMetadata = {
       request_id: req.id || null,
@@ -971,6 +997,27 @@ function createAltTextRouter({
       site_hash: siteIdentity.siteHash,
       generation_request_id: reservation.reservation?.generation_request_id || null
     });
+    const generationRunId = reservation.reservation?.generation_request_id
+      || idempotencyKey
+      || requestFingerprint;
+    const generationItemId = sanitizeTelemetryValue(
+      req.body?.generation_item_id,
+      req.body?.generationItemId,
+      req.body?.image?.attachment_id,
+      req.body?.image?.attachmentId,
+      req.body?.image?.id,
+      requestFingerprint,
+      255
+    );
+    captureGenerationEvent('generation_job_started', {
+      req,
+      siteIdentity,
+      generationRunId,
+      generationItemId,
+      generationMode: requestedGenerationMode,
+      success: null,
+      insertId: `generation_job_started:${generationRunId}`
+    });
     const startTime = Date.now();
     let altText;
     let usage;
@@ -1061,7 +1108,26 @@ function createAltTextRouter({
       captureGenerationEvent('generation_failed', {
         req,
         siteIdentity,
-        outcome: errorCode
+        outcome: errorCode,
+        generationRunId,
+        generationItemId,
+        generationMode: requestedGenerationMode,
+        durationMs: Date.now() - startTime,
+        success: false,
+        errorCode,
+        insertId: `legacy_generation_failed:${generationRunId}`
+      });
+      captureGenerationEvent('generation_job_failed', {
+        req,
+        siteIdentity,
+        outcome: errorCode,
+        generationRunId,
+        generationItemId,
+        generationMode: requestedGenerationMode,
+        durationMs: Date.now() - startTime,
+        success: false,
+        errorCode,
+        insertId: `generation_job_failed:${generationRunId}`
       });
 
       return res.status(httpStatus).json({
@@ -1455,7 +1521,49 @@ function createAltTextRouter({
       req,
       siteIdentity,
       entitlementState: response.entitlement_state,
-      outcome: 'success'
+      outcome: 'success',
+      generationRunId,
+      generationItemId,
+      generationMode: requestedGenerationMode,
+      durationMs: generationTime,
+      success: true,
+      insertId: `legacy_generation_completed:${generationRunId}:${generationItemId}`
+    });
+    captureGenerationEvent('generation_item_completed', {
+      req,
+      siteIdentity,
+      entitlementState: response.entitlement_state,
+      outcome: 'success',
+      generationRunId,
+      generationItemId,
+      generationMode: requestedGenerationMode,
+      durationMs: generationTime,
+      success: true,
+      insertId: `generation_item_completed:${generationRunId}:${generationItemId}`
+    });
+    captureGenerationEvent('alt_text_generated', {
+      req,
+      siteIdentity,
+      entitlementState: response.entitlement_state,
+      outcome: 'success',
+      generationRunId,
+      generationItemId,
+      generationMode: requestedGenerationMode,
+      durationMs: generationTime,
+      success: true,
+      insertId: `alt_text_generated:${generationRunId}:${generationItemId}`
+    });
+    captureGenerationEvent('generation_job_completed', {
+      req,
+      siteIdentity,
+      entitlementState: response.entitlement_state,
+      outcome: 'success',
+      generationRunId,
+      generationItemId,
+      generationMode: requestedGenerationMode,
+      durationMs: generationTime,
+      success: true,
+      insertId: `generation_job_completed:${generationRunId}`
     });
     if (!response.entitlement_state.can_generate && response.entitlement_state.tokens_remaining === 0) {
       captureGenerationEvent('credits_exhausted', {

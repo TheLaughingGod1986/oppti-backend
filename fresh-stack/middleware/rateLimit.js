@@ -8,6 +8,7 @@ const PLAN_LIMITS = {
   pro: 120,
   agency: 240
 };
+const { authLog, captureAuthEvent, getCorrelationId } = require('../lib/authTelemetry');
 
 function getClientIp(req) {
   return req.ip
@@ -51,12 +52,31 @@ async function incrementBucket({ redis, memoryBuckets, bucketKey, windowMs }) {
   return recent.length;
 }
 
-function rateLimitResponse(res, limit) {
+function rateLimitResponse(req, res, limit) {
+  const isAuthRequest = req.path.startsWith('/auth') || req.path.startsWith('/api/auth');
+  if (isAuthRequest) {
+    const correlationId = getCorrelationId(req);
+    res.setHeader('X-Correlation-ID', correlationId);
+    authLog('warn', req, {
+      operation: 'login_rate_limit',
+      result: 'failed',
+      errorCode: 'rate_limited'
+    });
+    void captureAuthEvent({
+      req,
+      event: 'login_failed',
+      properties: { error_code: 'rate_limited', http_status: 429 }
+    });
+  }
   return res.status(429).json({
     error: 'RATE_LIMIT_EXCEEDED',
     message: `Rate limit of ${limit} requests/minute exceeded`,
     code: 'RATE_LIMIT_EXCEEDED',
-    retry_after: 60
+    retry_after: 60,
+    ...(isAuthRequest ? {
+      auth_error: { code: 'rate_limited', category: 'user_input', retryable: true },
+      correlation_id: req.correlationId
+    } : {})
   });
 }
 
@@ -82,7 +102,7 @@ function rateLimitMiddleware({ redis, perSiteOverride, globalOverride }) {
     const userLimit = Number(process.env.RATE_LIMIT_PER_USER || limit);
 
     try {
-      if (req.path.startsWith('/auth')) {
+      if (req.path.startsWith('/auth') || req.path.startsWith('/api/auth')) {
         const authCount = await incrementBucket({
           redis,
           memoryBuckets,
@@ -90,7 +110,7 @@ function rateLimitMiddleware({ redis, perSiteOverride, globalOverride }) {
           windowMs
         });
         if (authCount > authLimit) {
-          return rateLimitResponse(res, authLimit);
+          return rateLimitResponse(req, res, authLimit);
         }
       }
 
@@ -102,7 +122,7 @@ function rateLimitMiddleware({ redis, perSiteOverride, globalOverride }) {
           windowMs
         });
         if (siteIpCount > siteIpLimit) {
-          return rateLimitResponse(res, siteIpLimit);
+          return rateLimitResponse(req, res, siteIpLimit);
         }
 
         const userCount = await incrementBucket({
@@ -112,7 +132,7 @@ function rateLimitMiddleware({ redis, perSiteOverride, globalOverride }) {
           windowMs
         });
         if (userCount > userLimit) {
-          return rateLimitResponse(res, userLimit);
+          return rateLimitResponse(req, res, userLimit);
         }
       } else {
         const key = req.license?.license_key || req.header('X-License-Key') || ip;
@@ -123,7 +143,7 @@ function rateLimitMiddleware({ redis, perSiteOverride, globalOverride }) {
           windowMs
         });
         if (count > limit) {
-          return rateLimitResponse(res, limit);
+          return rateLimitResponse(req, res, limit);
         }
       }
 
@@ -135,7 +155,7 @@ function rateLimitMiddleware({ redis, perSiteOverride, globalOverride }) {
           windowMs
         });
         if (globalCount > globalLimit) {
-          return rateLimitResponse(res, globalLimit);
+          return rateLimitResponse(req, res, globalLimit);
         }
       }
 

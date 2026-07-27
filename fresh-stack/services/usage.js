@@ -4,6 +4,7 @@ const { trackGenerationMilestone, trackCreditsExhausted } = require('../../src/s
 const logger = require('../lib/logger');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { isInternalTelemetryHost } = require('../lib/siteIdentity');
+const { pluginIdFromFeatureType } = require('../../src/services/pluginIdentity');
 
 /**
  * Check if a string is a valid UUID format
@@ -225,17 +226,33 @@ async function recordUsage(supabase, {
             const periodStart = computePeriodStart(license.billing_day_of_month || 1, new Date());
             const { data: logs } = await supabase
               .from('usage_logs')
-              .select('credits_used')
+              .select('credits_used, feature_type')
               .eq('license_key', licenseKey)
               .gte('created_at', periodStart.toISOString());
 
-            const generationsCount = logs?.length || 0;
+            const pluginId = pluginIdFromFeatureType(featureType);
+            const pluginLogs = (logs || []).filter((log) => pluginIdFromFeatureType(log.feature_type) === pluginId);
+            const generationsCount = pluginLogs.length;
             const totalCreditsUsed = (logs || []).reduce((sum, l) => sum + (l.credits_used || 1), 0);
             const creditsRemaining = Math.max(getLimits(license.plan).credits - totalCreditsUsed, 0);
 
-            await trackGenerationMilestone({ email: userEmail, generationsCount, imagesUnprocessed: 0 });
+            await trackGenerationMilestone({
+              email: userEmail,
+              userId: validatedLicenseId,
+              pluginId,
+              pluginVersion,
+              generationsCount,
+              imagesUnprocessed: 0
+            });
             if (creditsRemaining === 0) {
-              await trackCreditsExhausted({ email: userEmail, imagesUnprocessed: 0 });
+              await trackCreditsExhausted({
+                email: userEmail,
+                userId: validatedLicenseId,
+                pluginId,
+                pluginVersion,
+                imagesUnprocessed: 0,
+                periodStart: periodStart.toISOString()
+              });
             }
           }
         } catch (loopsErr) {

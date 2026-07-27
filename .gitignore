@@ -33,9 +33,16 @@ Thumbs.db
 *.swp
 *.swo
 
+# Local Kit/Looker export artifacts (may contain account metrics)
+scripts/output/
+
 # Coverage
 coverage/
 coverage-final.json
+
+# Google service account keys (never commit)
+*-service-account*.json
+google-sheets-credentials.json
 lcov.info
 *.lcov
 

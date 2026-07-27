@@ -42,7 +42,13 @@ function safeSerialize(value, depth = 0) {
 
   const serialized = {};
   for (const [key, entry] of Object.entries(value).slice(0, 25)) {
-    serialized[key] = safeSerialize(entry, depth + 1);
+    if (/(password|authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token|secret)/i.test(key)) {
+      serialized[key] = '[REDACTED]';
+    } else if (/^email$/i.test(key)) {
+      serialized[key] = '[REDACTED]';
+    } else {
+      serialized[key] = safeSerialize(entry, depth + 1);
+    }
   }
   return serialized;
 }
@@ -73,14 +79,14 @@ function remember(level, args) {
 }
 
 const logger = {
-  info: (...args) => console.info(ts(), '[info]', ...args),
+  info: (...args) => console.info(ts(), '[info]', ...args.map((arg) => safeSerialize(arg))),
   warn: (...args) => {
     remember('warn', args);
-    console.warn(ts(), '[warn]', ...args);
+    console.warn(ts(), '[warn]', ...args.map((arg) => safeSerialize(arg)));
   },
   error: (...args) => {
     remember('error', args);
-    console.error(ts(), '[error]', ...args);
+    console.error(ts(), '[error]', ...args.map((arg) => safeSerialize(arg)));
   },
   debug: (...args) => {
     if (process.env.DEBUG) console.debug(ts(), '[debug]', ...args);

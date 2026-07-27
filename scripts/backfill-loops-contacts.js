@@ -1,91 +1,118 @@
 /**
- * One-time backfill: add existing users to Loops and fire account_created.
- * Run from the oppti-backend root: node scripts/backfill-loops-contacts.js
- * Requires LOOPS_API_KEY and SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in env.
+ * Backfill Loops contact identities and plugin memberships from backend usage.
+ * Dry-run is the default. Add --write to update Loops contacts.
  */
 
 require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
+const { upsertPluginContact } = require('../src/services/loops');
+const { getPlugin, pluginIdFromFeatureType } = require('../src/services/pluginIdentity');
 
-const LOOPS_API_KEY = process.env.LOOPS_API_KEY;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const write = process.argv.includes('--write');
+const emailArg = process.argv.find((arg) => arg.startsWith('--email='));
+const limitArg = process.argv.find((arg) => arg.startsWith('--limit='));
+const emailFilter = emailArg ? emailArg.slice('--email='.length).trim().toLowerCase() : null;
+const limit = limitArg ? Number(limitArg.slice('--limit='.length)) : null;
 
-if (!LOOPS_API_KEY || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error('Missing required env vars: LOOPS_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY');
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
+  process.exit(1);
+}
+if (write && (!process.env.LOOPS_API_KEY || !process.env.LOOPS_PLUGIN_USERS_LIST_ID)) {
+  console.error('--write requires LOOPS_API_KEY and LOOPS_PLUGIN_USERS_LIST_ID');
   process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-async function loopsPost(path, body) {
-  const res = await fetch(`https://app.loops.so/api/v1${path}`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${LOOPS_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  return { ok: res.ok, status: res.status, body: text };
+function membershipExtra(pluginId, firstSeenAt) {
+  return pluginId === 'titles'
+    ? { titlesFirstSeenAt: firstSeenAt }
+    : { altTextFirstSeenAt: firstSeenAt };
 }
 
 async function main() {
-  console.log('Fetching real users from Supabase...');
-
-  const { data: users, error } = await supabase
+  let accountQuery = supabase
     .from('licenses')
-    .select('email, plan, created_at')
+    .select('id, email, plan, created_at')
     .not('email', 'is', null)
     .eq('status', 'active')
     .order('created_at', { ascending: true });
+  if (emailFilter) accountQuery = accountQuery.eq('email', emailFilter);
+  if (limit && Number.isInteger(limit) && limit > 0) accountQuery = accountQuery.limit(limit);
 
-  if (error) {
-    console.error('Failed to fetch users:', error);
-    process.exit(1);
+  const { data: accounts, error: accountError } = await accountQuery;
+  if (accountError) throw accountError;
+
+  const accountIds = (accounts || []).map((account) => account.id);
+  const { data: usageRows, error: usageError } = accountIds.length
+    ? await supabase
+      .from('usage_logs')
+      .select('license_id, feature_type, plugin_version, created_at')
+      .in('license_id', accountIds)
+      .eq('status', 'success')
+      .order('created_at', { ascending: true })
+    : { data: [], error: null };
+  if (usageError) throw usageError;
+
+  const usageByAccount = new Map();
+  for (const row of usageRows || []) {
+    const pluginId = pluginIdFromFeatureType(row.feature_type);
+    const memberships = usageByAccount.get(row.license_id) || new Map();
+    const existing = memberships.get(pluginId);
+    memberships.set(pluginId, {
+      firstSeenAt: existing?.firstSeenAt || row.created_at,
+      lastSeenAt: row.created_at,
+      pluginVersion: row.plugin_version || existing?.pluginVersion || ''
+    });
+    usageByAccount.set(row.license_id, memberships);
   }
 
-  // Filter out localhost/test entries
-  const realUsers = users.filter(u => u.email && !u.email.includes('localhost'));
-  console.log(`Found ${realUsers.length} real users to backfill:\n`);
+  console.log(`${write ? 'WRITE' : 'DRY RUN'}: ${accounts.length} active Loops contacts`);
+  for (const account of accounts || []) {
+    const memberships = usageByAccount.get(account.id) || new Map([
+      ['alt_text', { firstSeenAt: account.created_at, lastSeenAt: account.created_at, pluginVersion: '' }]
+    ]);
+    const ordered = [...memberships.entries()].sort((left, right) =>
+      new Date(left[1].firstSeenAt) - new Date(right[1].firstSeenAt));
+    const acquisitionPluginId = ordered[0][0];
 
-  for (const user of realUsers) {
-    process.stdout.write(`  ${user.email} ... `);
+    console.log(JSON.stringify({
+      accountId: account.id,
+      email: account.email,
+      acquisitionPluginId,
+      plugins: ordered.map(([pluginId]) => pluginId)
+    }));
 
-    // 1. Create contact in Loops
-    const contactRes = await loopsPost('/contacts/create', {
-      email: user.email,
-      userGroup: 'plugin_user',
-      source: 'plugin_signup',
-    });
-
-    if (!contactRes.ok && !contactRes.body.includes('already exists')) {
-      console.log(`❌ contact create failed (${contactRes.status}): ${contactRes.body}`);
-      continue;
+    if (!write) continue;
+    for (const [pluginId, membership] of ordered) {
+      const { error: connectionError } = await supabase.from('account_plugin_connections').upsert({
+        license_id: account.id,
+        plugin_id: pluginId,
+        plugin_version: membership.pluginVersion || null,
+        first_connected_at: membership.firstSeenAt,
+        last_connected_at: membership.lastSeenAt
+      }, { onConflict: 'license_id,plugin_id' });
+      if (connectionError) throw connectionError;
+      await upsertPluginContact({
+        email: account.email,
+        userId: account.id,
+        pluginId,
+        pluginVersion: membership.pluginVersion,
+        acquisition: pluginId === acquisitionPluginId,
+        timestamp: membership.lastSeenAt,
+        extra: {
+          ...membershipExtra(pluginId, membership.firstSeenAt),
+          plan: account.plan || 'free',
+          acquisitionPluginId,
+          acquisitionPluginTitle: getPlugin(acquisitionPluginId).title
+        }
+      });
     }
-
-    // 2. Fire account_created event
-    const eventRes = await loopsPost('/events/send', {
-      email: user.email,
-      eventName: 'account_created',
-      plan: user.plan || 'free',
-    });
-
-    if (eventRes.ok) {
-      console.log('✅');
-    } else {
-      console.log(`⚠️  event failed (${eventRes.status}): ${eventRes.body}`);
-    }
-
-    // Small delay to avoid rate limiting
-    await new Promise(r => setTimeout(r, 300));
   }
-
-  console.log('\nBackfill complete.');
 }
 
-main().catch(err => {
-  console.error('Unexpected error:', err);
+main().catch((error) => {
+  console.error(error);
   process.exit(1);
 });

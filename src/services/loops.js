@@ -1,34 +1,49 @@
+const crypto = require('crypto');
 const logger = require('../../fresh-stack/lib/logger');
+const { getPlugin, normalizePluginId } = require('./pluginIdentity');
 
-const LOOPS_API_KEY = process.env.LOOPS_API_KEY;
 const LOOPS_BASE = 'https://app.loops.so/api/v1';
-const PLUGIN_USERS_LIST_ID = 'cmn7g83oddsuu0izg27ia6tgv';
 const LOOPS_TIMEOUT_MS = Number(process.env.LOOPS_TIMEOUT_MS || 5000);
 
-async function loopsRequest(method, path, body) {
-  if (!LOOPS_API_KEY) {
-    logger.info('[signup] Loops request skipped', {
-      path,
-      method,
-      reason: 'LOOPS_API_KEY missing'
-    });
+function getApiKey() {
+  return process.env.LOOPS_API_KEY || '';
+}
+
+function getPluginUsersListId() {
+  const listId = process.env.LOOPS_PLUGIN_USERS_LIST_ID || '';
+  if (listId && !/^[a-z0-9]+$/i.test(listId)) {
+    throw new Error('LOOPS_PLUGIN_USERS_LIST_ID must be a Loops mailing list ID');
+  }
+  return listId;
+}
+
+function buildIdempotencyKey(...parts) {
+  const input = parts.filter((part) => part !== null && part !== undefined).join(':');
+  return `bbai-${crypto.createHash('sha256').update(input).digest('hex')}`;
+}
+
+async function loopsRequest(method, path, body, { idempotencyKey } = {}) {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    logger.info('[loops] Request skipped', { path, method, reason: 'LOOPS_API_KEY missing' });
     return null;
   }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), LOOPS_TIMEOUT_MS);
+  const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json'
+  };
+  if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
 
   try {
     const res = await fetch(`${LOOPS_BASE}${path}`, {
       method,
-      headers: {
-        'Authorization': `Bearer ${LOOPS_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
+      headers,
       signal: controller.signal,
-      body: JSON.stringify(body),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
     });
-
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) {
       const error = new Error(`Loops ${method} ${path} failed with status ${res.status}`);
@@ -36,57 +51,225 @@ async function loopsRequest(method, path, body) {
       error.payload = payload;
       throw error;
     }
-
-    logger.info('[signup] Loops request succeeded', {
-      path,
-      method,
-      status: res.status
-    });
+    logger.info('[loops] Request succeeded', { path, method, status: res.status });
     return payload;
-  } catch (err) {
-    logger.error('[signup] Loops request failed', {
+  } catch (error) {
+    logger.error('[loops] Request failed', {
       path,
       method,
-      error: err.message,
-      status: err.status || null
+      error: error.message,
+      status: error.status || null
     });
-    throw err;
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function loopsPost(path, body) {
-  await loopsRequest('POST', path, body);
+function pluginContactProperties(pluginId, pluginVersion, timestamp, { includeFirstSeen = false } = {}) {
+  const plugin = getPlugin(pluginId);
+  const isAltText = plugin.id === 'alt_text';
+  const prefix = isAltText ? 'altText' : 'titles';
+  return {
+    lastActivePluginId: plugin.id,
+    lastActivePluginTitle: plugin.title,
+    lastPluginSeenAt: timestamp,
+    [isAltText ? 'usesAltText' : 'usesTitles']: true,
+    [`${prefix}PluginVersion`]: pluginVersion || '',
+    [`${prefix}LastActiveAt`]: timestamp,
+    ...(includeFirstSeen ? { [`${prefix}FirstSeenAt`]: timestamp } : {})
+  };
 }
 
-async function trackAccountCreated({ email, firstName, isWooCommerce, imagesUnprocessed }) {
-  const mailingLists = { [PLUGIN_USERS_LIST_ID]: true };
-  const created = await loopsRequest('POST', '/contacts/create', {
-    email, firstName: firstName || '', userGroup: 'plugin_user', source: 'plugin_signup', mailingLists,
+function mailingListsPayload() {
+  const listId = getPluginUsersListId();
+  return listId ? { mailingLists: { [listId]: true } } : {};
+}
+
+async function upsertPluginContact({
+  email,
+  userId,
+  firstName = '',
+  pluginId,
+  pluginVersion,
+  acquisition = false,
+  timestamp = new Date().toISOString(),
+  extra = {}
+}) {
+  const plugin = getPlugin(pluginId);
+  const properties = pluginContactProperties(plugin.id, pluginVersion, timestamp, {
+    includeFirstSeen: acquisition
   });
-  // If contact already existed (409), contacts/create won't apply mailingLists — update to ensure list membership
-  if (created && !created.id && created.message?.toLowerCase().includes('already')) {
-    await loopsRequest('PUT', '/contacts/update', { email, mailingLists });
+  const payload = {
+    email,
+    ...(userId ? { userId: String(userId) } : {}),
+    ...(firstName ? { firstName } : {}),
+    userGroup: 'plugin_user',
+    source: 'plugin_signup',
+    ...mailingListsPayload(),
+    ...properties,
+    ...(acquisition ? {
+      acquisitionPluginId: plugin.id,
+      acquisitionPluginTitle: plugin.title,
+      firstPluginSeenAt: timestamp
+    } : {}),
+    ...extra
+  };
+  await loopsRequest('PUT', '/contacts/update', payload);
+  return payload;
+}
+
+async function sendEvent(eventName, {
+  email,
+  userId,
+  pluginId,
+  pluginVersion,
+  idempotencyParts = [],
+  ...eventProperties
+}) {
+  const plugin = getPlugin(pluginId);
+  const identity = userId || email;
+  return loopsRequest('POST', '/events/send', {
+    email,
+    ...(userId ? { userId: String(userId) } : {}),
+    eventName,
+    eventProperties: {
+      pluginId: plugin.id,
+      pluginTitle: plugin.title,
+      pluginVersion: pluginVersion || '',
+      ...eventProperties
+    }
+  }, {
+    idempotencyKey: buildIdempotencyKey(identity, eventName, plugin.id, ...idempotencyParts)
+  });
+}
+
+async function trackAccountCreated({
+  email,
+  userId,
+  firstName,
+  pluginId = 'alt_text',
+  pluginVersion,
+  isWooCommerce,
+  imagesUnprocessed
+}) {
+  const timestamp = new Date().toISOString();
+  const normalizedPluginId = normalizePluginId(pluginId);
+  await upsertPluginContact({
+    email,
+    userId,
+    firstName,
+    pluginId: normalizedPluginId,
+    pluginVersion,
+    acquisition: true,
+    timestamp,
+    extra: {
+      plan: 'free',
+      generationsCount: 0,
+      imagesUnprocessed: imagesUnprocessed || 0,
+      woocommerce: Boolean(isWooCommerce)
+    }
+  });
+  await sendEvent('account_created', {
+    email,
+    userId,
+    pluginId: normalizedPluginId,
+    pluginVersion,
+    idempotencyParts: ['created'],
+    plan: 'free',
+    generationsCount: 0,
+    imagesUnprocessed: imagesUnprocessed || 0,
+    woocommerce: Boolean(isWooCommerce)
+  });
+  await sendEvent('plugin_connected', {
+    email,
+    userId,
+    pluginId: normalizedPluginId,
+    pluginVersion,
+    idempotencyParts: ['connected']
+  });
+}
+
+async function trackPluginConnected({ email, userId, pluginId, pluginVersion, emitEvent = true }) {
+  const timestamp = new Date().toISOString();
+  await upsertPluginContact({ email, userId, pluginId, pluginVersion, timestamp });
+  if (emitEvent) {
+    await sendEvent('plugin_connected', {
+      email,
+      userId,
+      pluginId,
+      pluginVersion,
+      idempotencyParts: ['connected']
+    });
   }
-  await loopsPost('/events/send', {
-    email, eventName: 'account_created', plan: 'free', generationsCount: 0,
-    imagesUnprocessed: imagesUnprocessed || 0, woocommerce: isWooCommerce || false,
+}
+
+async function trackGenerationMilestone({
+  email,
+  userId,
+  pluginId,
+  pluginVersion,
+  generationsCount,
+  imagesUnprocessed
+}) {
+  if (generationsCount <= 0 || generationsCount % 5 !== 0) return;
+  const timestamp = new Date().toISOString();
+  await upsertPluginContact({ email, userId, pluginId, pluginVersion, timestamp, extra: { generationsCount } });
+  await sendEvent('generation_completed', {
+    email,
+    userId,
+    pluginId,
+    pluginVersion,
+    idempotencyParts: [generationsCount],
+    generationsCount,
+    imagesUnprocessed: imagesUnprocessed || 0,
+    lastGenerationAt: timestamp
   });
 }
 
-async function trackGenerationMilestone({ email, generationsCount, imagesUnprocessed }) {
-  if (generationsCount % 5 !== 0) return;
-  await loopsPost('/events/send', { email, eventName: 'generation_completed', generationsCount, imagesUnprocessed, lastGenerationAt: new Date().toISOString() });
+async function trackCreditsExhausted({
+  email,
+  userId,
+  pluginId,
+  pluginVersion,
+  imagesUnprocessed,
+  periodStart
+}) {
+  await sendEvent('credits_exhausted', {
+    email,
+    userId,
+    pluginId,
+    pluginVersion,
+    idempotencyParts: [periodStart || 'current'],
+    imagesUnprocessed: imagesUnprocessed || 0,
+    plan: 'free'
+  });
 }
 
-async function trackCreditsExhausted({ email, imagesUnprocessed }) {
-  await loopsPost('/events/send', { email, eventName: 'credits_exhausted', imagesUnprocessed, plan: 'free' });
+async function trackPlanUpgraded({ email, userId, planName, pluginId = 'alt_text', pluginVersion }) {
+  await loopsRequest('PUT', '/contacts/update', {
+    email,
+    ...(userId ? { userId: String(userId) } : {}),
+    plan: planName
+  });
+  await sendEvent('plan_upgraded', {
+    email,
+    userId,
+    pluginId,
+    pluginVersion,
+    idempotencyParts: [planName],
+    plan: planName
+  });
 }
 
-async function trackPlanUpgraded({ email, planName }) {
-  await loopsRequest('PUT', '/contacts/update', { email, plan: planName });
-  await loopsPost('/events/send', { email, eventName: 'plan_upgraded', plan: planName });
-}
-
-module.exports = { trackAccountCreated, trackGenerationMilestone, trackCreditsExhausted, trackPlanUpgraded };
+module.exports = {
+  buildIdempotencyKey,
+  pluginContactProperties,
+  sendEvent,
+  trackAccountCreated,
+  trackCreditsExhausted,
+  trackGenerationMilestone,
+  trackPlanUpgraded,
+  trackPluginConnected,
+  upsertPluginContact
+};

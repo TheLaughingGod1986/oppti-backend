@@ -31,7 +31,7 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
 # Server / CORS (Required)
 PORT=4000
-ALLOWED_ORIGINS=https://your-site.com
+ALLOWED_ORIGINS=https://your-site.com,https://playground.wordpress.net
 
 # OpenAI (Required)
 ALTTEXT_OPENAI_API_KEY=sk-...

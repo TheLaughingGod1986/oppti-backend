@@ -1,0 +1,689 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - generic:
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - main:
+                  - generic:
+                    - button "Skip to content":
+                      - generic: Skip to content
+                  - generic:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - heading "Product catalogue" [level=1]
+                        - generic:
+                          - generic:
+                            - button "Analyse":
+                              - img
+                              - text: Analyse
+                            - generic:
+                              - generic:
+                                - link "Create product N":
+                                  - /url: /acct_1RiPpcJl9Rm418cM/products?create=product&source=product_list
+                                  - generic:
+                                    - generic:
+                                      - generic:
+                                        - generic:
+                                          - img
+                                      - generic:
+                                        - text: Create product
+                                        - generic:
+                                          - generic: "N"
+                      - generic:
+                        - navigation "Product catalogue":
+                          - generic:
+                            - generic:
+                              - generic:
+                                - tablist:
+                                  - tab "All products" [selected]:
+                                    - generic:
+                                      - generic: All products
+                                  - tab "Features":
+                                    - generic:
+                                      - generic: Features
+                                  - tab "Coupons":
+                                    - generic:
+                                      - generic: Coupons
+                                  - tab "Shipping rates":
+                                    - generic:
+                                      - generic: Shipping rates
+                                  - tab "Tax rates":
+                                    - generic:
+                                      - generic: Tax rates
+                                  - tab "Pricing tables":
+                                    - generic:
+                                      - generic: Pricing tables
+                    - generic:
+                      - generic:
+                        - generic:
+                          - main:
+                            - generic:
+                              - generic:
+                                - generic:
+                                  - tablist:
+                                    - generic:
+                                      - generic:
+                                        - generic:
+                                          - tab "All 5":
+                                            - generic:
+                                              - generic:
+                                                - generic:
+                                                  - generic:
+                                                    - generic:
+                                                      - generic:
+                                                        - generic:
+                                                          - text: All
+                                                          - generic: "5"
+                                    - generic:
+                                      - generic:
+                                        - generic:
+                                          - tab "Active 5":
+                                            - generic:
+                                              - generic:
+                                                - generic:
+                                                  - generic:
+                                                    - generic:
+                                                      - generic:
+                                                        - generic:
+                                                          - text: Active
+                                                          - generic: "5"
+                                    - generic:
+                                      - generic:
+                                        - generic:
+                                          - tab "Archived 0":
+                                            - generic:
+                                              - generic:
+                                                - generic:
+                                                  - generic:
+                                                    - generic:
+                                                      - generic:
+                                                        - generic:
+                                                          - text: Archived
+                                                          - generic: "0"
+                                - generic:
+                                  - generic:
+                                    - generic:
+                                      - generic:
+                                        - toolbar:
+                                          - listitem:
+                                            - generic:
+                                              - generic: Created
+                                            - button "Add Created":
+                                              - img
+                                          - listitem:
+                                            - generic:
+                                              - generic: Status
+                                            - button "Add Status":
+                                              - img
+                                          - listitem:
+                                            - generic:
+                                              - generic: Product category
+                                            - button "Add Product category":
+                                              - img
+                                      - generic:
+                                        - generic:
+                                          - generic:
+                                            - button "Export prices":
+                                              - img
+                                              - generic: Export prices
+                                          - generic:
+                                            - button "Export products":
+                                              - img
+                                              - generic: Export products
+                                        - generic:
+                                          - button "Edit columns":
+                                            - img
+                                            - text: Edit columns
+                                    - separator
+                                  - generic:
+                                    - generic:
+                                      - generic:
+                                        - table:
+                                          - rowgroup:
+                                            - row "Name Pricing Product category Created Updated":
+                                              - columnheader:
+                                                - generic:
+                                                  - button
+                                              - columnheader "Name":
+                                                - generic:
+                                                  - button "Name":
+                                                    - generic:
+                                                      - generic: Name
+                                              - columnheader:
+                                                - generic:
+                                                  - button
+                                              - columnheader "Pricing":
+                                                - generic:
+                                                  - button "Pricing":
+                                                    - generic:
+                                                      - generic: Pricing
+                                              - columnheader "Product category":
+                                                - generic:
+                                                  - button "Product category":
+                                                    - generic:
+                                                      - generic: Product category
+                                              - columnheader "Created":
+                                                - generic:
+                                                  - button "Created":
+                                                    - generic:
+                                                      - generic: Created
+                                              - columnheader "Updated":
+                                                - generic:
+                                                  - button "Updated":
+                                                    - generic:
+                                                      - generic: Updated
+                                              - columnheader
+                                          - rowgroup:
+                                            - row "SEO AI Meta Pro £12.99 Per month General - Electronically Supplied Services 5 Nov 2025 5 Nov 2025 Row actions":
+                                              - cell:
+                                                - generic:
+                                                  - generic:
+                                                    - link:
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqj9ggm7CDOBT
+                                                      - generic:
+                                                        - generic:
+                                                          - generic:
+                                                            - img
+                                              - cell "SEO AI Meta Pro":
+                                                - generic:
+                                                  - generic:
+                                                    - link "SEO AI Meta Pro":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqj9ggm7CDOBT
+                                                      - generic:
+                                                        - generic: SEO AI Meta Pro
+                                              - cell:
+                                                - generic:
+                                                  - generic:
+                                                    - link:
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqj9ggm7CDOBT
+                                              - cell "£12.99 Per month":
+                                                - generic:
+                                                  - generic:
+                                                    - link "£12.99 Per month":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqj9ggm7CDOBT
+                                                      - generic:
+                                                        - generic:
+                                                          - generic:
+                                                            - text: £12.99
+                                                            - generic:
+                                                              - img
+                                                              - text: Per month
+                                              - cell "General - Electronically Supplied Services":
+                                                - generic:
+                                                  - generic:
+                                                    - link "General - Electronically Supplied Services":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqj9ggm7CDOBT
+                                                      - generic:
+                                                        - generic: General - Electronically Supplied Services
+                                              - cell "5 Nov 2025":
+                                                - generic:
+                                                  - generic:
+                                                    - link "5 Nov 2025":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqj9ggm7CDOBT
+                                                      - generic:
+                                                        - generic: 5 Nov 2025
+                                              - cell "5 Nov 2025":
+                                                - generic:
+                                                  - generic:
+                                                    - link "5 Nov 2025":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqj9ggm7CDOBT
+                                                      - generic:
+                                                        - generic: 5 Nov 2025
+                                              - cell "Row actions":
+                                                - generic:
+                                                  - generic:
+                                                    - button "Row actions":
+                                                      - img "Row actions"
+                                            - row "SEO AI Meta Agency £49.99 Per month General - Electronically Supplied Services 5 Nov 2025 5 Nov 2025 Row actions":
+                                              - cell:
+                                                - generic:
+                                                  - generic:
+                                                    - link:
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqjE1LXizSHkM
+                                                      - generic:
+                                                        - generic:
+                                                          - generic:
+                                                            - img
+                                              - cell "SEO AI Meta Agency":
+                                                - generic:
+                                                  - generic:
+                                                    - link "SEO AI Meta Agency":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqjE1LXizSHkM
+                                                      - generic:
+                                                        - generic: SEO AI Meta Agency
+                                              - cell:
+                                                - generic:
+                                                  - generic:
+                                                    - link:
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqjE1LXizSHkM
+                                              - cell "£49.99 Per month":
+                                                - generic:
+                                                  - generic:
+                                                    - link "£49.99 Per month":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqjE1LXizSHkM
+                                                      - generic:
+                                                        - generic:
+                                                          - generic:
+                                                            - text: £49.99
+                                                            - generic:
+                                                              - img
+                                                              - text: Per month
+                                              - cell "General - Electronically Supplied Services":
+                                                - generic:
+                                                  - generic:
+                                                    - link "General - Electronically Supplied Services":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqjE1LXizSHkM
+                                                      - generic:
+                                                        - generic: General - Electronically Supplied Services
+                                              - cell "5 Nov 2025":
+                                                - generic:
+                                                  - generic:
+                                                    - link "5 Nov 2025":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqjE1LXizSHkM
+                                                      - generic:
+                                                        - generic: 5 Nov 2025
+                                              - cell "5 Nov 2025":
+                                                - generic:
+                                                  - generic:
+                                                    - link "5 Nov 2025":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TMqjE1LXizSHkM
+                                                      - generic:
+                                                        - generic: 5 Nov 2025
+                                              - cell "Row actions":
+                                                - generic:
+                                                  - generic:
+                                                    - button "Row actions":
+                                                      - img "Row actions"
+                                            - 'row "AI Alt Text Credits £9.99 Preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery 27 Oct 2025 27 Oct 2025 Row actions"':
+                                              - cell:
+                                                - generic:
+                                                  - generic:
+                                                    - link:
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUxQ6z7A8OI1R
+                                                      - generic:
+                                                        - generic:
+                                                          - generic:
+                                                            - img
+                                              - cell "AI Alt Text Credits":
+                                                - generic:
+                                                  - generic:
+                                                    - link "AI Alt Text Credits":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUxQ6z7A8OI1R
+                                                      - generic:
+                                                        - generic: AI Alt Text Credits
+                                              - cell:
+                                                - generic:
+                                                  - generic:
+                                                    - link:
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUxQ6z7A8OI1R
+                                              - cell "£9.99":
+                                                - generic:
+                                                  - generic:
+                                                    - link "£9.99":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUxQ6z7A8OI1R
+                                                      - generic:
+                                                        - generic:
+                                                          - generic: £9.99
+                                              - 'cell "Preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery"':
+                                                - generic:
+                                                  - generic:
+                                                    - 'link "Preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery"':
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUxQ6z7A8OI1R
+                                                      - generic:
+                                                        - generic: "Preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery"
+                                              - cell "27 Oct 2025":
+                                                - generic:
+                                                  - generic:
+                                                    - link "27 Oct 2025":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUxQ6z7A8OI1R
+                                                      - generic:
+                                                        - generic: 27 Oct 2025
+                                              - cell "27 Oct 2025":
+                                                - generic:
+                                                  - generic:
+                                                    - link "27 Oct 2025":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUxQ6z7A8OI1R
+                                                      - generic:
+                                                        - generic: 27 Oct 2025
+                                              - cell "Row actions":
+                                                - generic:
+                                                  - generic:
+                                                    - button "Row actions":
+                                                      - img "Row actions"
+                                            - 'row "AI Alt Text Agency £49.99 Per month Preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery 27 Oct 2025 5 Nov 2025 Row actions"':
+                                              - cell:
+                                                - generic:
+                                                  - generic:
+                                                    - link:
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx5wOM1eClsK
+                                                      - generic:
+                                                        - generic:
+                                                          - generic:
+                                                            - img
+                                              - cell "AI Alt Text Agency":
+                                                - generic:
+                                                  - generic:
+                                                    - link "AI Alt Text Agency":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx5wOM1eClsK
+                                                      - generic:
+                                                        - generic: AI Alt Text Agency
+                                              - cell:
+                                                - generic:
+                                                  - generic:
+                                                    - link:
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx5wOM1eClsK
+                                              - cell "£49.99 Per month":
+                                                - generic:
+                                                  - generic:
+                                                    - link "£49.99 Per month":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx5wOM1eClsK
+                                                      - generic:
+                                                        - generic:
+                                                          - generic:
+                                                            - text: £49.99
+                                                            - generic:
+                                                              - img
+                                                              - text: Per month
+                                              - 'cell "Preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery"':
+                                                - generic:
+                                                  - generic:
+                                                    - 'link "Preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery"':
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx5wOM1eClsK
+                                                      - generic:
+                                                        - generic: "Preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery"
+                                              - cell "27 Oct 2025":
+                                                - generic:
+                                                  - generic:
+                                                    - link "27 Oct 2025":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx5wOM1eClsK
+                                                      - generic:
+                                                        - generic: 27 Oct 2025
+                                              - cell "5 Nov 2025":
+                                                - generic:
+                                                  - generic:
+                                                    - link "5 Nov 2025":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx5wOM1eClsK
+                                                      - generic:
+                                                        - generic: 5 Nov 2025
+                                              - cell "Row actions":
+                                                - generic:
+                                                  - generic:
+                                                    - button "Row actions":
+                                                      - img "Row actions"
+                                            - 'row "AI Alt Text Pro £12.99 Per month Preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery 27 Oct 2025 5 Nov 2025 Row actions"':
+                                              - cell:
+                                                - generic:
+                                                  - generic:
+                                                    - link:
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx4ejTmP1dMs
+                                                      - generic:
+                                                        - generic:
+                                                          - generic:
+                                                            - img
+                                              - cell "AI Alt Text Pro":
+                                                - generic:
+                                                  - generic:
+                                                    - link "AI Alt Text Pro":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx4ejTmP1dMs
+                                                      - generic:
+                                                        - generic: AI Alt Text Pro
+                                              - cell:
+                                                - generic:
+                                                  - generic:
+                                                    - link:
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx4ejTmP1dMs
+                                              - cell "£12.99 Per month":
+                                                - generic:
+                                                  - generic:
+                                                    - link "£12.99 Per month":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx4ejTmP1dMs
+                                                      - generic:
+                                                        - generic:
+                                                          - generic:
+                                                            - text: £12.99
+                                                            - generic:
+                                                              - img
+                                                              - text: Per month
+                                              - 'cell "Preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery"':
+                                                - generic:
+                                                  - generic:
+                                                    - 'link "Preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery"':
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx4ejTmP1dMs
+                                                      - generic:
+                                                        - generic: "Preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery"
+                                              - cell "27 Oct 2025":
+                                                - generic:
+                                                  - generic:
+                                                    - link "27 Oct 2025":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx4ejTmP1dMs
+                                                      - generic:
+                                                        - generic: 27 Oct 2025
+                                              - cell "5 Nov 2025":
+                                                - generic:
+                                                  - generic:
+                                                    - link "5 Nov 2025":
+                                                      - /url: /acct_1RiPpcJl9Rm418cM/products/prod_TJUx4ejTmP1dMs
+                                                      - generic:
+                                                        - generic: 5 Nov 2025
+                                              - cell "Row actions":
+                                                - generic:
+                                                  - generic:
+                                                    - button "Row actions":
+                                                      - img "Row actions"
+                                    - generic:
+                                      - generic: 5 items
+      - paragraph
+  - generic:
+    - generic:
+      - iframe
+    - generic [ref=e623]:
+      - button "AltText AI" [ref=e844] [cursor=pointer]:
+        - img [ref=e845]
+        - generic [ref=e848]: AltText AI
+      - search [ref=e625]:
+        - generic [ref=e627]:
+          - generic [ref=e628]:
+            - img [ref=e630]
+            - generic [ref=e633]: Search
+          - generic [ref=e634]:
+            - combobox "Search" [ref=e635]
+            - generic [ref=e638]: /
+      - generic [ref=e639]:
+        - button "Apps" [ref=e641] [cursor=pointer]:
+          - img [ref=e642]
+        - button "Notifications" [ref=e652] [cursor=pointer]:
+          - img [ref=e655]
+        - link "Settings" [ref=e660] [cursor=pointer]:
+          - /url: /acct_1RiPpcJl9Rm418cM/settings
+          - img [ref=e661]
+    - button "Show Workbench" [ref=e671] [cursor=pointer]:
+      - button "Developers" [ref=e674]:
+        - generic [ref=e675]:
+          - img [ref=e677]
+          - generic [ref=e680]: Developers
+      - generic [ref=e681]:
+        - generic [ref=e682]:
+          - button "Inspect" [ref=e685]:
+            - img [ref=e688]
+          - button "Health" [ref=e691]:
+            - img [ref=e693]
+          - button "API activity" [ref=e697]:
+            - img [ref=e699]
+          - button "Event deliveries" [ref=e702]:
+            - img [ref=e704]
+        - button "Open Workbench" [ref=e708]
+    - generic [ref=e714]:
+      - generic [ref=e715] [cursor=pointer]:
+        - heading [level=2] [ref=e716]: Setup guide
+        - generic [ref=e717]:
+          - button [ref=e718]:
+            - img [ref=e719]
+          - generic [ref=e721]:
+            - button [ref=e722]:
+              - img
+            - button [ref=e723]:
+              - img [ref=e724]
+      - generic [ref=e729]:
+        - region [ref=e730]:
+          - generic [ref=e732]:
+            - generic [ref=e733]: "Next:"
+            - link [ref=e734] [cursor=pointer]:
+              - /url: https://docs.stripe.com/billing/quickstart
+              - text: Build your Checkout integration
+        - generic [ref=e735]:
+          - generic [ref=e736]:
+            - button [expanded] [ref=e737] [cursor=pointer]:
+              - heading [level=3] [ref=e738]: Set up recurring payments
+              - img [ref=e739]
+            - region [ref=e741]:
+              - list [ref=e743]:
+                - listitem [ref=e744]:
+                  - button [ref=e745] [cursor=pointer]:
+                    - progressbar [ref=e747]:
+                      - img [ref=e748]
+                    - paragraph [ref=e752]: Choose a pricing model
+                - listitem [ref=e753]:
+                  - button [ref=e754] [cursor=pointer]:
+                    - progressbar [ref=e756]:
+                      - img [ref=e757]
+                    - paragraph [ref=e761]: Create a meter
+                - listitem [ref=e762]:
+                  - button [ref=e763] [cursor=pointer]:
+                    - progressbar [ref=e765]:
+                      - img [ref=e766]
+                    - paragraph [ref=e770]: Choose how to accept recurring payments
+                - listitem [ref=e771]:
+                  - button [ref=e772] [cursor=pointer]:
+                    - progressbar [ref=e774]:
+                      - img [ref=e775]
+                    - paragraph [ref=e779]: Create a recurring product
+                - listitem [ref=e780]:
+                  - link [ref=e781] [cursor=pointer]:
+                    - /url: https://docs.stripe.com/billing/quickstart
+                    - progressbar [ref=e783]
+                    - paragraph [ref=e787]: Build your Checkout integration
+          - generic [ref=e788]:
+            - button [ref=e789] [cursor=pointer]:
+              - heading [level=3] [ref=e790]: Set up payments
+              - img [ref=e791]
+            - list [ref=e793]:
+              - listitem [ref=e794]:
+                - button [ref=e795] [cursor=pointer]:
+                  - progressbar [ref=e797]:
+                    - img [ref=e798]
+                  - paragraph [ref=e802]: Choose how to accept payments
+              - listitem [ref=e803]:
+                - button [ref=e804] [cursor=pointer]:
+                  - progressbar [ref=e806]:
+                    - img [ref=e807]
+                  - paragraph [ref=e811]: Create a non-recurring product
+              - listitem [ref=e812]:
+                - button [ref=e813] [cursor=pointer]:
+                  - progressbar [ref=e815]
+                  - paragraph [ref=e819]: Build Checkout with blueprints
+          - generic [ref=e820]:
+            - button [ref=e821] [cursor=pointer]:
+              - heading [level=3] [ref=e822]: Finish your setup
+              - img [ref=e823]
+            - list [ref=e825]:
+              - listitem [ref=e826]:
+                - button [ref=e827] [cursor=pointer]:
+                  - progressbar [ref=e829]:
+                    - img [ref=e830]
+                  - paragraph [ref=e834]: Verify your email
+              - listitem [ref=e835]:
+                - button [ref=e836] [cursor=pointer]:
+                  - progressbar [ref=e838]:
+                    - img [ref=e839]
+                  - paragraph [ref=e843]: Verify your business
+    - dialog [ref=e851]:
+      - generic [ref=e853]:
+        - heading "Add a product" [level=1] [ref=e855]
+        - generic [ref=e856]:
+          - button "Show preview" [ref=e857] [cursor=pointer]
+          - button "Close" [ref=e858] [cursor=pointer]:
+            - img [ref=e859]
+      - generic [ref=e862]:
+        - generic [ref=e869]:
+          - generic [ref=e870]:
+            - generic [ref=e871]: Name (required)
+            - generic [ref=e872]: Name of the product or service, visible to customers.
+            - textbox "Name (required)" [active] [ref=e874]
+          - generic [ref=e875]:
+            - generic [ref=e876]: Description
+            - generic [ref=e878]: Appears at checkout, on the customer portal, and in quotes.
+            - textbox "Description" [ref=e880]
+          - generic [ref=e881]:
+            - generic [ref=e882]:
+              - generic [ref=e884]: Image
+              - generic [ref=e885]: Appears at checkout. JPEG, PNG or WEBP under 2MB.
+            - generic [ref=e887]:
+              - button "Upload" [ref=e888] [cursor=pointer]
+              - generic [ref=e895] [cursor=pointer]:
+                - img [ref=e898]
+                - generic [ref=e902]: Upload
+          - generic [ref=e903]:
+            - generic [ref=e905]: Product category
+            - generic [ref=e906]:
+              - text: This will be used for calculating automatic tax.
+              - link "View docs" [ref=e907] [cursor=pointer]:
+                - /url: https://docs.stripe.com/tax/tax-codes
+            - 'button "Use preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery" [ref=e910] [cursor=pointer]':
+              - generic [ref=e911]: "Use preset: Software Maintenance Agreement – Mandatory, Custom, Electronic Delivery"
+              - img [ref=e912]
+          - button "More options" [ref=e914] [cursor=pointer]:
+            - generic [ref=e915]:
+              - generic [ref=e916]: More options
+              - img [ref=e917]
+          - separator [ref=e919]
+          - generic [ref=e920]:
+            - generic [ref=e921]:
+              - heading "Pricing" [level=2] [ref=e922]
+              - group [ref=e923]:
+                - generic [ref=e924]:
+                  - generic [ref=e925]:
+                    - radio "Recurring" [checked] [ref=e926] [cursor=pointer]
+                    - generic [ref=e928] [cursor=pointer]: Recurring
+                  - generic [ref=e929]:
+                    - radio "One-off" [ref=e930] [cursor=pointer]
+                    - generic [ref=e932] [cursor=pointer]: One-off
+              - generic [ref=e934]:
+                - generic [ref=e935]: Amount (required)
+                - generic [ref=e940]:
+                  - generic [ref=e943]:
+                    - button "£" [ref=e944]:
+                      - generic [ref=e947]: £
+                    - textbox "0" [ref=e948]
+                  - combobox "…" [ref=e957] [cursor=pointer]:
+                    - generic [ref=e959]: GBP
+                    - generic:
+                      - img
+              - generic [ref=e960]:
+                - generic [ref=e962]:
+                  - generic [ref=e963]: Include tax in price
+                  - img [ref=e964]
+                - generic [ref=e968]:
+                  - generic [ref=e969]: Tax behaviour
+                  - button "Tax behaviour" [ref=e971] [cursor=pointer]:
+                    - generic [ref=e972]: Auto
+                    - img [ref=e973]
+              - generic [ref=e975]:
+                - generic [ref=e976]: Billing period
+                - generic [ref=e978]:
+                  - generic [ref=e979]: Price recurring interval
+                  - button "Price recurring interval" [ref=e981] [cursor=pointer]:
+                    - generic [ref=e982]: Monthly
+                    - img [ref=e983]
+            - button "More pricing options" [ref=e985] [cursor=pointer]:
+              - generic [ref=e986]: More pricing options
+        - generic [ref=e989]:
+          - button "Cancel" [ref=e990] [cursor=pointer]:
+            - generic [ref=e991]: Cancel
+          - button "Add product" [ref=e992] [cursor=pointer]:
+            - generic [ref=e993]: Add product
+  - generic:
+    - iframe

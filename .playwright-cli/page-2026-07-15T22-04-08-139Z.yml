@@ -1,0 +1,113 @@
+- generic [ref=f3e4]:
+  - generic [ref=f3e7]:
+    - img "Google" [ref=f3e9]
+    - generic [ref=f3e10]:
+      - heading "Couldn’t sign you in" [level=1] [ref=f3e13]
+      - generic [ref=f3e16]:
+        - generic [ref=f3e20]:
+          - paragraph [ref=f3e21]:
+            - text: This browser or app may not be secure.
+            - link "Learn more about about how to solve this issue on the Google support site. (external, opens in a new window)" [ref=f3e22] [cursor=pointer]:
+              - /url: https://support.google.com/accounts/answer/7675428?hl=en-US
+              - text: Learn more
+          - paragraph [ref=f3e23]: Try using a different browser. If you’re already using a supported browser, you can try again to sign in.
+        - link "Try again" [ref=f3e27] [cursor=pointer]:
+          - /url: /restart?continue=https://docs.google.com/spreadsheets/d/1knshEn3tVVes5Gf2uqibCCALaIuOtUdT_lxJEqomTsI/edit&dsh=S640414729:1784153021723749&flowEntry=ServiceLogin&flowName=WebLiteSignIn&followup=https://docs.google.com/spreadsheets/d/1knshEn3tVVes5Gf2uqibCCALaIuOtUdT_lxJEqomTsI/edit&ifkv=Ac50bxugzKI7NHW-z_zfhhldi_XpVcV135NzFd8_8IYd31B4EZuDT4qmBqR7I9iBXRC1yqRBVzTN1g&ltmpl=sheets&osid=1&service=wise
+  - contentinfo [ref=f3e28]:
+    - combobox [ref=f3e31] [cursor=pointer]:
+      - option "Afrikaans"
+      - option "azərbaycan"
+      - option "bosanski"
+      - option "català"
+      - option "Čeština"
+      - option "Cymraeg"
+      - option "Dansk"
+      - option "Deutsch"
+      - option "eesti"
+      - option "English (United Kingdom)"
+      - option "English (United States)" [selected]
+      - option "Español (España)"
+      - option "Español (Latinoamérica)"
+      - option "euskara"
+      - option "Filipino"
+      - option "Français (Canada)"
+      - option "Français (France)"
+      - option "Gaeilge"
+      - option "galego"
+      - option "Hrvatski"
+      - option "Indonesia"
+      - option "isiZulu"
+      - option "íslenska"
+      - option "Italiano"
+      - option "Kiswahili"
+      - option "latviešu"
+      - option "lietuvių"
+      - option "magyar"
+      - option "Melayu"
+      - option "Nederlands"
+      - option "norsk"
+      - option "o‘zbek"
+      - option "polski"
+      - option "Português (Brasil)"
+      - option "Português (Portugal)"
+      - option "română"
+      - option "shqip"
+      - option "Slovenčina"
+      - option "slovenščina"
+      - option "srpski (latinica)"
+      - option "Suomi"
+      - option "Svenska"
+      - option "Tiếng Việt"
+      - option "Türkçe"
+      - option "Ελληνικά"
+      - option "беларуская"
+      - option "български"
+      - option "кыргызча"
+      - option "қазақ тілі"
+      - option "македонски"
+      - option "монгол"
+      - option "Русский"
+      - option "српски (ћирилица)"
+      - option "Українська"
+      - option "ქართული"
+      - option "հայերեն"
+      - option "‫עברית‬‎"
+      - option "‫اردو‬‎"
+      - option "‫العربية‬‎"
+      - option "‫فارسی‬‎"
+      - option "አማርኛ"
+      - option "नेपाली"
+      - option "मराठी"
+      - option "हिन्दी"
+      - option "অসমীয়া"
+      - option "বাংলা"
+      - option "ਪੰਜਾਬੀ"
+      - option "ગુજરાતી"
+      - option "ଓଡ଼ିଆ"
+      - option "தமிழ்"
+      - option "తెలుగు"
+      - option "ಕನ್ನಡ"
+      - option "മലയാളം"
+      - option "සිංහල"
+      - option "ไทย"
+      - option "ລາວ"
+      - option "မြန်မာ"
+      - option "ខ្មែរ"
+      - option "한국어"
+      - option "中文（香港）"
+      - option "日本語"
+      - option "简体中文"
+      - option "繁體中文"
+    - list [ref=f3e32]:
+      - listitem [ref=f3e33]:
+        - link "Open Google Account Help Center (external, opens in a new window)" [ref=f3e34] [cursor=pointer]:
+          - /url: https://support.google.com/accounts?hl=en-US&p=account_iph
+          - text: Help
+      - listitem [ref=f3e35]:
+        - link "Privacy Policy (external, opens in a new window)" [ref=f3e36] [cursor=pointer]:
+          - /url: https://accounts.google.com/TOS?loc=GB&hl=en-US&privacy=true
+          - text: Privacy
+      - listitem [ref=f3e37]:
+        - link "Google Terms of Service (external, opens in a new window)" [ref=f3e38] [cursor=pointer]:
+          - /url: https://accounts.google.com/TOS?loc=GB&hl=en-US
+          - text: Terms

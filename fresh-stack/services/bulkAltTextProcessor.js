@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const logger = require('../lib/logger');
+const { captureServerEvent } = require('../lib/posthog');
 const { normalizeItemIdentifier } = require('../lib/queue');
 const { validateImagePayload } = require('../lib/validation');
 const { generateAltText } = require('../lib/openai');
@@ -359,6 +360,49 @@ async function processLicensedBulkItem({
 }
 
 function createBulkAltTextProcessor({ supabase, getJobRecord, setJobRecord, itemConcurrency = 3 }) {
+  function captureBulkEvent(event, {
+    jobId,
+    siteKey,
+    userInfo,
+    itemId = null,
+    itemCount = 0,
+    completedItemCount = 0,
+    failedItemCount = 0,
+    durationMs = null,
+    success = null,
+    errorCode = null
+  }) {
+    if (!siteKey) return;
+    const suffix = itemId == null ? jobId : `${jobId}:${itemId}`;
+    captureServerEvent({
+      event,
+      distinctId: siteKey,
+      properties: {
+        generation_run_id: jobId,
+        generation_item_id: itemId,
+        correlation_id: jobId,
+        site_install_id: siteKey,
+        user_id: userInfo?.user_id || null,
+        plugin_version: userInfo?.plugin_version || null,
+        generation_mode: 'bulk',
+        item_count: itemCount,
+        completed_item_count: completedItemCount,
+        failed_item_count: failedItemCount,
+        duration_ms: durationMs,
+        success,
+        error_code: errorCode,
+        source: 'backend',
+        $insert_id: `${event}:${suffix}`
+      }
+    }).catch((error) => {
+      logger.warn('[analytics] bulk_generation_event_capture_failed', {
+        event,
+        job_id: jobId,
+        error: error.message
+      });
+    });
+  }
+
   function createPersistLock() {
     let chain = Promise.resolve();
     return function withLock(fn) {
@@ -400,6 +444,12 @@ function createBulkAltTextProcessor({ supabase, getJobRecord, setJobRecord, item
       batch_processing_started_ms: Date.now() - batchT0
     };
     await setJobRecord(jobId, record);
+    captureBulkEvent('generation_job_started', {
+      jobId,
+      siteKey,
+      userInfo,
+      itemCount: items.length
+    });
 
     async function applyOutcome(index, item, outcome, tPrep) {
       await withLock(async () => {
@@ -473,6 +523,29 @@ function createBulkAltTextProcessor({ supabase, getJobRecord, setJobRecord, item
           success: outcome.success,
           code: outcome.code || null
         });
+        if (outcome.success) {
+          const itemId = normalizeItemIdentifier(item, index).id ?? index;
+          captureBulkEvent('generation_item_completed', {
+            jobId,
+            siteKey,
+            userInfo: item.user || userInfo,
+            itemId,
+            itemCount: items.length,
+            completedItemCount: 1,
+            durationMs: Date.now() - tPrep,
+            success: true
+          });
+          captureBulkEvent('alt_text_generated', {
+            jobId,
+            siteKey,
+            userInfo: item.user || userInfo,
+            itemId,
+            itemCount: items.length,
+            completedItemCount: 1,
+            durationMs: Date.now() - tPrep,
+            success: true
+          });
+        }
       });
     }
 
@@ -564,6 +637,16 @@ function createBulkAltTextProcessor({ supabase, getJobRecord, setJobRecord, item
         failed: final?.failed,
         batch_total_ms: final?.timings?.batch_total_ms
       });
+      captureBulkEvent('generation_job_completed', {
+        jobId,
+        siteKey,
+        userInfo,
+        itemCount: final?.total || items.length,
+        completedItemCount: final?.completed || 0,
+        failedItemCount: final?.failed || 0,
+        durationMs: final?.timings?.batch_total_ms || (Date.now() - batchT0),
+        success: (final?.failed || 0) === 0
+      });
     } catch (err) {
       logger.error('[bulkAltText] job_failed', {
         job_id: jobId,
@@ -577,6 +660,17 @@ function createBulkAltTextProcessor({ supabase, getJobRecord, setJobRecord, item
         latest.batchCompletedAt = nowIso();
         await setJobRecord(jobId, latest);
       }
+      captureBulkEvent('generation_job_failed', {
+        jobId,
+        siteKey,
+        userInfo,
+        itemCount: items.length,
+        completedItemCount: latest?.completed || 0,
+        failedItemCount: latest?.failed || 0,
+        durationMs: Date.now() - batchT0,
+        success: false,
+        errorCode: err.code || 'BULK_JOB_FAILED'
+      });
     }
   }
 
