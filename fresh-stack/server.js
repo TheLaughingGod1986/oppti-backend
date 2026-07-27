@@ -26,6 +26,7 @@ const { createOptimizerRouter } = require('./routes/optimizer');
 const { createAccountDashboardRouter } = require('./routes/accountDashboard');
 const { createAnalyticsRouter } = require('./routes/analytics');
 const { createLoopsWebhookHandler } = require('./routes/loopsWebhook');
+const { createV1Router } = require('./routes/v1');
 const { inspectV2Schema, logV2SchemaStartupStatus } = require('./services/v2Diagnostics');
 const {
   getRuntimeIdentity,
@@ -341,13 +342,14 @@ function createApp({
   app.use('/api/license', licenseRouter);
   app.use('/api/licenses', licenseRouter);
   app.use('/api/usage', createUsageRouter({ supabase: supabaseClient }));
-  app.use('/api/alt-text', createAltTextRouter({
+  const altTextRouterInstance = createAltTextRouter({
     supabase: supabaseClient,
     redis,
     resultCache: altTextResultCache,
     checkRateLimit,
     getSiteFromHeaders
-  }));
+  });
+  app.use('/api/alt-text', altTextRouterInstance);
 
   const reviewRouter = createReviewRouter({ supabase: supabaseClient });
   app.use('/api/review', reviewRouter);
@@ -403,21 +405,24 @@ function createApp({
     });
   }
 
-  app.use('/api/jobs', createJobsRouter({
+  const jobsRouterInstance = createJobsRouter({
     supabase: supabaseClient,
     checkRateLimit: async (siteKey) => checkRateLimit(siteKey),
     getSiteFromHeaders,
     createJob: queue.createJob,
-    getJobRecord: queue.getJobRecord
-  }));
+    getJobRecord: queue.getJobRecord,
+    setJobRecord: queue.setJobRecord
+  });
+  app.use('/api/jobs', jobsRouterInstance);
 
-  app.use('/api/titles', createTitlesRouter({
+  const titlesRouterInstance = createTitlesRouter({
     supabase: supabaseClient,
     checkRateLimit: async (siteKey) => checkRateLimit(siteKey),
     getSiteFromHeaders,
     createJob: queue.createJob,
     getJobRecord: queue.getJobRecord
-  }));
+  });
+  app.use('/api/titles', titlesRouterInstance);
 
   const billingRouterInstance = createBillingRouter({
     supabase: supabaseClient,
@@ -426,6 +431,15 @@ function createApp({
   });
   app.use('/billing', billingRouterInstance);
   app.use('/api/billing', billingRouterInstance);
+
+  // Thin /v1/* aliasing layer — same routers, same auth, same
+  // reserve/finalize credit logic; see routes/v1.js.
+  app.use('/v1', createV1Router({
+    titlesRouter: titlesRouterInstance,
+    altTextRouter: altTextRouterInstance,
+    jobsRouter: jobsRouterInstance,
+    billingRouter: billingRouterInstance
+  }));
 
   const dashboardRouterInstance = createDashboardRouter({
     supabase: supabaseClient,

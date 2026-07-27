@@ -515,6 +515,24 @@ function createBulkAltTextProcessor({ supabase, getJobRecord, setJobRecord, item
     async function processIndex(item, index) {
       const tPrep = Date.now();
 
+      // Cooperative cancellation: an item not yet started when /cancel is
+      // called is skipped outright — no AI call, no credit reservation.
+      // Items already mid-flight when cancellation is requested still
+      // complete normally; only the not-yet-started tail is affected.
+      const cancelCheck = await getJobRecord(jobId);
+      if (cancelCheck?.cancelRequested) {
+        await withLock(async () => {
+          const latest = await getJobRecord(jobId);
+          if (!latest || !latest.items[index]) return;
+          if (latest.items[index].status === 'queued' || latest.items[index].status === 'preparing') {
+            latest.items[index].status = 'cancelled';
+            latest.items[index].stage = 'cancelled';
+            await setJobRecord(jobId, latest);
+          }
+        });
+        return;
+      }
+
       await withLock(async () => {
         const latest = await getJobRecord(jobId);
         if (!latest || !latest.items[index]) return;
@@ -577,7 +595,7 @@ function createBulkAltTextProcessor({ supabase, getJobRecord, setJobRecord, item
           installUuid: siteKey,
           quotaMode: 'site'
         });
-        latest.status = 'completed';
+        latest.status = latest.cancelRequested ? 'cancelled' : 'completed';
         latest.batchCompletedAt = nowIso();
         if (!quotaStatus.error) {
           latest.entitlement_state = buildEntitlementState(quotaStatus, {

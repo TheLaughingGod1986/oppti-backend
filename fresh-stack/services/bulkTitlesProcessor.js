@@ -292,6 +292,23 @@ function createBulkTitlesProcessor({ supabase, getJobRecord, setJobRecord, itemC
     async function processIndex(item, index) {
       const tPrep = Date.now();
 
+      // Cooperative cancellation — see bulkAltTextProcessor.js for the
+      // matching implementation. An item not yet started is skipped
+      // outright; items already mid-flight complete normally.
+      const cancelCheck = await getJobRecord(jobId);
+      if (cancelCheck?.cancelRequested) {
+        await withLock(async () => {
+          const latest = await getJobRecord(jobId);
+          if (!latest || !latest.items[index]) return;
+          if (latest.items[index].status === 'queued' || latest.items[index].status === 'preparing') {
+            latest.items[index].status = 'cancelled';
+            latest.items[index].stage = 'cancelled';
+            await setJobRecord(jobId, latest);
+          }
+        });
+        return;
+      }
+
       await withLock(async () => {
         const latest = await getJobRecord(jobId);
         if (!latest || !latest.items[index]) return;
@@ -338,7 +355,7 @@ function createBulkTitlesProcessor({ supabase, getJobRecord, setJobRecord, itemC
       await withLock(async () => {
         const latest = await getJobRecord(jobId);
         if (!latest) return;
-        latest.status = 'completed';
+        latest.status = latest.cancelRequested ? 'cancelled' : 'completed';
         latest.batchCompletedAt = nowIso();
         latest.timings = {
           ...latest.timings,
