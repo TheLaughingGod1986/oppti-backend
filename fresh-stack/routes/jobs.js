@@ -24,7 +24,7 @@ const batchSchema = z.object({
   context: z.any().optional()
 });
 
-function createJobsRouter({ supabase, checkRateLimit, getSiteFromHeaders, createJob, getJobRecord }) {
+function createJobsRouter({ supabase, checkRateLimit, getSiteFromHeaders, createJob, getJobRecord, setJobRecord }) {
   const router = express.Router();
 
   function resolveAutoSyncScope(context = {}) {
@@ -239,6 +239,74 @@ function createJobsRouter({ supabase, checkRateLimit, getSiteFromHeaders, create
     res.json({
       ...job,
       percentComplete
+    });
+  });
+
+  /**
+   * Cooperative cancel — sets a flag the running processor checks between
+   * items (see bulkAltTextProcessor.js / bulkTitlesProcessor.js). Items
+   * already mid-flight complete normally; anything still queued is marked
+   * 'cancelled' and never reaches the AI provider or reserves a credit.
+   */
+  router.post('/:jobId/cancel', async (req, res) => {
+    if (!setJobRecord) {
+      return res.status(501).json({ error: 'NOT_SUPPORTED', message: 'Job cancellation is not configured on this server' });
+    }
+    const job = await getJobRecord(req.params.jobId);
+    if (!job) return res.status(404).json({ error: 'JOB_NOT_FOUND', message: 'Job not found' });
+
+    if (['completed', 'failed', 'cancelled'].includes(job.status)) {
+      return res.json({ ...job, percentComplete: 100 });
+    }
+
+    job.cancelRequested = true;
+    job.cancelRequestedAt = new Date().toISOString();
+    await setJobRecord(req.params.jobId, job);
+
+    res.json({
+      ...job,
+      percentComplete: job.total ? Math.round(((job.completed || 0) + (job.failed || 0)) / job.total * 100) : 0,
+      message: 'Cancellation requested — items already in progress will finish; anything still queued will be skipped.'
+    });
+  });
+
+  /**
+   * Returns the failed items from a finished job so the WordPress client can
+   * resubmit exactly those items through its normal single/bulk optimise
+   * flow. The backend does not retain the original request payload (image
+   * bytes / page content) once a job is stored, so it cannot safely
+   * resubmit on the client's behalf — this endpoint is a retry *helper*,
+   * not a retry that happens server-side.
+   */
+  router.post('/:jobId/retry', async (req, res) => {
+    const job = await getJobRecord(req.params.jobId);
+    if (!job) return res.status(404).json({ error: 'JOB_NOT_FOUND', message: 'Job not found' });
+
+    if (!['completed', 'failed', 'cancelled'].includes(job.status)) {
+      return res.status(409).json({
+        error: 'JOB_STILL_RUNNING',
+        message: 'This job has not finished yet — wait for it to complete before retrying failed items.'
+      });
+    }
+
+    const failedItems = (job.items || [])
+      .filter((item) => item.status === 'failed' || item.status === 'cancelled')
+      .map((item) => ({
+        id: item.id,
+        attachment_id: item.attachment_id || item.attachmentId || null,
+        image_id: item.image_id || item.imageId || null,
+        error: item.error || null,
+        errorCode: item.errorCode || null,
+        status: item.status
+      }));
+
+    res.json({
+      jobId: req.params.jobId,
+      retryable_count: failedItems.length,
+      failed_items: failedItems,
+      message: failedItems.length
+        ? 'Resubmit these items through the normal optimise flow — the backend does not cache original item payloads for server-side retry.'
+        : 'Nothing to retry — no failed or cancelled items on this job.'
     });
   });
 
