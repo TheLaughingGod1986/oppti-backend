@@ -7,7 +7,7 @@ const { createClient } = require('@supabase/supabase-js');
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
 const PLAN_DEFAULTS = {
-  free: { monthlyIncludedCredits: 50, billingInterval: 'month', isPaid: false },
+  free: { monthlyIncludedCredits: 25, billingInterval: 'month', isPaid: false },
   pro: { monthlyIncludedCredits: 1000, billingInterval: 'month', isPaid: true },
   agency: { monthlyIncludedCredits: 10000, billingInterval: 'month', isPaid: true },
   credits: { monthlyIncludedCredits: 0, billingInterval: 'one_time', isPaid: false }

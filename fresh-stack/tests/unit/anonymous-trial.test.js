@@ -1,9 +1,30 @@
 const {
   buildAnonymousTrialStatus,
-  getAnonymousQuotaState
+  getAnonymousQuotaState,
+  getAnonymousTrialLimit
 } = require('../../services/anonymousTrial');
 
 describe('anonymous trial quota contract', () => {
+  const originalEnv = {
+    ANONYMOUS_TRIAL_CREDITS: process.env.ANONYMOUS_TRIAL_CREDITS,
+    SITE_TRIAL_CREDITS: process.env.SITE_TRIAL_CREDITS,
+    TRIAL_LIMIT: process.env.TRIAL_LIMIT
+  };
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  test('defaults guest trial to 10 when trial env vars are unset', () => {
+    delete process.env.ANONYMOUS_TRIAL_CREDITS;
+    delete process.env.SITE_TRIAL_CREDITS;
+    delete process.env.TRIAL_LIMIT;
+    expect(getAnonymousTrialLimit()).toBe(10);
+  });
+
   test('builds the normalized anonymous quota contract', () => {
     const status = buildAnonymousTrialStatus({
       used: 3,
@@ -20,7 +41,7 @@ describe('anonymous trial quota contract', () => {
       credits_remaining: 2,
       signup_required: false,
       upgrade_required: false,
-      free_plan_offer: 15,
+      free_plan_offer: 25,
       anon_id: 'anon-contract-1'
     }));
   });

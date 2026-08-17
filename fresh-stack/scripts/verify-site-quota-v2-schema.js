@@ -262,7 +262,7 @@ async function main() {
 
     const siteTrialsDefault = await queryColumnAvailability(client, 'site_trials', ['total_trial_credits']);
     const siteTrialsDefaultValue = siteTrialsDefault.total_trial_credits?.column_default || null;
-    const siteTrialsDefaultMatches = siteTrialsDefaultValue === '5';
+    const siteTrialsDefaultMatches = siteTrialsDefaultValue === '10';
 
     const summary = {
       ok: false,

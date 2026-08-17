@@ -152,7 +152,7 @@ describe('reserveGenerationQuota', () => {
       status: 'legacy_reserved',
       quota_source: 'legacy',
       plan: 'free',
-      remaining_credits: 14
+      remaining_credits: 24
     }));
   });
 });

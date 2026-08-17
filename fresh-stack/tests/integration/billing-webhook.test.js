@@ -1753,11 +1753,9 @@ describe('POST /billing/webhook', () => {
         column: 'id',
         value: 'site_sub_deleted',
         payload: {
-          // Free tier is 15 credits, not the historical 50. The downgrade path
-          // itself is correct — it sets plan=free and the current free
-          // allowance; only this expectation was left behind when the tier
-          // changed.
-          quota_limit: 15,
+          // Free tier is 25 credits. The downgrade path itself is correct —
+          // it sets plan=free and the current free allowance.
+          quota_limit: 25,
           status: 'active'
         }
       }),
