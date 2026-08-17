@@ -10,11 +10,11 @@ function getAnonymousTrialLimit() {
     process.env.ANONYMOUS_TRIAL_CREDITS
     || process.env.SITE_TRIAL_CREDITS
     || process.env.TRIAL_LIMIT
-    || 5
+    || 10
   );
 
   if (!Number.isFinite(configured) || configured < 1) {
-    return 5;
+    return 10;
   }
 
   return Math.max(1, Math.floor(configured));

@@ -11,6 +11,7 @@ const {
 const { getQuotaStatus } = require('../services/quota');
 const { getUserUsage, getSiteUsage, getPeriodBounds } = require('../services/usage');
 const { buildEntitlementState } = require('../services/entitlementState');
+const { getLimits } = require('../services/planLimits');
 
 function inferQuotaType(planType = 'free') {
   if (planType === 'free') return 'monthly';
@@ -256,7 +257,7 @@ function createUsageRouter({ supabase }) {
           quota_state: quotaState,
           signup_required: false,
           upgrade_required: false,
-          free_plan_offer: 15,
+          free_plan_offer: getLimits('free').credits,
           warning_threshold: status.warning_threshold,
           is_near_limit: status.is_near_limit,
           // Per-plugin attribution of the shared wallet for this cycle.
@@ -276,7 +277,7 @@ function createUsageRouter({ supabase }) {
         usage_by_feature: status.usage_by_feature || {},
         signup_required: false,
         upgrade_required: false,
-        free_plan_offer: 15
+        free_plan_offer: getLimits('free').credits
       }
     });
   });

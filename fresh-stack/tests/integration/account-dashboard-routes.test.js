@@ -12,12 +12,12 @@ function createService(overrides = {}) {
       subscription: null,
       usage: {
         credits_used: 0,
-        credits_included: 15,
+        credits_included: 25,
         images_optimized: 0,
         period_start: '2026-07-01T00:00:00.000Z',
         period_end: '2026-08-01T00:00:00.000Z'
       },
-      credits: { balance: 15 }
+      credits: { balance: 25 }
     }),
     getSubscriptions: jest.fn().mockResolvedValue([]),
     getSites: jest.fn().mockResolvedValue([]),

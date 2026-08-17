@@ -21,6 +21,7 @@ const {
   syncLegacySitePointers
 } = require('../services/siteQuota');
 const { getBillingPlansJson, getBillingPlansJsonLive, buildPlansList } = require('../services/billingPlansCatalog');
+const { getLimits } = require('../services/planLimits');
 
 const ACCOUNT_SELECT = 'id, email, license_key, stripe_customer_id, stripe_subscription_id, plan, billing_cycle';
 const SITE_SELECT = 'id, site_hash, license_key, site_url, site_name, status';
@@ -1726,7 +1727,7 @@ async function syncCanceledSubscriptionPointers(supabase, { account, site, strip
     const { error } = await supabase
       .from('sites')
       .update({
-        quota_limit: 15,
+        quota_limit: getLimits('free').credits,
         status: 'active'
       })
       .eq('id', site.id);
