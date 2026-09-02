@@ -48,6 +48,16 @@ const DEFAULT_ALLOWED_HEADERS = [
   'X-WP-Version'
 ];
 
+// US-plugin checkout Price IDs. Kept as code defaults so USD upgrades work
+ // without requiring a Render env change; override via *_USD env vars if needed.
+ // GBP IDs remain env-only (ALTTEXT_AI_STRIPE_PRICE_*) and are not replaced.
+const DEFAULT_USD_STRIPE_PRICES = {
+  starter: 'price_1UBBZlJl9Rm418cMyqCUYrxp',
+  pro: 'price_1UBBOuJl9Rm418cMz5HG1Lnu',
+  agency: 'price_1UBBSDJl9Rm418cMvzW2OxG9',
+  credits: 'price_1UBBVeJl9Rm418cM1k7PC7wO'
+};
+
 function loadConfig() {
   const rateLimitPerSite = Number(getEnv('RATE_LIMIT_PER_SITE', 120));
   const rateLimitGlobal = Number(getEnv('RATE_LIMIT_GLOBAL', 0));
@@ -62,7 +72,11 @@ function loadConfig() {
       starter: getEnv('ALTTEXT_AI_STRIPE_PRICE_STARTER_MONTHLY') || getEnv('STRIPE_PRICE_STARTER_MONTHLY'),
       pro: getEnv('ALTTEXT_AI_STRIPE_PRICE_PRO'),
       agency: getEnv('ALTTEXT_AI_STRIPE_PRICE_AGENCY'),
-      credits: getEnv('ALTTEXT_AI_STRIPE_PRICE_CREDITS')
+      credits: getEnv('ALTTEXT_AI_STRIPE_PRICE_CREDITS'),
+      starterUsd: getEnv('ALTTEXT_AI_STRIPE_PRICE_STARTER_MONTHLY_USD') || DEFAULT_USD_STRIPE_PRICES.starter,
+      proUsd: getEnv('ALTTEXT_AI_STRIPE_PRICE_PRO_USD') || DEFAULT_USD_STRIPE_PRICES.pro,
+      agencyUsd: getEnv('ALTTEXT_AI_STRIPE_PRICE_AGENCY_USD') || DEFAULT_USD_STRIPE_PRICES.agency,
+      creditsUsd: getEnv('ALTTEXT_AI_STRIPE_PRICE_CREDITS_USD') || DEFAULT_USD_STRIPE_PRICES.credits
     },
     openAiKey: getEnv('OPENAI_API_KEY') || getEnv('ALTTEXT_OPENAI_API_KEY'),
     openAiModel: getEnv('OPENAI_MODEL', 'gpt-4o-mini'),

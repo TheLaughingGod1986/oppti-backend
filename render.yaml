@@ -49,6 +49,14 @@ services:
         sync: false
       - key: ALTTEXT_AI_STRIPE_PRICE_CREDITS
         sync: false
+      - key: ALTTEXT_AI_STRIPE_PRICE_STARTER_MONTHLY_USD
+        sync: false
+      - key: ALTTEXT_AI_STRIPE_PRICE_PRO_USD
+        sync: false
+      - key: ALTTEXT_AI_STRIPE_PRICE_AGENCY_USD
+        sync: false
+      - key: ALTTEXT_AI_STRIPE_PRICE_CREDITS_USD
+        sync: false
       - key: JWT_SECRET
         sync: false
 

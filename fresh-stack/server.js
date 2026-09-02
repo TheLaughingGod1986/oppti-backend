@@ -34,6 +34,11 @@ const {
   logSupabaseTargetStartup
 } = require('./services/dataIntegrityDiagnostics');
 const { getBillingPlansJson, getBillingPlansJsonLive } = require('./services/billingPlansCatalog');
+const {
+  resolveBillingCountry,
+  resolveBillingCurrency,
+  selectCatalogPriceIds
+} = require('./lib/billingCurrency');
 const { buildBillingHealth } = require('./services/billingHealth');
 const { scheduleCustomerHealthCron } = require('./services/customerHealthTelemetry');
 const rateLimitMiddleware = require('./middleware/rateLimit');
@@ -195,13 +200,20 @@ function createApp({
   async function sendPublicBillingPlans(req, res) {
     const t0 = Date.now();
     try {
-      const body = await getBillingPlansJsonLive(priceIds, getStripe);
+      // Visitor geo country only (CF-IPCountry / plugin-forwarded). Never locale.
+      const country = resolveBillingCountry(req);
+      const currency = resolveBillingCurrency(country);
+      const catalogPriceIds = selectCatalogPriceIds(priceIds, country);
+      const body = await getBillingPlansJsonLive(catalogPriceIds, getStripe, { currency });
       res.set('Cache-Control', 'public, max-age=300');
+      res.set('Vary', 'CF-IPCountry, X-Visitor-Country, X-Client-Country, X-Admin-Country, X-Country');
       res.json(body);
       logger.info('[billing/plans] served', {
         path: req.path,
         duration_ms: Date.now() - t0,
-        source: 'early_route'
+        source: 'early_route',
+        country: country || null,
+        currency
       });
     } catch (err) {
       logger.error('[billing/plans] error', { path: req.path, error: err.message });

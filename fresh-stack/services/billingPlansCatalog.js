@@ -6,14 +6,19 @@
 const logger = require('../lib/logger');
 const DEFAULT_TTL_MS = Number(process.env.BILLING_PLANS_CACHE_TTL_MS || 15 * 60 * 1000);
 
-function buildPlansList(priceIds = {}) {
+function buildPlansList(priceIds = {}, { currency = 'gbp' } = {}) {
+  const normalizedCurrency = currency === 'usd' ? 'usd' : 'gbp';
+  const amounts = normalizedCurrency === 'usd'
+    ? { starter: 6.99, pro: 17.99, credits: 13.99 }
+    : { starter: 4.99, pro: 12.99, credits: 9.99 };
+
   return [
     {
       id: 'starter',
       name: 'Starter',
       badge: 'Best for small sites',
-      price: 4.99,
-      currency: 'gbp',
+      price: amounts.starter,
+      currency: normalizedCurrency,
       interval: 'month',
       quota: 100,
       sites: 1,
@@ -33,8 +38,8 @@ function buildPlansList(priceIds = {}) {
       id: 'pro',
       name: 'Growth',
       badge: 'Best value',
-      price: 12.99,
-      currency: 'gbp',
+      price: amounts.pro,
+      currency: normalizedCurrency,
       interval: 'month',
       quota: 1000,
       sites: 1,
@@ -55,8 +60,8 @@ function buildPlansList(priceIds = {}) {
       id: 'credits',
       name: 'Buy 100 extra credits',
       badge: 'Alternative',
-      price: 9.99,
-      currency: 'gbp',
+      price: amounts.credits,
+      currency: normalizedCurrency,
       interval: 'one-time',
       quota: 100,
       sites: 'any',
@@ -83,8 +88,10 @@ let cache = {
 /**
  * Returns { success, plans } suitable for JSON responses.
  */
-function getBillingPlansJson(priceIds = {}) {
+function getBillingPlansJson(priceIds = {}, { currency = 'gbp' } = {}) {
+  const normalizedCurrency = currency === 'usd' ? 'usd' : 'gbp';
   const key = JSON.stringify({
+    currency: normalizedCurrency,
     starter: priceIds.starter || null,
     pro: priceIds.pro || null,
     agency: priceIds.agency || null,
@@ -96,7 +103,7 @@ function getBillingPlansJson(priceIds = {}) {
     return cache.payload;
   }
 
-  const payload = { success: true, plans: buildPlansList(priceIds) };
+  const payload = { success: true, currency: normalizedCurrency, plans: buildPlansList(priceIds, { currency: normalizedCurrency }) };
   cache = { key, expiry: now + DEFAULT_TTL_MS, payload };
   logger.debug('[billingPlansCatalog] cache miss, rebuilt');
   return payload;
@@ -122,8 +129,10 @@ let liveCache = {
  * @param {object}   priceIds  { starter, pro, agency, credits }
  * @param {function} getStripe Returns a Stripe client (or null if unconfigured).
  */
-async function getBillingPlansJsonLive(priceIds = {}, getStripe) {
+async function getBillingPlansJsonLive(priceIds = {}, getStripe, { currency = 'gbp' } = {}) {
+  const normalizedCurrency = currency === 'usd' ? 'usd' : 'gbp';
   const key = JSON.stringify({
+    currency: normalizedCurrency,
     starter: priceIds.starter || null,
     pro: priceIds.pro || null,
     agency: priceIds.agency || null,
@@ -137,10 +146,10 @@ async function getBillingPlansJsonLive(priceIds = {}, getStripe) {
   const stripe = typeof getStripe === 'function' ? getStripe() : null;
   if (!stripe) {
     // No Stripe client — serve the static catalog (kept in sync with Stripe).
-    return getBillingPlansJson(priceIds);
+    return getBillingPlansJson(priceIds, { currency: normalizedCurrency });
   }
 
-  const plans = buildPlansList(priceIds);
+  const plans = buildPlansList(priceIds, { currency: normalizedCurrency });
 
   try {
     await Promise.all(plans.map(async (plan) => {
@@ -191,10 +200,10 @@ async function getBillingPlansJsonLive(priceIds = {}, getStripe) {
     }));
   } catch (err) {
     logger.error('[billingPlansCatalog] live plans build failed, falling back to static', { error: err.message });
-    return getBillingPlansJson(priceIds);
+    return getBillingPlansJson(priceIds, { currency: normalizedCurrency });
   }
 
-  const payload = { success: true, plans };
+  const payload = { success: true, currency: normalizedCurrency, plans };
   liveCache = { key, expiry: now + DEFAULT_TTL_MS, payload };
   return payload;
 }
