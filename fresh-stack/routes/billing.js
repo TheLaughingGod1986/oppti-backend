@@ -1,6 +1,14 @@
 const express = require('express');
 const crypto = require('crypto');
 const logger = require('../lib/logger');
+const {
+  resolveBillingCountry,
+  resolveBillingCurrency,
+  selectCatalogPriceIds,
+  listConfiguredPriceIds,
+  isUsdPriceId,
+  canonicalizePlanKey
+} = require('../lib/billingCurrency');
 const { verifyWebhookSignature } = require('../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../lib/posthog');
 const {
@@ -71,7 +79,7 @@ function normalizeStripeId(value) {
 function resolvePlanFromPriceId(priceIds = {}, priceId) {
   if (!priceId) return null;
   const match = Object.entries(priceIds).find(([, configuredPriceId]) => configuredPriceId === priceId);
-  return match ? match[0] : null;
+  return match ? canonicalizePlanKey(match[0]) : null;
 }
 
 function normalizePlanValue(plan) {
@@ -2692,8 +2700,13 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
   router.get('/plans', async (req, res) => {
     const t0 = Date.now();
     try {
-      const payload = await getBillingPlansJsonLive(priceIds || {}, getStripe);
+      // Currency from visitor geo country only (CF-IPCountry / plugin-forwarded), never locale.
+      const country = resolveBillingCountry(req);
+      const currency = resolveBillingCurrency(country);
+      const catalogPriceIds = selectCatalogPriceIds(priceIds || {}, country);
+      const payload = await getBillingPlansJsonLive(catalogPriceIds, getStripe, { currency });
       res.set('Cache-Control', 'public, max-age=300');
+      res.set('Vary', 'CF-IPCountry, X-Visitor-Country, X-Client-Country, X-Admin-Country, X-Country');
       res.json(payload);
       logger.info('[billing] GET /plans ok', {
         path: req.path,
@@ -2768,11 +2781,27 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
     const { priceId, successUrl, cancelUrl } = req.body || {};
     const siteKey = req.header('X-Site-Key');
     const account = req.license || req.user || null;
-    const selectedPlan = plans.find((plan) => plan.priceId === priceId) || null;
+    const billingCountry = resolveBillingCountry(req);
+    const billingCurrency = resolveBillingCurrency(billingCountry);
+    const catalogPriceIds = selectCatalogPriceIds(priceIds || {}, billingCountry);
+    const selectedPlan = plans.find((plan) => plan.priceId === priceId)
+      || buildPlansList(catalogPriceIds, { currency: billingCurrency }).find((plan) => plan.priceId === priceId)
+      || null;
     const requestedAttribution = normalizeCheckoutAttribution(req.body);
+    const allowedPriceIds = listConfiguredPriceIds(priceIds || {});
 
-    if (!priceId || !Object.values(priceIds).includes(priceId)) {
+    if (!priceId || !allowedPriceIds.includes(priceId)) {
       return res.status(400).json({ error: 'Invalid or missing priceId', valid: priceIds });
+    }
+
+    // USD Price IDs are US-geo only. Missing/unknown country stays on GBP.
+    if (isUsdPriceId(priceIds, priceId) && billingCurrency !== 'usd') {
+      return res.status(400).json({
+        error: 'USD priceId requires US visitor country',
+        code: 'USD_PRICE_REQUIRES_US_COUNTRY',
+        country: billingCountry,
+        currency: billingCurrency
+      });
     }
 
     let siteRecord = null;
@@ -2806,9 +2835,16 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       return res.status(501).json({ error: 'Stripe not configured' });
     }
     try {
-      const selectedPlanId = normalizePlanValue(selectedPlan?.id || resolvePlanFromPriceId(priceIds, priceId) || null);
+      // Resolve from allowlisted priceId first so USD IDs (absent from the GBP
+      // plans catalog) still map to starter/pro/agency/credits. No second plans grid.
+      const selectedPlanId = normalizePlanValue(
+        resolvePlanFromPriceId(priceIds, priceId) || selectedPlan?.id || null
+      );
       const currentPlan = normalizePlanValue(account?.plan || null);
-      const mode = selectedPlan?.interval === 'one-time' ? 'payment' : 'subscription';
+      const planForCheckout = plans.find((plan) => plan.id === selectedPlanId) || selectedPlan || null;
+      const mode = selectedPlanId === 'credits' || planForCheckout?.interval === 'one-time'
+        ? 'payment'
+        : 'subscription';
       const checkoutRateLimit = checkCheckoutRateLimit(req, { siteKey, priceId, selectedPlanId });
       if (!checkoutRateLimit.allowed) {
         logger.warn('[billing] checkout rate limit exceeded', {
@@ -2916,7 +2952,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         email: sanitizeStripeMetadataValue(account?.email, { lowercase: true }) || requestedAttribution.email,
         plan: selectedPlanId || undefined,
         current_plan: currentPlan || undefined,
-        billing_interval: resolveCheckoutBillingInterval(selectedPlan, selectedPlanId),
+        billing_interval: resolveCheckoutBillingInterval(planForCheckout, selectedPlanId),
         purchase_type: purchaseType !== 'unknown' ? purchaseType : undefined,
         trigger_feature: requestedAttribution.triggerFeature,
         trigger_location: requestedAttribution.triggerLocation,

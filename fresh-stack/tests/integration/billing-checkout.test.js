@@ -168,7 +168,11 @@ function createApp({ supabase, stripeClient, license, user }) {
       starter: 'price_starter',
       pro: 'price_pro',
       agency: 'price_agency',
-      credits: 'price_credits'
+      credits: 'price_credits',
+      starterUsd: 'price_1UBBZlJl9Rm418cMyqCUYrxp',
+      proUsd: 'price_1UBBOuJl9Rm418cMz5HG1Lnu',
+      agencyUsd: 'price_1UBBSDJl9Rm418cMvzW2OxG9',
+      creditsUsd: 'price_1UBBVeJl9Rm418cM1k7PC7wO'
     }
   }));
   return app;
@@ -798,5 +802,195 @@ describe('POST /billing/portal', () => {
       code: 'billing_not_linked'
     }));
     expect(stripeClient.billingPortal.sessions.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /billing/checkout USD allowlist + geo', () => {
+  const USD_STARTER = 'price_1UBBZlJl9Rm418cMyqCUYrxp';
+  const USD_PRO = 'price_1UBBOuJl9Rm418cMz5HG1Lnu';
+  const USD_CREDITS = 'price_1UBBVeJl9Rm418cM1k7PC7wO';
+
+  function buildUsdApp(stripeClient) {
+    const supabase = createSupabaseMock({
+      siteRecord: {
+        id: 'site_usd',
+        site_hash: 'site_hash_usd',
+        license_key: 'lic_usd'
+      }
+    });
+    return createApp({
+      supabase,
+      stripeClient,
+      license: {
+        id: 'account_usd',
+        email: 'usd@example.com',
+        license_key: 'lic_usd',
+        plan: 'free'
+      }
+    });
+  }
+
+  function mockStripe() {
+    return {
+      checkout: {
+        sessions: {
+          create: jest.fn().mockResolvedValue({
+            id: 'cs_usd',
+            url: 'https://stripe.test/usd'
+          })
+        }
+      }
+    };
+  }
+
+  test('accepts USD Starter when CF-IPCountry is US', async () => {
+    const stripeClient = mockStripe();
+    const app = buildUsdApp(stripeClient);
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('CF-IPCountry', 'US')
+      .send({ priceId: USD_STARTER });
+
+    expect(res.status).toBe(200);
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'subscription',
+        line_items: [{ price: USD_STARTER, quantity: 1 }],
+        metadata: expect.objectContaining({ plan: 'starter' })
+      }),
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^checkout:/)
+      })
+    );
+  });
+
+  test('accepts USD Growth when X-Visitor-Country is US (plugin-forwarded)', async () => {
+    const stripeClient = mockStripe();
+    const app = buildUsdApp(stripeClient);
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('X-Visitor-Country', 'US')
+      .send({ priceId: USD_PRO });
+
+    expect(res.status).toBe(200);
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'subscription',
+        line_items: [{ price: USD_PRO, quantity: 1 }],
+        metadata: expect.objectContaining({ plan: 'pro' })
+      }),
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^checkout:/)
+      })
+    );
+  });
+
+  test('accepts USD credits as one-time payment for US country', async () => {
+    const stripeClient = mockStripe();
+    const app = buildUsdApp(stripeClient);
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('CF-IPCountry', 'US')
+      .send({ priceId: USD_CREDITS });
+
+    expect(res.status).toBe(200);
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'payment',
+        line_items: [{ price: USD_CREDITS, quantity: 1 }],
+        metadata: expect.objectContaining({ plan: 'credits' })
+      }),
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^checkout:/)
+      })
+    );
+  });
+
+  test('rejects USD priceId when country is GB', async () => {
+    const stripeClient = mockStripe();
+    const app = buildUsdApp(stripeClient);
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('CF-IPCountry', 'GB')
+      .send({ priceId: USD_STARTER });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('USD_PRICE_REQUIRES_US_COUNTRY');
+    expect(stripeClient.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  test('rejects USD priceId when country is missing/unknown (GBP fallback)', async () => {
+    const stripeClient = mockStripe();
+    const app = buildUsdApp(stripeClient);
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('CF-IPCountry', 'XX')
+      .send({ priceId: USD_STARTER });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('USD_PRICE_REQUIRES_US_COUNTRY');
+    expect(stripeClient.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  test('does not use Accept-Language locale to unlock USD prices', async () => {
+    const stripeClient = mockStripe();
+    const app = buildUsdApp(stripeClient);
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('Accept-Language', 'en-US,en;q=0.9')
+      .send({ priceId: USD_STARTER });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('USD_PRICE_REQUIRES_US_COUNTRY');
+    expect(stripeClient.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  test('still accepts GBP starter for non-US country', async () => {
+    const stripeClient = mockStripe();
+    const app = buildUsdApp(stripeClient);
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('CF-IPCountry', 'GB')
+      .send({ priceId: 'price_starter' });
+
+    expect(res.status).toBe(200);
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'subscription',
+        line_items: [{ price: 'price_starter', quantity: 1 }],
+        metadata: expect.objectContaining({ plan: 'starter' })
+      }),
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^checkout:/)
+      })
+    );
+  });
+
+  test('rejects unknown priceId', async () => {
+    const stripeClient = mockStripe();
+    const app = buildUsdApp(stripeClient);
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('CF-IPCountry', 'US')
+      .send({ priceId: 'price_unknown_currency' });
+
+    expect(res.status).toBe(400);
+    expect(stripeClient.checkout.sessions.create).not.toHaveBeenCalled();
   });
 });
