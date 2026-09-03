@@ -1,0 +1,10 @@
+{
+  "name": "oppti-backend",
+  "install": "npm install",
+  "terminals": [
+    {
+      "name": "dev-server",
+      "command": "npm run dev:local"
+    }
+  ]
+}
