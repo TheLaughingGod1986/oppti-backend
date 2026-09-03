@@ -23,6 +23,7 @@ const { createAdminRouter } = require('./routes/admin');
 const { createContactRouter } = require('./routes/contact');
 const { createImageSeoAuditRouter } = require('./routes/imageSeoAudit');
 const { createOptimizerRouter } = require('./routes/optimizer');
+const { createInternalLinkingRouter } = require('./routes/internalLinking');
 const { createAccountDashboardRouter } = require('./routes/accountDashboard');
 const { createAnalyticsRouter } = require('./routes/analytics');
 const { createLoopsWebhookHandler } = require('./routes/loopsWebhook');
@@ -68,7 +69,8 @@ const PROTECTED_API_PREFIXES = [
   '/api/titles',
   '/api/usage',
   '/api/auth',
-  '/api/optimizer'
+  '/api/optimizer',
+  '/api/internal-linking'
 ];
 
 let supabase = null;
@@ -369,6 +371,13 @@ function createApp({
   // Oppti Optimizer plugin — site audit start/poll/history. Auth via the same
   // license / JWT / anonymous-trial rails as alt-text (see middleware/auth.js).
   app.use('/api/optimizer', createOptimizerRouter({ supabase: supabaseClient }));
+
+  // Oppti Internal Linking plugin — AI internal-link suggestions. Spends the
+  // shared credit wallet (feature_type='internal_linking'); same auth rails.
+  app.use('/api/internal-linking', createInternalLinkingRouter({
+    supabase: supabaseClient,
+    checkRateLimit: async (siteKey) => checkRateLimit(siteKey)
+  }));
 
   const queueHolder = { q: null };
   const bulkProcessor = createBulkAltTextProcessor({
