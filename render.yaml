@@ -39,6 +39,11 @@ services:
         sync: false
       - key: LOOPS_TIMEOUT_MS
         value: 5000
+      # LOOPS_SKIP_DOMAINS: QA/test email domains never sent to Loops. Optional;
+      # the code default already covers this list. Set it on Render as a
+      # separate deploy step (left commented so a Blueprint sync doesn't change env).
+      # - key: LOOPS_SKIP_DOMAINS
+      #   value: example.invalid,maxxspace.com,uberip.com,qa.oppti.dev
       - key: ALTTEXT_AI_STRIPE_PRICE_STARTER_MONTHLY
         sync: false
       - key: STRIPE_PRICE_STARTER_MONTHLY
