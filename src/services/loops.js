@@ -111,13 +111,19 @@ async function loopsPost(path, body, options = {}) {
   return loopsRequest('POST', path, body, options);
 }
 
+const PLUGIN_PROPERTY_PREFIX = Object.freeze({
+  alt_text: 'altText',
+  titles: 'titles',
+  internal_linking: 'internalLinking'
+});
+
+function pluginFirstSeenKey(pluginId) {
+  return `${PLUGIN_PROPERTY_PREFIX[getPlugin(pluginId).id]}FirstSeenAt`;
+}
+
 function pluginContactProperties(pluginId, pluginVersion, timestamp, { includeFirstSeen = false } = {}) {
   const plugin = getPlugin(pluginId);
-  const prefix = {
-    alt_text: 'altText',
-    titles: 'titles',
-    internal_linking: 'internalLinking'
-  }[plugin.id];
+  const prefix = PLUGIN_PROPERTY_PREFIX[plugin.id];
   const flag = {
     alt_text: 'usesAltText',
     titles: 'usesTitles',
@@ -178,6 +184,13 @@ function isBlankContactSource(value) {
     || (typeof value === 'string' && value.trim().toLowerCase() === 'api');
 }
 
+// A lead that creates an account is now a user, so "lead" may be upgraded to
+// "free". Any other non-empty group (e.g. "paid") is never overwritten.
+function isReplaceableUserGroup(value) {
+  return isBlankContactValue(value)
+    || (typeof value === 'string' && value.trim().toLowerCase() === 'lead');
+}
+
 // Returns the subset of first-touch account-creation fields that are safe to send.
 function firstTouchAccountFields(lookup, plugin, timestamp) {
   if (lookup.status === 'unknown') return {};
@@ -187,10 +200,11 @@ function firstTouchAccountFields(lookup, plugin, timestamp) {
     (isNew || isBlank(contact[key]) ? { [key]: value } : {});
   return {
     ...fill('source', LOOPS_SOURCE_BY_PLUGIN[plugin.id], isBlankContactSource),
-    ...fill('userGroup', 'free'),
+    ...fill('userGroup', 'free', isReplaceableUserGroup),
     ...fill('acquisitionPluginId', plugin.id),
     ...fill('acquisitionPluginTitle', plugin.title),
-    ...fill('firstPluginSeenAt', timestamp)
+    ...fill('firstPluginSeenAt', timestamp),
+    ...fill(pluginFirstSeenKey(plugin.id), timestamp)
   };
 }
 
@@ -209,9 +223,8 @@ async function upsertPluginContact({
     return null;
   }
   const plugin = getPlugin(pluginId);
-  const properties = pluginContactProperties(plugin.id, pluginVersion, timestamp, {
-    includeFirstSeen: acquisition
-  });
+  // Per-plugin FirstSeenAt on account creation is first-touch only (see firstTouchAccountFields).
+  const properties = pluginContactProperties(plugin.id, pluginVersion, timestamp);
   const firstTouch = acquisition === true
     ? firstTouchAccountFields(await findExistingContact(email), plugin, timestamp)
     : {};

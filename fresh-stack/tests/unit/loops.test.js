@@ -205,7 +205,17 @@ describe('Loops multi-plugin integration', () => {
       expect(callsTo('/contacts/find')).toHaveLength(1);
     });
 
-    test.each(['paid', 'lead', 'investors'])('an existing %s userGroup is never overwritten', async (userGroup) => {
+    test.each(['lead', 'LEAD', ' Lead '])('an existing "%s" userGroup becomes free', async (userGroup) => {
+      mockFind(jsonResponse(200, [{ id: 'c1', source: 'image-seo-audit', userGroup }]));
+      await signup('alt_text');
+
+      const body = updateBody();
+      expect(body.userGroup).toBe('free');
+      expect(body).not.toHaveProperty('source');
+      expectSignupCompleted();
+    });
+
+    test.each(['paid', 'PAID', ' paid ', 'investors', 'leader', 'free'])('an existing "%s" userGroup is never overwritten', async (userGroup) => {
       mockFind(jsonResponse(200, [{ id: 'c1', source: 'newsletter', userGroup }]));
       await signup('alt_text');
 
@@ -247,11 +257,77 @@ describe('Loops multi-plugin integration', () => {
       expectSignupCompleted();
     });
 
+    const PLUGIN_FIELDS = [
+      ['alt_text', 'altText'],
+      ['titles', 'titles'],
+      ['internal_linking', 'internalLinking']
+    ];
+
+    test.each(PLUGIN_FIELDS)('new contact via %s gets its per-plugin FirstSeenAt', async (pluginId, prefix) => {
+      mockFind(jsonResponse(200, []));
+      await signup(pluginId);
+
+      const body = updateBody();
+      expect(typeof body[`${prefix}FirstSeenAt`]).toBe('string');
+      expect(body[`${prefix}FirstSeenAt`]).toBe(body.firstPluginSeenAt);
+      expect(body[`${prefix}LastActiveAt`]).toBe(body[`${prefix}FirstSeenAt`]);
+    });
+
+    test.each(PLUGIN_FIELDS)('existing %s FirstSeenAt is kept while LastActiveAt and version update', async (pluginId, prefix) => {
+      mockFind(jsonResponse(200, [{
+        id: 'c1',
+        source: 'newsletter',
+        [`${prefix}FirstSeenAt`]: '2026-01-01T00:00:00.000Z'
+      }]));
+      const { trackAccountCreated } = require('../../../src/services/loops');
+      await trackAccountCreated({ email: 'lead@example.com', userId: 'account-1', pluginId, pluginVersion: '9.9.9' });
+
+      const body = updateBody();
+      expect(body).not.toHaveProperty(`${prefix}FirstSeenAt`);
+      expect(typeof body[`${prefix}LastActiveAt`]).toBe('string');
+      expect(body[`${prefix}PluginVersion`]).toBe('9.9.9');
+    });
+
+    test.each([
+      ['empty', ''],
+      ['null', null],
+      ['missing', undefined]
+    ])('per-plugin FirstSeenAt is set when the existing value is %s', async (_label, value) => {
+      mockFind(jsonResponse(200, [{ id: 'c1', source: 'newsletter', titlesFirstSeenAt: value }]));
+      await signup('titles');
+      expect(typeof updateBody().titlesFirstSeenAt).toBe('string');
+    });
+
+    test('another plugin\'s FirstSeenAt does not block this plugin\'s first touch', async () => {
+      mockFind(jsonResponse(200, [{ id: 'c1', source: 'alt-text', altTextFirstSeenAt: '2026-01-01T00:00:00.000Z' }]));
+      await signup('titles');
+
+      const body = updateBody();
+      expect(typeof body.titlesFirstSeenAt).toBe('string');
+      expect(body).not.toHaveProperty('altTextFirstSeenAt');
+    });
+
+    test.each([
+      ['an HTTP error', jsonResponse(500, {})],
+      ['a network error', new Error('timeout')]
+    ])('per-plugin FirstSeenAt is omitted when the lookup returns %s', async (_label, findResponse) => {
+      mockFind(findResponse);
+      const { trackAccountCreated } = require('../../../src/services/loops');
+      await trackAccountCreated({ email: 'lead@example.com', userId: 'account-1', pluginId: 'internal_linking', pluginVersion: '1.0.0' });
+
+      const body = updateBody();
+      expect(body).not.toHaveProperty('internalLinkingFirstSeenAt');
+      expect(typeof body.internalLinkingLastActiveAt).toBe('string');
+      expect(body.internalLinkingPluginVersion).toBe('1.0.0');
+      expect(body.signupPlugin).toBe('internal_linking');
+      expectSignupCompleted();
+    });
+
     test('existing acquisition fields are kept while empty ones are filled', async () => {
       mockFind(jsonResponse(200, [{
         id: 'c1',
         source: 'image-seo-audit',
-        userGroup: 'lead',
+        userGroup: 'investors',
         acquisitionPluginId: 'titles',
         acquisitionPluginTitle: '',
         firstPluginSeenAt: null
