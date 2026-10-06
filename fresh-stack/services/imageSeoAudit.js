@@ -938,7 +938,7 @@ async function runImageSeoAudit({
   auditId = crypto.randomUUID(),
   email,
   siteUrl,
-  source = 'image_seo_audit'
+  source = 'image-seo-audit'
 }) {
   const normalizedEmail = normalizeEmail(email);
   if (!isValidEmail(normalizedEmail)) {

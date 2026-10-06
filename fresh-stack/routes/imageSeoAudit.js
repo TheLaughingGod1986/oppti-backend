@@ -96,7 +96,7 @@ function createImageSeoAuditRouter({ supabase, runAudit = runImageSeoAudit } = {
           auditId,
           email,
           siteUrl: url.toString(),
-          source: parsed.data.source || 'image_seo_audit'
+          source: parsed.data.source || 'image-seo-audit'
         }).catch((error) => {
           logger.error('[image-seo-audit] background audit failed', {
             audit_id: auditId,

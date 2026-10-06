@@ -9,12 +9,35 @@ describe('Loops multi-plugin integration', () => {
       LOOPS_PLUGIN_USERS_LIST_ID: 'list123'
     };
     delete process.env.LOOPS_SKIP_DOMAINS;
-    global.fetch = jest.fn().mockResolvedValue({
+    // By default the contact lookup finds no existing contact.
+    global.fetch = jest.fn().mockImplementation(async (url) => ({
       ok: true,
       status: 200,
-      json: jest.fn().mockResolvedValue({ success: true })
-    });
+      json: jest.fn().mockResolvedValue(String(url).includes('/contacts/find') ? [] : { success: true })
+    }));
   });
+
+  const jsonResponse = (status, body) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: jest.fn().mockResolvedValue(body)
+  });
+  const callsTo = (suffix) => global.fetch.mock.calls.filter(([url]) => String(url).includes(suffix));
+  const updateBody = () => {
+    const updates = callsTo('/contacts/update');
+    expect(updates).toHaveLength(1);
+    return JSON.parse(updates[0][1].body);
+  };
+  // Answers the contact lookup with `findResponse` (or rejects with it if it is an Error).
+  const mockFind = (findResponse) => {
+    global.fetch.mockImplementation(async (url) => {
+      if (String(url).includes('/contacts/find')) {
+        if (findResponse instanceof Error) throw findResponse;
+        return findResponse;
+      }
+      return jsonResponse(200, { success: true });
+    });
+  };
 
   afterEach(() => {
     process.env = originalEnv;
@@ -73,6 +96,429 @@ describe('Loops multi-plugin integration', () => {
         generationsCount: 5
       })
     }));
+  });
+
+  test.each([
+    ['alt_text', 'alt-text'],
+    ['titles', 'titles'],
+    ['internal_linking', 'internal-linking']
+  ])('account creation for %s sets its origin and free group', async (pluginId, source) => {
+    const { trackAccountCreated } = require('../../../src/services/loops');
+    await trackAccountCreated({ email: 'user@example.com', userId: 'account-1', pluginId });
+
+    expect(global.fetch.mock.calls[0][0]).toMatch(/\/contacts\/find\?email=user%40example\.com$/);
+    expect(global.fetch.mock.calls[0][1].method).toBe('GET');
+    expect(global.fetch.mock.calls[0][1]).not.toHaveProperty('body');
+    expect(global.fetch.mock.calls[1][0]).toMatch(/\/contacts\/update$/);
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual(expect.objectContaining({
+      source,
+      signupPlugin: pluginId,
+      userGroup: 'free',
+      acquisitionPluginId: pluginId,
+      mailingLists: { list123: true }
+    }));
+    expect(global.fetch).toHaveBeenCalledTimes(4);
+  });
+
+  describe('account creation preserves an existing Loops contact', () => {
+    const FIRST_TOUCH_KEYS = ['source', 'userGroup', 'acquisitionPluginId', 'acquisitionPluginTitle', 'firstPluginSeenAt'];
+    const signup = (pluginId = 'titles') => {
+      const { trackAccountCreated } = require('../../../src/services/loops');
+      return trackAccountCreated({ email: 'lead@example.com', userId: 'account-1', pluginId });
+    };
+    const expectSignupCompleted = () => {
+      const events = callsTo('/events/send').map(([, options]) => JSON.parse(options.body).eventName);
+      expect(events).toEqual(['account_created', 'plugin_connected']);
+    };
+
+    test.each(['image-seo-audit', 'newsletter', 'apiary', 'API-import'])(
+      'keeps an existing non-empty source (%s)', async (existingSource) => {
+        mockFind(jsonResponse(200, [{ id: 'c1', email: 'lead@example.com', source: existingSource }]));
+        await signup('titles');
+
+        const body = updateBody();
+        expect(body).not.toHaveProperty('source');
+        expect(body).toEqual(expect.objectContaining({
+          signupPlugin: 'titles',
+          userGroup: 'free',
+          acquisitionPluginId: 'titles'
+        }));
+        expectSignupCompleted();
+      }
+    );
+
+    test.each([
+      ['empty string', [{ id: 'c1', source: '' }]],
+      ['whitespace', [{ id: 'c1', source: '   ' }]],
+      ['null', [{ id: 'c1', source: null }]],
+      ['missing', [{ id: 'c1' }]],
+      ['the Loops default "API"', [{ id: 'c1', source: 'API' }]],
+      ['the Loops default "api" (lowercase)', [{ id: 'c1', source: 'api' }]],
+      ['the Loops default " Api " (padded)', [{ id: 'c1', source: ' Api ' }]],
+      ['no existing contact', []]
+    ])('sets the plugin source when the existing source is %s', async (_label, contacts) => {
+      mockFind(jsonResponse(200, contacts));
+      await signup('internal_linking');
+
+      expect(updateBody()).toEqual(expect.objectContaining({
+        source: 'internal-linking',
+        signupPlugin: 'internal_linking'
+      }));
+      expectSignupCompleted();
+    });
+
+    test.each([
+      ['an HTTP error', jsonResponse(500, { message: 'boom' })],
+      ['a rate limit', jsonResponse(429, { message: 'slow down' })],
+      ['a network error', new Error('socket hang up')],
+      ['an unexpected response shape', jsonResponse(200, { success: true })]
+    ])('omits all first-touch fields but still completes signup when the lookup returns %s', async (_label, findResponse) => {
+      mockFind(findResponse);
+      await expect(signup('alt_text')).resolves.toBeUndefined();
+
+      const body = updateBody();
+      for (const key of FIRST_TOUCH_KEYS) {
+        expect(body).not.toHaveProperty(key);
+      }
+      expect(body).toEqual(expect.objectContaining({
+        signupPlugin: 'alt_text',
+        usesAltText: true,
+        plan: 'free'
+      }));
+      expectSignupCompleted();
+    });
+
+    test('a new contact gets every first-touch field', async () => {
+      mockFind(jsonResponse(200, []));
+      await signup('titles');
+
+      const body = updateBody();
+      expect(body).toEqual(expect.objectContaining({
+        source: 'titles',
+        userGroup: 'free',
+        acquisitionPluginId: 'titles',
+        acquisitionPluginTitle: 'BeepBeep Titles',
+        firstPluginSeenAt: body.titlesFirstSeenAt,
+        signupPlugin: 'titles'
+      }));
+      expect(typeof body.firstPluginSeenAt).toBe('string');
+      expect(callsTo('/contacts/find')).toHaveLength(1);
+    });
+
+    test.each(['lead', 'LEAD', ' Lead '])('an existing "%s" userGroup becomes free', async (userGroup) => {
+      mockFind(jsonResponse(200, [{ id: 'c1', source: 'image-seo-audit', userGroup }]));
+      await signup('alt_text');
+
+      const body = updateBody();
+      expect(body.userGroup).toBe('free');
+      expect(body).not.toHaveProperty('source');
+      expectSignupCompleted();
+    });
+
+    test.each(['paid', 'PAID', ' paid ', 'investors', 'leader', 'free'])('an existing "%s" userGroup is never overwritten', async (userGroup) => {
+      mockFind(jsonResponse(200, [{ id: 'c1', source: 'newsletter', userGroup }]));
+      await signup('alt_text');
+
+      const body = updateBody();
+      expect(body).not.toHaveProperty('userGroup');
+      expect(body.signupPlugin).toBe('alt_text');
+      expectSignupCompleted();
+    });
+
+    test.each([
+      ['empty', ''],
+      ['null', null],
+      ['missing', undefined]
+    ])('sets userGroup free when the existing userGroup is %s', async (_label, userGroup) => {
+      mockFind(jsonResponse(200, [{ id: 'c1', source: 'newsletter', userGroup }]));
+      await signup('alt_text');
+      expect(updateBody().userGroup).toBe('free');
+    });
+
+    test('an existing paid contact with prior acquisition keeps everything', async () => {
+      mockFind(jsonResponse(200, [{
+        id: 'c1',
+        source: 'alt-text',
+        userGroup: 'paid',
+        acquisitionPluginId: 'alt_text',
+        acquisitionPluginTitle: 'BeepBeep AI - Alt Text Generator',
+        firstPluginSeenAt: '2026-01-01T00:00:00.000Z'
+      }]));
+      await signup('internal_linking');
+
+      const body = updateBody();
+      for (const key of FIRST_TOUCH_KEYS) {
+        expect(body).not.toHaveProperty(key);
+      }
+      expect(body).toEqual(expect.objectContaining({
+        signupPlugin: 'internal_linking',
+        usesInternalLinking: true
+      }));
+      expectSignupCompleted();
+    });
+
+    const PLUGIN_FIELDS = [
+      ['alt_text', 'altText'],
+      ['titles', 'titles'],
+      ['internal_linking', 'internalLinking']
+    ];
+
+    test.each(PLUGIN_FIELDS)('new contact via %s gets its per-plugin FirstSeenAt', async (pluginId, prefix) => {
+      mockFind(jsonResponse(200, []));
+      await signup(pluginId);
+
+      const body = updateBody();
+      expect(typeof body[`${prefix}FirstSeenAt`]).toBe('string');
+      expect(body[`${prefix}FirstSeenAt`]).toBe(body.firstPluginSeenAt);
+      expect(body[`${prefix}LastActiveAt`]).toBe(body[`${prefix}FirstSeenAt`]);
+    });
+
+    test.each(PLUGIN_FIELDS)('existing %s FirstSeenAt is kept while LastActiveAt and version update', async (pluginId, prefix) => {
+      mockFind(jsonResponse(200, [{
+        id: 'c1',
+        source: 'newsletter',
+        [`${prefix}FirstSeenAt`]: '2026-01-01T00:00:00.000Z'
+      }]));
+      const { trackAccountCreated } = require('../../../src/services/loops');
+      await trackAccountCreated({ email: 'lead@example.com', userId: 'account-1', pluginId, pluginVersion: '9.9.9' });
+
+      const body = updateBody();
+      expect(body).not.toHaveProperty(`${prefix}FirstSeenAt`);
+      expect(typeof body[`${prefix}LastActiveAt`]).toBe('string');
+      expect(body[`${prefix}PluginVersion`]).toBe('9.9.9');
+    });
+
+    test.each([
+      ['empty', ''],
+      ['null', null],
+      ['missing', undefined]
+    ])('per-plugin FirstSeenAt is set when the existing value is %s', async (_label, value) => {
+      mockFind(jsonResponse(200, [{ id: 'c1', source: 'newsletter', titlesFirstSeenAt: value }]));
+      await signup('titles');
+      expect(typeof updateBody().titlesFirstSeenAt).toBe('string');
+    });
+
+    test('another plugin\'s FirstSeenAt does not block this plugin\'s first touch', async () => {
+      mockFind(jsonResponse(200, [{ id: 'c1', source: 'alt-text', altTextFirstSeenAt: '2026-01-01T00:00:00.000Z' }]));
+      await signup('titles');
+
+      const body = updateBody();
+      expect(typeof body.titlesFirstSeenAt).toBe('string');
+      expect(body).not.toHaveProperty('altTextFirstSeenAt');
+    });
+
+    test.each([
+      ['an HTTP error', jsonResponse(500, {})],
+      ['a network error', new Error('timeout')]
+    ])('per-plugin FirstSeenAt is omitted when the lookup returns %s', async (_label, findResponse) => {
+      mockFind(findResponse);
+      const { trackAccountCreated } = require('../../../src/services/loops');
+      await trackAccountCreated({ email: 'lead@example.com', userId: 'account-1', pluginId: 'internal_linking', pluginVersion: '1.0.0' });
+
+      const body = updateBody();
+      expect(body).not.toHaveProperty('internalLinkingFirstSeenAt');
+      expect(typeof body.internalLinkingLastActiveAt).toBe('string');
+      expect(body.internalLinkingPluginVersion).toBe('1.0.0');
+      expect(body.signupPlugin).toBe('internal_linking');
+      expectSignupCompleted();
+    });
+
+    test('existing acquisition fields are kept while empty ones are filled', async () => {
+      mockFind(jsonResponse(200, [{
+        id: 'c1',
+        source: 'image-seo-audit',
+        userGroup: 'investors',
+        acquisitionPluginId: 'titles',
+        acquisitionPluginTitle: '',
+        firstPluginSeenAt: null
+      }]));
+      await signup('alt_text');
+
+      const body = updateBody();
+      for (const key of ['source', 'userGroup', 'acquisitionPluginId']) {
+        expect(body).not.toHaveProperty(key);
+      }
+      expect(body.acquisitionPluginTitle).toBe('BeepBeep AI - Alt Text Generator');
+      expect(typeof body.firstPluginSeenAt).toBe('string');
+      expect(body.signupPlugin).toBe('alt_text');
+    });
+
+    test.each([
+      ['alt_text', jsonResponse(200, [])],
+      ['titles', jsonResponse(200, [{ source: 'image-seo-audit' }])],
+      ['internal_linking', jsonResponse(500, {})],
+      ['titles', new Error('timeout')]
+    ])('always sets signupPlugin to %s on account creation', async (pluginId, findResponse) => {
+      mockFind(findResponse);
+      await signup(pluginId);
+      expect(updateBody().signupPlugin).toBe(pluginId);
+    });
+
+    test('non-acquisition updates neither look up the contact nor set signupPlugin', async () => {
+      const { trackPluginConnected, upsertPluginContact } = require('../../../src/services/loops');
+      await trackPluginConnected({ email: 'user@example.com', userId: 'account-1', pluginId: 'titles' });
+      await upsertPluginContact({ email: 'user@example.com', pluginId: 'alt_text', acquisition: false });
+
+      expect(callsTo('/contacts/find')).toHaveLength(0);
+      for (const [, options] of callsTo('/contacts/update')) {
+        const body = JSON.parse(options.body);
+        expect(body).not.toHaveProperty('signupPlugin');
+        expect(body).not.toHaveProperty('source');
+      }
+    });
+  });
+
+  test.each(['alt_text', 'titles', 'internal_linking'])(
+    'connection and generation updates for %s preserve origin and group', async (pluginId) => {
+      const { trackPluginConnected, trackGenerationMilestone } = require('../../../src/services/loops');
+      const args = { email: 'user@example.com', userId: 'account-1', pluginId };
+      await trackPluginConnected(args);
+      await trackGenerationMilestone({ ...args, generationsCount: 5 });
+
+      const updates = global.fetch.mock.calls.filter(([url]) => url.endsWith('/contacts/update'));
+      expect(updates).toHaveLength(2);
+      for (const [, options] of updates) {
+        const body = JSON.parse(options.body);
+        expect(body).not.toHaveProperty('source');
+        expect(body).not.toHaveProperty('userGroup');
+      }
+    }
+  );
+
+  test.each([true, false])('internal-linking fields remain isolated (acquisition: %s)', async (acquisition) => {
+    const { upsertPluginContact } = require('../../../src/services/loops');
+    const timestamp = '2026-10-06T12:00:00.000Z';
+    await upsertPluginContact({
+      email: 'user@example.com',
+      pluginId: 'internal_linking',
+      pluginVersion: '1.2.3',
+      timestamp,
+      acquisition
+    });
+
+    const body = updateBody();
+    expect(body).toEqual(expect.objectContaining({
+      usesInternalLinking: true,
+      internalLinkingPluginVersion: '1.2.3',
+      internalLinkingLastActiveAt: timestamp,
+      lastActivePluginId: 'internal_linking',
+      lastActivePluginTitle: 'OpptiAI Internal Linking'
+    }));
+    if (acquisition) {
+      expect(body.internalLinkingFirstSeenAt).toBe(timestamp);
+    } else {
+      expect(body).not.toHaveProperty('internalLinkingFirstSeenAt');
+    }
+    expect(body).not.toHaveProperty('usesTitles');
+    expect(body).not.toHaveProperty('usesAltText');
+    expect(Object.keys(body).some((key) => key.startsWith('titles') || key.startsWith('altText'))).toBe(false);
+  });
+
+  test.each(['trackPlanUpgraded', 'trackPaymentSucceeded'])('%s marks the contact paid', async (helper) => {
+    const loops = require('../../../src/services/loops');
+    await loops[helper]({ email: 'user@example.com', planName: 'pro' });
+
+    expect(global.fetch.mock.calls[0][0]).toMatch(/\/contacts\/update$/);
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body).toEqual(expect.objectContaining({ userGroup: 'paid', plan: 'pro' }));
+    expect(body).not.toHaveProperty('source');
+  });
+
+  test('trackPlanUpgraded does not mark a downgrade to free as paid', async () => {
+    const loops = require('../../../src/services/loops');
+    await loops.trackPlanUpgraded({ email: 'user@example.com', planName: 'free' });
+
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.plan).toBe('free');
+    expect(body).not.toHaveProperty('userGroup');
+  });
+
+  const auditArgs = {
+    email: 'lead@example.com',
+    websiteUrl: 'https://example.com/',
+    normalizedDomain: 'example.com',
+    auditId: 'audit-1',
+    auditScore: 0,
+    pagesScanned: 0,
+    imagesScanned: 0,
+    missingAltPercent: 0,
+    errorCode: 'AUDIT_FAILED'
+  };
+
+  test.each([
+    'trackImageSeoAuditRequested',
+    'trackImageSeoAuditCompleted',
+    'trackImageSeoAuditFailed'
+  ])('%s creates an audit lead with the default origin', async (helper) => {
+    const loops = require('../../../src/services/loops');
+    await loops[helper](auditArgs);
+
+    const [url, options] = global.fetch.mock.calls[0];
+    expect(url).toMatch(/\/contacts\/create$/);
+    expect(options.method).toBe('POST');
+    const body = JSON.parse(options.body);
+    expect(body).toEqual(expect.objectContaining({
+      email: auditArgs.email,
+      userGroup: 'lead',
+      source: 'image-seo-audit',
+      subscribed: true
+    }));
+    expect(body).not.toHaveProperty('firstName');
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body).eventProperties.source).toBe('image-seo-audit');
+  });
+
+  test.each([
+    ['trackImageSeoAuditRequested', {}],
+    ['trackImageSeoAuditCompleted', { auditScore: 0, pagesScanned: 0, imagesScanned: 0, missingAltPercent: 0 }],
+    ['trackImageSeoAuditFailed', {}]
+  ])('%s updates only audit data on conflict', async (helper, metrics) => {
+    global.fetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: jest.fn().mockResolvedValue({ message: 'Contact already exists' })
+    });
+    const loops = require('../../../src/services/loops');
+    await loops[helper]({ ...auditArgs, source: 'custom-audit-source' });
+
+    const [url, options] = global.fetch.mock.calls[1];
+    expect(url).toMatch(/\/contacts\/update$/);
+    expect(options.method).toBe('PUT');
+    const body = JSON.parse(options.body);
+    expect(body).toEqual({
+      email: auditArgs.email,
+      websiteUrl: auditArgs.websiteUrl,
+      normalizedDomain: auditArgs.normalizedDomain,
+      ...metrics
+    });
+    for (const key of ['subscribed', 'userGroup', 'source', 'firstName']) {
+      expect(body).not.toHaveProperty(key);
+    }
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body).source).toBe('custom-audit-source');
+    expect(JSON.parse(global.fetch.mock.calls[2][1].body).eventProperties.source).toBe('custom-audit-source');
+  });
+
+  test('audit updates omit null metrics', async () => {
+    global.fetch.mockResolvedValueOnce({ ok: false, status: 409, json: jest.fn().mockResolvedValue({}) });
+    const { trackImageSeoAuditCompleted } = require('../../../src/services/loops');
+    await trackImageSeoAuditCompleted({
+      ...auditArgs,
+      auditScore: null,
+      pagesScanned: null,
+      imagesScanned: null,
+      missingAltPercent: null
+    });
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual({
+      email: auditArgs.email,
+      websiteUrl: auditArgs.websiteUrl,
+      normalizedDomain: auditArgs.normalizedDomain
+    });
+  });
+
+  test('audit failures other than conflicts do not update the contact or send events', async () => {
+    global.fetch.mockResolvedValueOnce({ ok: false, status: 500, json: jest.fn().mockResolvedValue({}) });
+    const { trackImageSeoAuditRequested } = require('../../../src/services/loops');
+    await expect(trackImageSeoAuditRequested(auditArgs)).rejects.toMatchObject({ status: 500 });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
   describe('LOOPS_SKIP_DOMAINS', () => {
@@ -134,7 +580,7 @@ describe('Loops multi-plugin integration', () => {
       await sendEvent('generation_completed', eventArgs('user@example.com'));
       expect(global.fetch).toHaveBeenCalledTimes(2);
       await trackAccountCreated({ email: 'user@example.com', userId: 'account-1', pluginId: 'alt_text' });
-      expect(global.fetch).toHaveBeenCalledTimes(5);
+      expect(global.fetch).toHaveBeenCalledTimes(6);
     });
 
     test('missing or invalid emails are never skipped by this rule', () => {
