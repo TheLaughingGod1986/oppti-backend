@@ -4,6 +4,9 @@ const { getPlugin, normalizePluginId } = require('./pluginIdentity');
 
 const LOOPS_BASE = 'https://app.loops.so/api/v1';
 const LOOPS_TIMEOUT_MS = Number(process.env.LOOPS_TIMEOUT_MS || 5000);
+// QA/test account email domains that must never reach Loops.
+// LOOPS_SKIP_DOMAINS (comma-separated) replaces this default when set, even to ''.
+const DEFAULT_LOOPS_SKIP_DOMAINS = 'example.invalid,maxxspace.com,uberip.com,qa.oppti.dev';
 
 function getApiKey() {
   return process.env.LOOPS_API_KEY || '';
@@ -15,6 +18,38 @@ function getPluginUsersListId() {
     throw new Error('LOOPS_PLUGIN_USERS_LIST_ID must be a Loops mailing list ID');
   }
   return listId;
+}
+
+function getSkipDomains() {
+  const raw = process.env.LOOPS_SKIP_DOMAINS === undefined
+    ? DEFAULT_LOOPS_SKIP_DOMAINS
+    : String(process.env.LOOPS_SKIP_DOMAINS);
+  return raw
+    .split(',')
+    .map((domain) => domain.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function getEmailDomain(email) {
+  if (!email || typeof email !== 'string') return null;
+  const at = email.lastIndexOf('@');
+  if (at < 0) return null;
+  const domain = email.slice(at + 1).trim().toLowerCase();
+  return domain || null;
+}
+
+function isLoopsSkippedEmail(email) {
+  const domain = getEmailDomain(email);
+  if (!domain) return false;
+  return getSkipDomains().includes(domain);
+}
+
+function logSkippedEmail(email, context = {}) {
+  logger.info('[loops] Request skipped', {
+    ...context,
+    reason: 'LOOPS_SKIP_DOMAINS',
+    email_domain: getEmailDomain(email)
+  });
 }
 
 function buildIdempotencyKey(...parts) {
@@ -106,6 +141,10 @@ async function upsertPluginContact({
   timestamp = new Date().toISOString(),
   extra = {}
 }) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { path: '/contacts/update', method: 'PUT' });
+    return null;
+  }
   const plugin = getPlugin(pluginId);
   const properties = pluginContactProperties(plugin.id, pluginVersion, timestamp, {
     includeFirstSeen: acquisition
@@ -137,6 +176,10 @@ async function sendEvent(eventName, {
   idempotencyParts = [],
   ...eventProperties
 }) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { path: '/events/send', method: 'POST', event_name: eventName });
+    return null;
+  }
   const plugin = getPlugin(pluginId);
   const identity = userId || email;
   return loopsRequest('POST', '/events/send', {
@@ -490,6 +533,8 @@ async function upsertAuditLeadContact({
 
 module.exports = {
   buildIdempotencyKey,
+  getSkipDomains,
+  isLoopsSkippedEmail,
   pluginContactProperties,
   sendEvent,
   trackAccountCreated,

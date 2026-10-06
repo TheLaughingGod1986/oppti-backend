@@ -19,7 +19,7 @@ const {
   syncLegacySitePointers
 } = require('../services/siteQuota');
 
-const { trackAccountCreated, trackPluginConnected } = require('../../src/services/loops');
+const { trackAccountCreated, trackPluginConnected, isLoopsSkippedEmail } = require('../../src/services/loops');
 const { PLUGIN_IDS } = require('../../src/services/pluginIdentity');
 const { recordPluginConnection } = require('../services/pluginConnections');
 
@@ -167,6 +167,15 @@ async function fireLoopsAccountCreated({ email, userId, pluginId, pluginVersion,
       reason: 'LOOPS_API_KEY missing'
     });
     return trace;
+  }
+
+  if (typeof isLoopsSkippedEmail === 'function' && isLoopsSkippedEmail(email)) {
+    logger.info('[signup] account_created_loops_skipped', {
+      email: maskEmail(email),
+      request_id: requestId || null,
+      reason: 'LOOPS_SKIP_DOMAINS'
+    });
+    return { attempted: false, success: null, skipped: true, error: 'LOOPS_SKIP_DOMAIN' };
   }
 
   try {
