@@ -9,12 +9,35 @@ describe('Loops multi-plugin integration', () => {
       LOOPS_PLUGIN_USERS_LIST_ID: 'list123'
     };
     delete process.env.LOOPS_SKIP_DOMAINS;
-    global.fetch = jest.fn().mockResolvedValue({
+    // By default the contact lookup finds no existing contact.
+    global.fetch = jest.fn().mockImplementation(async (url) => ({
       ok: true,
       status: 200,
-      json: jest.fn().mockResolvedValue({ success: true })
-    });
+      json: jest.fn().mockResolvedValue(String(url).includes('/contacts/find') ? [] : { success: true })
+    }));
   });
+
+  const jsonResponse = (status, body) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: jest.fn().mockResolvedValue(body)
+  });
+  const callsTo = (suffix) => global.fetch.mock.calls.filter(([url]) => String(url).includes(suffix));
+  const updateBody = () => {
+    const updates = callsTo('/contacts/update');
+    expect(updates).toHaveLength(1);
+    return JSON.parse(updates[0][1].body);
+  };
+  // Answers the contact lookup with `findResponse` (or rejects with it if it is an Error).
+  const mockFind = (findResponse) => {
+    global.fetch.mockImplementation(async (url) => {
+      if (String(url).includes('/contacts/find')) {
+        if (findResponse instanceof Error) throw findResponse;
+        return findResponse;
+      }
+      return jsonResponse(200, { success: true });
+    });
+  };
 
   afterEach(() => {
     process.env = originalEnv;
@@ -83,14 +106,105 @@ describe('Loops multi-plugin integration', () => {
     const { trackAccountCreated } = require('../../../src/services/loops');
     await trackAccountCreated({ email: 'user@example.com', userId: 'account-1', pluginId });
 
-    expect(global.fetch.mock.calls[0][0]).toMatch(/\/contacts\/update$/);
-    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual(expect.objectContaining({
+    expect(global.fetch.mock.calls[0][0]).toMatch(/\/contacts\/find\?email=user%40example\.com$/);
+    expect(global.fetch.mock.calls[0][1].method).toBe('GET');
+    expect(global.fetch.mock.calls[0][1]).not.toHaveProperty('body');
+    expect(global.fetch.mock.calls[1][0]).toMatch(/\/contacts\/update$/);
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual(expect.objectContaining({
       source,
+      signupPlugin: pluginId,
       userGroup: 'free',
       acquisitionPluginId: pluginId,
       mailingLists: { list123: true }
     }));
-    expect(global.fetch).toHaveBeenCalledTimes(3);
+    expect(global.fetch).toHaveBeenCalledTimes(4);
+  });
+
+  describe('account creation preserves an existing Loops source', () => {
+    const signup = (pluginId = 'titles') => {
+      const { trackAccountCreated } = require('../../../src/services/loops');
+      return trackAccountCreated({ email: 'lead@example.com', userId: 'account-1', pluginId });
+    };
+    const expectSignupCompleted = () => {
+      const events = callsTo('/events/send').map(([, options]) => JSON.parse(options.body).eventName);
+      expect(events).toEqual(['account_created', 'plugin_connected']);
+    };
+
+    test.each(['image-seo-audit', 'newsletter', 'API'])(
+      'keeps an existing non-empty source (%s)', async (existingSource) => {
+        mockFind(jsonResponse(200, [{ id: 'c1', email: 'lead@example.com', source: existingSource }]));
+        await signup('titles');
+
+        const body = updateBody();
+        expect(body).not.toHaveProperty('source');
+        expect(body).toEqual(expect.objectContaining({
+          signupPlugin: 'titles',
+          userGroup: 'free',
+          acquisitionPluginId: 'titles'
+        }));
+        expectSignupCompleted();
+      }
+    );
+
+    test.each([
+      ['empty string', [{ id: 'c1', source: '' }]],
+      ['whitespace', [{ id: 'c1', source: '   ' }]],
+      ['null', [{ id: 'c1', source: null }]],
+      ['missing', [{ id: 'c1' }]],
+      ['no existing contact', []]
+    ])('sets the plugin source when the existing source is %s', async (_label, contacts) => {
+      mockFind(jsonResponse(200, contacts));
+      await signup('internal_linking');
+
+      expect(updateBody()).toEqual(expect.objectContaining({
+        source: 'internal-linking',
+        signupPlugin: 'internal_linking'
+      }));
+      expectSignupCompleted();
+    });
+
+    test.each([
+      ['an HTTP error', jsonResponse(500, { message: 'boom' })],
+      ['a rate limit', jsonResponse(429, { message: 'slow down' })],
+      ['a network error', new Error('socket hang up')],
+      ['an unexpected response shape', jsonResponse(200, { success: true })]
+    ])('omits source but still completes signup when the lookup returns %s', async (_label, findResponse) => {
+      mockFind(findResponse);
+      await expect(signup('alt_text')).resolves.toBeUndefined();
+
+      const body = updateBody();
+      expect(body).not.toHaveProperty('source');
+      expect(body).toEqual(expect.objectContaining({
+        signupPlugin: 'alt_text',
+        userGroup: 'free',
+        acquisitionPluginId: 'alt_text'
+      }));
+      expectSignupCompleted();
+    });
+
+    test.each([
+      ['alt_text', jsonResponse(200, [])],
+      ['titles', jsonResponse(200, [{ source: 'image-seo-audit' }])],
+      ['internal_linking', jsonResponse(500, {})],
+      ['titles', new Error('timeout')]
+    ])('always sets signupPlugin to %s on account creation', async (pluginId, findResponse) => {
+      mockFind(findResponse);
+      await signup(pluginId);
+      expect(updateBody().signupPlugin).toBe(pluginId);
+    });
+
+    test('non-acquisition updates neither look up the contact nor set signupPlugin', async () => {
+      const { trackPluginConnected, upsertPluginContact } = require('../../../src/services/loops');
+      await trackPluginConnected({ email: 'user@example.com', userId: 'account-1', pluginId: 'titles' });
+      await upsertPluginContact({ email: 'user@example.com', pluginId: 'alt_text', acquisition: false });
+
+      expect(callsTo('/contacts/find')).toHaveLength(0);
+      for (const [, options] of callsTo('/contacts/update')) {
+        const body = JSON.parse(options.body);
+        expect(body).not.toHaveProperty('signupPlugin');
+        expect(body).not.toHaveProperty('source');
+      }
+    });
   });
 
   test.each(['alt_text', 'titles', 'internal_linking'])(
@@ -121,7 +235,7 @@ describe('Loops multi-plugin integration', () => {
       acquisition
     });
 
-    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    const body = updateBody();
     expect(body).toEqual(expect.objectContaining({
       usesInternalLinking: true,
       internalLinkingPluginVersion: '1.2.3',
@@ -305,7 +419,7 @@ describe('Loops multi-plugin integration', () => {
       await sendEvent('generation_completed', eventArgs('user@example.com'));
       expect(global.fetch).toHaveBeenCalledTimes(2);
       await trackAccountCreated({ email: 'user@example.com', userId: 'account-1', pluginId: 'alt_text' });
-      expect(global.fetch).toHaveBeenCalledTimes(5);
+      expect(global.fetch).toHaveBeenCalledTimes(6);
     });
 
     test('missing or invalid emails are never skipped by this rule', () => {
