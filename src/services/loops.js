@@ -139,31 +139,59 @@ function mailingListsPayload() {
   return listId ? { mailingLists: { [listId]: true } } : {};
 }
 
-// Loops /contacts/update overwrites every field it is sent, so an existing
-// contact's `source` (e.g. an audit or newsletter lead) would be lost if we
-// always sent the plugin source on account creation. Only set `source` when
-// we positively know the contact is new or has an empty source; if the lookup
-// fails or is ambiguous, leave it out so we never overwrite by default.
-async function shouldSetContactSource(email) {
+// Loops /contacts/update overwrites every field it is sent, so account
+// creation for an email already in Loops (e.g. an audit or newsletter lead, or
+// a paid customer) must not clobber attribution or lifecycle fields. We look
+// the contact up once and only fill first-touch fields that are empty. If the
+// lookup fails or is ambiguous we omit them all, so we never overwrite by default.
+async function findExistingContact(email) {
   try {
     const contacts = await loopsRequest('GET', `/contacts/find?email=${encodeURIComponent(email)}`);
     if (!Array.isArray(contacts)) {
-      logger.warn('[loops] Contact lookup returned no usable result; leaving source unchanged', {
+      logger.warn('[loops] Contact lookup returned no usable result; leaving first-touch fields unchanged', {
         email_domain: getEmailDomain(email)
       });
-      return false;
+      return { status: 'unknown', contact: null };
     }
-    if (contacts.length === 0) return true;
-    const existingSource = contacts[0] && contacts[0].source;
-    return !(typeof existingSource === 'string' && existingSource.trim() !== '');
+    if (contacts.length === 0) return { status: 'missing', contact: null };
+    return { status: 'found', contact: contacts[0] || {} };
   } catch (error) {
-    logger.warn('[loops] Contact lookup failed; leaving source unchanged', {
+    logger.warn('[loops] Contact lookup failed; leaving first-touch fields unchanged', {
       email_domain: getEmailDomain(email),
       error: error.message,
       status: error.status || null
     });
-    return false;
+    return { status: 'unknown', contact: null };
   }
+}
+
+function isBlankContactValue(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value === 'string') return value.trim() === '';
+  return false;
+}
+
+// Loops assigns "API" as the default source to contacts created via the API
+// without one; that carries no channel attribution, so treat it as empty.
+function isBlankContactSource(value) {
+  return isBlankContactValue(value)
+    || (typeof value === 'string' && value.trim().toLowerCase() === 'api');
+}
+
+// Returns the subset of first-touch account-creation fields that are safe to send.
+function firstTouchAccountFields(lookup, plugin, timestamp) {
+  if (lookup.status === 'unknown') return {};
+  const contact = lookup.contact || {};
+  const isNew = lookup.status === 'missing';
+  const fill = (key, value, isBlank = isBlankContactValue) =>
+    (isNew || isBlank(contact[key]) ? { [key]: value } : {});
+  return {
+    ...fill('source', LOOPS_SOURCE_BY_PLUGIN[plugin.id], isBlankContactSource),
+    ...fill('userGroup', 'free'),
+    ...fill('acquisitionPluginId', plugin.id),
+    ...fill('acquisitionPluginTitle', plugin.title),
+    ...fill('firstPluginSeenAt', timestamp)
+  };
 }
 
 async function upsertPluginContact({
@@ -184,21 +212,16 @@ async function upsertPluginContact({
   const properties = pluginContactProperties(plugin.id, pluginVersion, timestamp, {
     includeFirstSeen: acquisition
   });
-  const setSource = acquisition === true && await shouldSetContactSource(email);
+  const firstTouch = acquisition === true
+    ? firstTouchAccountFields(await findExistingContact(email), plugin, timestamp)
+    : {};
   const payload = {
     email,
     ...(userId ? { userId: String(userId) } : {}),
     ...(firstName ? { firstName } : {}),
     ...mailingListsPayload(),
     ...properties,
-    ...(acquisition === true ? {
-      ...(setSource ? { source: LOOPS_SOURCE_BY_PLUGIN[plugin.id] } : {}),
-      signupPlugin: plugin.id,
-      userGroup: 'free',
-      acquisitionPluginId: plugin.id,
-      acquisitionPluginTitle: plugin.title,
-      firstPluginSeenAt: timestamp
-    } : {}),
+    ...(acquisition === true ? { ...firstTouch, signupPlugin: plugin.id } : {}),
     ...extra
   };
   await loopsRequest('PUT', '/contacts/update', payload);
