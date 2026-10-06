@@ -189,11 +189,13 @@ describe('image SEO audit service', () => {
     }));
     expect(loops.trackImageSeoAuditRequested).toHaveBeenCalledWith(expect.objectContaining({
       email: 'user@example.com',
-      auditId: '00000000-0000-4000-8000-000000000001'
+      auditId: '00000000-0000-4000-8000-000000000001',
+      source: 'image-seo-audit'
     }));
     expect(loops.trackImageSeoAuditCompleted).toHaveBeenCalledWith(expect.objectContaining({
       email: 'user@example.com',
       normalizedDomain: 'example.com',
+      source: 'image-seo-audit',
       auditScore: expect.any(Number)
     }));
   });

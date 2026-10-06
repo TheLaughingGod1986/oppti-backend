@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const logger = require('../../fresh-stack/lib/logger');
-const { getPlugin, normalizePluginId } = require('./pluginIdentity');
+const { getPlugin, normalizePluginId, LOOPS_SOURCE_BY_PLUGIN } = require('./pluginIdentity');
 
 const LOOPS_BASE = 'https://app.loops.so/api/v1';
 const LOOPS_TIMEOUT_MS = Number(process.env.LOOPS_TIMEOUT_MS || 5000);
@@ -113,13 +113,21 @@ async function loopsPost(path, body, options = {}) {
 
 function pluginContactProperties(pluginId, pluginVersion, timestamp, { includeFirstSeen = false } = {}) {
   const plugin = getPlugin(pluginId);
-  const isAltText = plugin.id === 'alt_text';
-  const prefix = isAltText ? 'altText' : 'titles';
+  const prefix = {
+    alt_text: 'altText',
+    titles: 'titles',
+    internal_linking: 'internalLinking'
+  }[plugin.id];
+  const flag = {
+    alt_text: 'usesAltText',
+    titles: 'usesTitles',
+    internal_linking: 'usesInternalLinking'
+  }[plugin.id];
   return {
     lastActivePluginId: plugin.id,
     lastActivePluginTitle: plugin.title,
     lastPluginSeenAt: timestamp,
-    [isAltText ? 'usesAltText' : 'usesTitles']: true,
+    [flag]: true,
     [`${prefix}PluginVersion`]: pluginVersion || '',
     [`${prefix}LastActiveAt`]: timestamp,
     ...(includeFirstSeen ? { [`${prefix}FirstSeenAt`]: timestamp } : {})
@@ -153,11 +161,11 @@ async function upsertPluginContact({
     email,
     ...(userId ? { userId: String(userId) } : {}),
     ...(firstName ? { firstName } : {}),
-    userGroup: 'plugin_user',
-    source: 'plugin_signup',
     ...mailingListsPayload(),
     ...properties,
-    ...(acquisition ? {
+    ...(acquisition === true ? {
+      source: LOOPS_SOURCE_BY_PLUGIN[plugin.id],
+      userGroup: 'free',
       acquisitionPluginId: plugin.id,
       acquisitionPluginTitle: plugin.title,
       firstPluginSeenAt: timestamp
@@ -321,7 +329,9 @@ async function trackPlanUpgraded({
   await loopsRequest('PUT', '/contacts/update', {
     email,
     ...(userId ? { userId: String(userId) } : {}),
-    plan: planName
+    plan: planName,
+    // Subscription updates can report a downgrade to free; only mark real paid plans.
+    ...(planName && String(planName).toLowerCase() !== 'free' ? { userGroup: 'paid' } : {})
   });
   await sendEvent('plan_upgraded', {
     email,
@@ -396,6 +406,7 @@ async function trackPaymentSucceeded({
   await loopsRequest('PUT', '/contacts/update', {
     email,
     plan: planName || '',
+    userGroup: 'paid',
     lastSuccessfulPaymentAt: succeededAt,
     lastSuccessfulPaymentPlan: planName || '',
     lastSuccessfulPaymentPurchaseType: purchaseType || '',
@@ -423,7 +434,7 @@ async function trackImageSeoAuditRequested({
   websiteUrl,
   normalizedDomain,
   auditId,
-  source = 'image_seo_audit'
+  source = 'image-seo-audit'
 }) {
   await upsertAuditLeadContact({ email, websiteUrl, normalizedDomain, source });
   await loopsPost('/events/send', {
@@ -447,7 +458,7 @@ async function trackImageSeoAuditCompleted({
   pagesScanned,
   imagesScanned,
   missingAltPercent,
-  source = 'image_seo_audit'
+  source = 'image-seo-audit'
 }) {
   await upsertAuditLeadContact({
     email,
@@ -481,7 +492,7 @@ async function trackImageSeoAuditFailed({
   normalizedDomain,
   auditId,
   errorCode,
-  source = 'image_seo_audit'
+  source = 'image-seo-audit'
 }) {
   await upsertAuditLeadContact({ email, websiteUrl, normalizedDomain, source });
   await loopsPost('/events/send', {
@@ -509,12 +520,8 @@ async function upsertAuditLeadContact({
 }) {
   const body = {
     email,
-    firstName: '',
-    userGroup: 'audit_lead',
-    source,
     websiteUrl,
-    normalizedDomain,
-    subscribed: true
+    normalizedDomain
   };
   if (auditScore !== null) body.auditScore = auditScore;
   if (pagesScanned !== null) body.pagesScanned = pagesScanned;
@@ -522,7 +529,12 @@ async function upsertAuditLeadContact({
   if (missingAltPercent !== null) body.missingAltPercent = missingAltPercent;
 
   try {
-    await loopsRequest('POST', '/contacts/create', body);
+    await loopsRequest('POST', '/contacts/create', {
+      ...body,
+      userGroup: 'lead',
+      source,
+      subscribed: true
+    });
   } catch (error) {
     if (error.status !== 409) {
       throw error;

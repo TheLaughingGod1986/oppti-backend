@@ -68,7 +68,8 @@ function stripToLegacySitePayload(payload = {}) {
 
 function createSupabaseMock({
   legacySiteSchema = false,
-  missingSiteMembershipsTable = false
+  missingSiteMembershipsTable = false,
+  pluginConnectionInsertError = null
 } = {}) {
   const licenses = [];
   const sites = [];
@@ -353,6 +354,9 @@ function createSupabaseMock({
             return buildFilterableChain(pluginConnections);
           },
           insert(payload) {
+            if (pluginConnectionInsertError) {
+              return Promise.resolve({ data: null, error: pluginConnectionInsertError });
+            }
             const row = {
               id: `plugin_connection_${pluginConnections.length + 1}`,
               first_connected_at: new Date().toISOString(),
@@ -390,6 +394,36 @@ function createApp(supabase, { includeLicenseRoutes = false } = {}) {
 }
 
 describe('site-aware auth linking', () => {
+  test.each([null, {
+    code: '23514',
+    message: 'account_plugin_connections_plugin_id_check violated'
+  }])('internal linking register/login succeeds with connection insert error %j', async (pluginConnectionInsertError) => {
+    const supabase = createSupabaseMock({ pluginConnectionInsertError });
+    const app = createApp(supabase);
+    const credentials = {
+      email: 'internal-linking@example.com',
+      password: 'Password123!',
+      plugin_id: 'internal_linking',
+      plugin_version: '1.0.0'
+    };
+    const logger = require('../../lib/logger');
+    const warning = jest.spyOn(logger, 'warn');
+    try {
+      const registered = await request(app).post('/auth/register').send(credentials).expect(200);
+      expect(registered.body.success).toBe(true);
+      const loggedIn = await request(app).post('/auth/login').send(credentials).expect(200);
+      expect(loggedIn.body.success).toBe(true);
+      if (pluginConnectionInsertError) {
+        expect(warning).toHaveBeenCalledWith('[auth] plugin_connection_state_failed', expect.objectContaining({
+          plugin_id: 'internal_linking',
+          error: pluginConnectionInsertError.message
+        }));
+      }
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   test('same site registered with two emails resolves to one canonical site and shared membership', async () => {
     const supabase = createSupabaseMock();
     const app = createApp(supabase);
