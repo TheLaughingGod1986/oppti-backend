@@ -401,7 +401,8 @@ async function aggregateUsageByFeature(supabase, { site, licenseKey, periodStart
       .from('usage_logs')
       .select('feature_type, credits_used')
       .gte('created_at', periodStart)
-      .lt('created_at', periodEnd);
+      .lt('created_at', periodEnd)
+      .or('is_trial.is.null,is_trial.eq.false');
 
     query = site?.site_hash
       ? query.eq('site_hash', site.site_hash)
@@ -537,7 +538,8 @@ async function selectEffectiveSiteQuotaRead(supabase, {
       .from('usage_logs')
       .select('credits_used, created_at, license_key, site_hash')
       .gte('created_at', auditContext.period_start)
-      .lt('created_at', auditContext.period_end);
+      .lt('created_at', auditContext.period_end)
+      .or('is_trial.is.null,is_trial.eq.false');
 
     if (site?.site_hash) {
       usageQuery = usageQuery.eq('site_hash', site.site_hash);
