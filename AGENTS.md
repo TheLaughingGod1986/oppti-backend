@@ -125,6 +125,38 @@ Notes:
 - Loads `.env` and `.env.local`.
 - Uses `DATABASE_URL` when present, otherwise falls back to `SUPABASE_URL` plus `SUPABASE_SERVICE_ROLE_KEY`.
 
+Stripe entitlement repair:
+
+```bash
+npm run repair:stripe-entitlement -- --subscription-id <sub-id> --license-key <key>
+npm run repair:stripe-entitlement -- --subscription-id <sub-id> --license-key <key> --site-id <uuid> --write
+```
+
+Notes:
+- Dry-run is the default; add `--write` to repair the site subscription, license pointers, current-period quota, and legacy subscription row.
+- Requires `STRIPE_SECRET_KEY`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`; use `--site-id` or `--site-url` when the license has multiple sites.
+
+Loops contact backfill:
+
+```bash
+npm run backfill:loops-contacts -- --limit=10
+npm run backfill:loops-contacts -- --email=user@example.com --write
+```
+
+Notes:
+- Dry-run is the default; add `--write` to update plugin connections and Loops contacts.
+- Requires Supabase credentials; write mode also requires `LOOPS_API_KEY` and `LOOPS_PLUGIN_USERS_LIST_ID`.
+
+Local optimizer audit development without production secrets:
+
+```bash
+npm run dev:local
+```
+
+Notes:
+- Starts on `http://127.0.0.1:4000` by default with no database client and permits private URLs for local wp-env audit crawls.
+- Database-backed and billing routes are unavailable; never enable the private-URL bypass in production.
+
 ## Smoke Test
 
 ```bash
