@@ -3002,7 +3002,8 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         attemptId: mode === 'payment' && selectedPlanId === 'credits' ? crypto.randomUUID() : null
       });
       const session = await stripeClient.checkout.sessions.create(checkoutPayload, { idempotencyKey });
-      res.json({ success: true, url: session.url, sessionId: session.id });
+      // sessionId kept for existing clients; session_id/checkout_url are aliases.
+      res.json({ success: true, url: session.url, sessionId: session.id, session_id: session.id, checkout_url: session.url });
     } catch (error) {
       logger.error('[billing] checkout error', error.message);
       res.status(500).json({ error: 'Failed to create checkout session' });

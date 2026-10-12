@@ -512,6 +512,14 @@ describe('POST /billing/checkout', () => {
       });
 
     expect(res.status).toBe(200);
+    // Session id + URL are returned so the plugin never needs a static Payment Link.
+    expect(res.body).toEqual(expect.objectContaining({
+      success: true,
+      url: 'https://stripe.test/starter',
+      sessionId: 'cs_starter',
+      session_id: 'cs_starter',
+      checkout_url: 'https://stripe.test/starter'
+    }));
     expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({
       mode: 'subscription',
       customer_email: 'starter@example.com',
