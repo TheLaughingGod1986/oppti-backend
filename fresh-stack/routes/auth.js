@@ -22,6 +22,8 @@ const {
 const { trackAccountCreated, trackPluginConnected, isLoopsSkippedEmail } = require('../../src/services/loops');
 const { PLUGIN_IDS } = require('../../src/services/pluginIdentity');
 const { recordPluginConnection } = require('../services/pluginConnections');
+const { normalizeSignupSource } = require('../lib/signupSource');
+const { identifyServerUser } = require('../lib/posthog');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = '30d';
@@ -480,6 +482,50 @@ async function loadAuthEntitlementState({
   }
 }
 
+async function recordSignupSource({ supabase, user, body, pluginId, requestId }) {
+  const { source, other, invalid } = normalizeSignupSource(body);
+  if (invalid) {
+    logger.warn('[Auth] Ignoring unknown signup_source', { value: invalid, requestId });
+  }
+  if (!source || !user?.id) return null;
+
+  // Separate best-effort update (not part of the insert) so sign-up keeps
+  // working even if the migration has not been applied yet.
+  try {
+    const { error } = await supabase
+      .from('licenses')
+      .update({ signup_source: source, signup_source_other: other })
+      .eq('id', user.id);
+    if (error) {
+      logger.warn('[Auth] signup_source write failed', {
+        requestId,
+        error: serializeSupabaseError(error)
+      });
+    } else {
+      user.signup_source = source;
+      user.signup_source_other = other;
+    }
+  } catch (error) {
+    logger.warn('[Auth] signup_source write threw', { requestId, error: error.message });
+  }
+
+  try {
+    await identifyServerUser({
+      distinctId: user.id,
+      properties: {
+        $set: {
+          signup_source: source,
+          signup_source_other: other,
+          ...(pluginId ? { signup_source_plugin: pluginId } : {})
+        }
+      }
+    });
+  } catch (error) {
+    logger.warn('[Auth] signup_source PostHog identify failed', { requestId, error: error.message });
+  }
+  return { source, other };
+}
+
 function createAuthRouter({ supabase }) {
   const router = express.Router();
 
@@ -531,7 +577,11 @@ function createAuthRouter({ supabase }) {
       is_multisite: z.boolean().optional(),
       plugin_version: z.string().optional(),
       plugin_id: z.enum(PLUGIN_IDS).optional().default('alt_text'),
-      wordpress_version: z.string().optional()
+      wordpress_version: z.string().optional(),
+      // Optional "How did you find us?" answer. Accepted loosely and validated
+      // by normalizeSignupSource so a bad value can never fail sign-up.
+      signup_source: z.any().optional(),
+      signup_source_other: z.any().optional()
     });
 
     const parsed = schema.safeParse(req.body);
@@ -665,6 +715,13 @@ function createAuthRouter({ supabase }) {
       registerTrace.license_write.success = true;
       registerTrace.license_write.error = null;
       registerTrace.user_id = user.id;
+      await recordSignupSource({
+        supabase,
+        user,
+        body: parsed.data,
+        pluginId: parsed.data.plugin_id,
+        requestId: req.id || null
+      });
       registerTrace.license_key_prefix = redactLicenseKey(user.license_key);
       await ensurePluginConnection({
         supabase,
