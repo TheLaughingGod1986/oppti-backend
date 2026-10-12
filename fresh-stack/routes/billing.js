@@ -833,6 +833,17 @@ function buildBillingInfoFromSiteSubscription(subscription, fallbackBilling) {
   };
 }
 
+/**
+ * Ghost rows (status=active with no Stripe customer/subscription ids) are
+ * data drift from incomplete writes. Treating them as real subscriptions
+ * dead-ends Pro checkout with SITE_LIMIT_EXCEEDED while Starter still works.
+ */
+function hasStripeBillingIdentity(subscription) {
+  return Boolean(
+    subscription?.stripe_subscription_id || subscription?.stripe_customer_id
+  );
+}
+
 async function selectLatestSiteSubscription(query, context = {}) {
   if (!query) {
     return null;
@@ -841,7 +852,7 @@ async function selectLatestSiteSubscription(query, context = {}) {
   const { data, error } = await query
     .in('status', ACTIVE_BILLING_STATUSES)
     .order('current_period_end', { ascending: false, nullsFirst: false })
-    .limit(1);
+    .limit(5);
 
   if (error) {
     logger.warn('[billing] site subscription lookup failed', {
@@ -851,7 +862,16 @@ async function selectLatestSiteSubscription(query, context = {}) {
     return null;
   }
 
-  return Array.isArray(data) && data.length ? data[0] : null;
+  const rows = Array.isArray(data) ? data : [];
+  const concrete = rows.find(hasStripeBillingIdentity) || null;
+  if (!concrete && rows.length) {
+    logger.warn('[billing] ignoring ghost site_subscriptions without Stripe identity', {
+      ...context,
+      ignored_count: rows.length,
+      plan_ids: rows.map((row) => row?.plan_id).filter(Boolean)
+    });
+  }
+  return concrete;
 }
 
 async function selectBillingSiteSubscriptionForLicense(supabase, license) {
@@ -2869,20 +2889,24 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       }
 
       // Enforce the single-site subscription limit — but ONLY when there is a
-      // genuinely active subscription on the same plan. This previously keyed off
-      // the dual-written legacy `licenses.plan` column, which can drift out of
-      // sync with the real entitlement: a free account whose legacy row still
-      // read `pro` got a false 403 here, dead-ending the Pro upgrade while
-      // Starter/credits worked. `existingSubscription` comes from
-      // `site_subscriptions` filtered to active statuses, so it's the source of
-      // truth. (The active-sub-with-customer case already returned a billing
-      // portal redirect above; this only guards the rare active-sub-without-
+      // genuinely active subscription on the same plan with a Stripe identity.
+      // This previously keyed off the dual-written legacy `licenses.plan`
+      // column, which can drift out of sync with the real entitlement: a free
+      // account whose legacy row still read `pro` got a false 403 here,
+      // dead-ending the Pro upgrade while Starter/credits worked.
+      // Ghost site_subscriptions (active + plan_id, but no customer /
+      // subscription ids) must not block checkout either — they have no Stripe
+      // object to manage and are not a real duplicate-subscription risk.
+      // (The active-sub-with-customer case already returned a billing portal
+      // redirect above; this only guards the rare active-sub-without-
       // resolvable-customer edge case, preventing a duplicate subscription.)
       if (mode === 'subscription'
         && existingSubscription
+        && hasStripeBillingIdentity(existingSubscription)
         && normalizePlanValue(existingSubscription.plan_id) === selectedPlanId) {
         return res.status(403).json({
           error: 'SITE_LIMIT_EXCEEDED',
+          code: 'SITE_LIMIT_EXCEEDED',
           message: 'This subscription plan is limited to 1 site per subscription.',
           plan: selectedPlanId
         });
@@ -2957,18 +2981,35 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         checkoutPayload.payment_intent_data = { metadata };
       }
 
+      // Always include a per-request attempt id. A stable key (license+site+price
+      // only) gets stuck for 24h when Stripe caches an error — or when checkout
+      // payload/metadata changes under the same key (idempotency params mismatch).
+      // Credits already used a fresh UUID; subscriptions need the same behaviour.
+      // Double-submit protection is handled by checkCheckoutRateLimit above.
+      const attemptId = crypto.randomUUID();
       const idempotencyKey = buildCheckoutIdempotencyKey({
         licenseKey: metadata.license_key,
         siteId: metadata.site_id,
         priceId,
         billingCycle: metadata.billing_interval,
-        attemptId: mode === 'payment' && selectedPlanId === 'credits' ? crypto.randomUUID() : null
+        attemptId
       });
       const session = await stripeClient.checkout.sessions.create(checkoutPayload, { idempotencyKey });
       res.json({ success: true, url: session.url, sessionId: session.id });
     } catch (error) {
-      logger.error('[billing] checkout error', error.message);
-      res.status(500).json({ error: 'Failed to create checkout session' });
+      const stripeMessage = typeof error?.message === 'string' ? error.message.trim() : '';
+      logger.error('[billing] checkout error', {
+        message: stripeMessage || String(error),
+        type: error?.type || null,
+        code: error?.code || null,
+        param: error?.param || null
+      });
+      res.status(500).json({
+        success: false,
+        error: 'STRIPE_ERROR',
+        code: 'STRIPE_ERROR',
+        message: stripeMessage || 'Failed to create checkout session'
+      });
     }
   });
 

@@ -5,7 +5,8 @@ const { recordPluginConnection } = require('./pluginConnections');
 
 const FEATURE_LABELS = {
   alt_text: 'OpptiAI Alt Text',
-  title_meta: 'OpptiAI Titles'
+  title_meta: 'OpptiAI Titles',
+  internal_linking: 'OpptiAI Internal Linking'
 };
 
 const LABEL_TO_FEATURE = Object.fromEntries(

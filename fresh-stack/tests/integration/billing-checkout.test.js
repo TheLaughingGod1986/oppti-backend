@@ -467,6 +467,97 @@ describe('POST /billing/checkout', () => {
     expect(stripeClient.checkout.sessions.create).toHaveBeenCalledTimes(3);
   });
 
+  test('issues a fresh idempotency key for each Starter subscription checkout', async () => {
+    const stripeClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn()
+            .mockResolvedValueOnce({ id: 'cs_starter_1', url: 'https://stripe.test/starter-1' })
+            .mockResolvedValueOnce({ id: 'cs_starter_2', url: 'https://stripe.test/starter-2' })
+        }
+      }
+    };
+
+    const supabase = createSupabaseMock({
+      siteRecord: {
+        id: 'site_starter_fresh',
+        site_hash: 'site_hash_starter_fresh',
+        license_key: 'lic_starter_fresh'
+      }
+    });
+
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: {
+        id: 'account_starter_fresh',
+        email: 'starter-fresh@example.com',
+        license_key: 'lic_starter_fresh',
+        plan: 'free'
+      }
+    });
+
+    const first = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_starter_fresh')
+      .send({ priceId: 'price_starter', successUrl: 'https://app.example.com/s', cancelUrl: 'https://app.example.com/c' });
+
+    const second = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_starter_fresh')
+      .send({ priceId: 'price_starter', successUrl: 'https://app.example.com/s', cancelUrl: 'https://app.example.com/c' });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledTimes(2);
+    const firstKey = stripeClient.checkout.sessions.create.mock.calls[0][1].idempotencyKey;
+    const secondKey = stripeClient.checkout.sessions.create.mock.calls[1][1].idempotencyKey;
+    expect(firstKey).toMatch(/^checkout:/);
+    expect(secondKey).toMatch(/^checkout:/);
+    expect(firstKey).not.toBe(secondKey);
+  });
+
+  test('surfaces Stripe error messages instead of a generic checkout failure', async () => {
+    const stripeClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn().mockRejectedValue(new Error('Keys for idempotent requests can only be used with the same parameters they were first used with'))
+        }
+      }
+    };
+
+    const supabase = createSupabaseMock({
+      siteRecord: {
+        id: 'site_starter_err',
+        site_hash: 'site_hash_starter_err',
+        license_key: 'lic_starter_err'
+      }
+    });
+
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: {
+        id: 'account_starter_err',
+        email: 'starter-err@example.com',
+        license_key: 'lic_starter_err',
+        plan: 'free'
+      }
+    });
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_starter_err')
+      .send({ priceId: 'price_starter', successUrl: 'https://app.example.com/s', cancelUrl: 'https://app.example.com/c' });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual(expect.objectContaining({
+      code: 'STRIPE_ERROR',
+      error: 'STRIPE_ERROR',
+      message: expect.stringMatching(/idempotent/i)
+    }));
+  });
+
   test('uses the Starter Stripe price and starter plan metadata', async () => {
     const stripeClient = {
       checkout: {
@@ -606,6 +697,49 @@ describe('POST /billing/checkout', () => {
     expect(res.status).toBe(403);
     expect(res.body).toEqual(expect.objectContaining({ error: 'SITE_LIMIT_EXCEEDED', plan: 'pro' }));
     expect(stripeClient.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  test('allows Pro checkout when the only site_subscription is a ghost row without Stripe identity', async () => {
+    const stripeClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn().mockResolvedValue({
+            id: 'cs_pro_ghost',
+            url: 'https://stripe.test/pro-ghost'
+          })
+        }
+      },
+      billingPortal: { sessions: { create: jest.fn() } }
+    };
+
+    const supabase = createSupabaseMock({
+      siteRecord: { id: 'site_ghost', site_hash: 'site_hash_ghost', license_key: 'lic_ghost' },
+      siteSubscriptions: [{
+        id: 'site_sub_ghost',
+        site_id: 'site_ghost',
+        plan_id: 'pro',
+        stripe_customer_id: null,
+        stripe_subscription_id: null,
+        status: 'active',
+        billing_interval: 'month',
+        current_period_end: '2026-07-01T00:00:00.000Z'
+      }]
+    });
+
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: { id: 'account_ghost', email: 'ghost@example.com', license_key: 'lic_ghost', plan: 'free' }
+    });
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_ghost')
+      .send({ priceId: 'price_pro', successUrl: 'https://app.example.com/s', cancelUrl: 'https://app.example.com/c' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({ success: true, url: 'https://stripe.test/pro-ghost' }));
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalled();
   });
 
   test('redirects active subscription customers to the billing portal instead of creating checkout', async () => {

@@ -15,6 +15,7 @@ const { createBillingRouter, createBillingWebhookHandler } = require('./routes/b
 const { createUsageRouter } = require('./routes/usage');
 const { createAltTextRouter } = require('./routes/altText');
 const { createTitlesRouter } = require('./routes/titles');
+const { createLinkingRouter } = require('./routes/linking');
 const { createReviewRouter } = require('./routes/review');
 const { createJobsRouter } = require('./routes/jobs');
 const { createLicenseRouter } = require('./routes/license');
@@ -60,6 +61,7 @@ const PROTECTED_API_PREFIXES = [
   '/api/licenses',
   '/api/review',
   '/api/titles',
+  '/api/linking',
   '/api/usage',
   '/api/auth',
   '/api/optimizer'
@@ -417,6 +419,11 @@ function createApp({
     getSiteFromHeaders,
     createJob: queue.createJob,
     getJobRecord: queue.getJobRecord
+  }));
+
+  app.use('/api/linking', createLinkingRouter({
+    supabase: supabaseClient,
+    checkRateLimit: async (siteKey) => checkRateLimit(siteKey)
   }));
 
   const billingRouterInstance = createBillingRouter({

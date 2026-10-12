@@ -31,7 +31,7 @@ function buildPlansList(priceIds = {}) {
     },
     {
       id: 'pro',
-      name: 'Growth',
+      name: 'Pro',
       badge: 'Best value',
       price: 12.99,
       currency: 'gbp',
@@ -45,7 +45,7 @@ function buildPlansList(priceIds = {}) {
         'Autopilot for new uploads',
         'Cancel anytime'
       ],
-      cta: 'Upgrade to Growth',
+      cta: 'Upgrade to Pro',
       priceId: priceIds.pro,
       trialDays: 0,
       scope: 'site',
