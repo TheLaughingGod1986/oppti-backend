@@ -20,6 +20,12 @@ const {
 } = require('../services/quota');
 const { upsertGeneratedImageAltState } = require('../services/imageAltState');
 const { recordUsage } = require('../services/usage');
+const {
+  claimIdempotencyKey,
+  getClaim,
+  completeIdempotencyClaim,
+  releaseIdempotencyClaim
+} = require('../services/idempotencyClaims');
 const { findOrCreateTrialSite } = require('../services/site');
 const { buildSiteIdentity, normalizeDomain } = require('../lib/siteIdentity');
 const { hashRequestFingerprint } = require('../services/siteQuota');
@@ -60,6 +66,74 @@ function extractIdempotencyKey(req) {
     || req.body?.idempotency_key
     || req.body?.idempotencyKey
     || null;
+}
+
+const IDEMPOTENCY_WAIT_MS = Number(process.env.ALT_TEXT_IDEMPOTENCY_WAIT_MS || 20000);
+const IDEMPOTENCY_POLL_MS = Number(process.env.ALT_TEXT_IDEMPOTENCY_POLL_MS || 250);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Claim the Idempotency-Key before any credit hold. Returns null when this
+ * request owns the key (and wires completion/release onto the response), or
+ * true when a response was already sent (replay of the first result or 409).
+ */
+async function claimOrAwaitIdempotencyKey(supabase, req, res, { scope, key, generationRunId }) {
+  const deadline = Date.now() + IDEMPOTENCY_WAIT_MS;
+  for (;;) {
+    const claim = await claimIdempotencyKey(supabase, { scope, key, requestId: req.id || null });
+    if (claim.claimed) {
+      if (!claim.degraded) bindClaimToResponse(supabase, res, { scope, key });
+      return null;
+    }
+    const existing = claim.existing;
+    if (existing && existing.status === 'succeeded' && existing.response_body) {
+      logger.info('[altText] Idempotent replay of completed generation', { generation_run_id: generationRunId, scope });
+      res.setHeader('Idempotent-Replayed', 'true');
+      return res.status(existing.response_status || 200).json({ ...existing.response_body, idempotent_replay: true }) && true;
+    }
+    if (Date.now() >= deadline) {
+      logger.warn('[altText] Idempotency key still in progress', { generation_run_id: generationRunId, scope });
+      res.setHeader('Retry-After', '2');
+      return res.status(409).json({
+        error: 'IDEMPOTENCY_IN_PROGRESS',
+        code: 'IDEMPOTENCY_IN_PROGRESS',
+        error_code: 'IDEMPOTENCY_IN_PROGRESS',
+        generation_run_id: generationRunId,
+        message: 'This image is already being processed. Please try again in a moment.',
+        retryable: true
+      }) && true;
+    }
+    await sleep(IDEMPOTENCY_POLL_MS);
+    const latest = await getClaim(supabase, { scope, key });
+    if (latest && latest.status === 'succeeded' && latest.response_body) {
+      res.setHeader('Idempotent-Replayed', 'true');
+      return res.status(latest.response_status || 200).json({ ...latest.response_body, idempotent_replay: true }) && true;
+    }
+    // Either still in progress (loop and wait) or released after a failure
+    // (loop and claim it ourselves).
+  }
+}
+
+function bindClaimToResponse(supabase, res, { scope, key }) {
+  let settled = false;
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    if (!settled) {
+      settled = true;
+      const status = res.statusCode || 200;
+      const done = status >= 200 && status < 300
+        ? completeIdempotencyClaim(supabase, { scope, key, status, body })
+        : releaseIdempotencyClaim(supabase, { scope, key });
+      res.locals.idempotencyClaimSettled = done.catch(() => {});
+    }
+    return originalJson(body);
+  };
+  res.on('close', () => {
+    if (!settled) {
+      settled = true;
+      res.locals.idempotencyClaimSettled = releaseIdempotencyClaim(supabase, { scope, key }).catch(() => {});
+    }
+  });
 }
 
 function firstString(...values) {
@@ -935,6 +1009,16 @@ function createAltTextRouter({
       regenerate,
       anonymousContext
     });
+
+    if (idempotencyKey) {
+      const claimScope = siteIdentity.siteHash || req.trialSiteHash || licenseKey || 'anonymous';
+      const handled = await claimOrAwaitIdempotencyKey(supabase, req, res, {
+        scope: String(claimScope),
+        key: String(idempotencyKey),
+        generationRunId
+      });
+      if (handled) return undefined;
+    }
 
     const quotaMetadata = {
       request_id: req.id || null,
