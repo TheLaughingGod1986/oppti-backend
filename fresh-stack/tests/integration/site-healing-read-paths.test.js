@@ -10,6 +10,33 @@ const { buildDashboardStateTruth } = require('../../services/dashboardStateTruth
 const { resolveImageAltStateSiteContext } = require('../../services/imageAltState');
 const logger = require('../../lib/logger');
 
+function parseFilterValue(raw) {
+  if (raw === 'null') return null;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (raw !== '' && !Number.isNaN(Number(raw))) return Number(raw);
+  return raw;
+}
+
+// Minimal PostgREST `.or()` support: "col.op.value,col.op.value" (eq, neq, is, gt, gte, lt, lte).
+function matchesOrFilter(row, expression) {
+  return String(expression || '').split(',').some((clause) => {
+    const [column, op, ...rest] = clause.trim().split('.');
+    const expected = parseFilterValue(rest.join('.'));
+    const actual = row?.[column] === undefined ? null : row[column];
+    switch (op) {
+      case 'is': return actual === expected;
+      case 'eq': return actual !== null && actual === expected;
+      case 'neq': return actual !== null && actual !== expected;
+      case 'gt': return actual !== null && actual > expected;
+      case 'gte': return actual !== null && actual >= expected;
+      case 'lt': return actual !== null && actual < expected;
+      case 'lte': return actual !== null && actual <= expected;
+      default: throw new Error(`Unsupported or() operator: ${op}`);
+    }
+  });
+}
+
 function createQuery(rows, { countMode = false, error = null } = {}) {
   const state = {
     rows: Array.isArray(rows) ? rows.slice() : [],
@@ -51,6 +78,10 @@ function createQuery(rows, { countMode = false, error = null } = {}) {
         }
         return rowValue < value;
       });
+      return chain;
+    },
+    or(expression) {
+      state.rows = state.rows.filter((row) => matchesOrFilter(row, expression));
       return chain;
     },
     order(column, options = {}) {
@@ -378,7 +409,9 @@ function getCurrentQuotaWindow() {
 }
 
 function seedLinkedSiteWithStaleQuotaAndUsage(supabase, account, {
-  creditsUsed = [1]
+  creditsUsed = [1],
+  trialFlags = [],
+  monthlyIncludedCredits = 50
 } = {}) {
   const { quotaPeriodStart, quotaPeriodEnd } = getCurrentQuotaWindow();
   const site = {
@@ -404,11 +437,11 @@ function seedLinkedSiteWithStaleQuotaAndUsage(supabase, account, {
     site_id: site.id,
     quota_period_start: quotaPeriodStart,
     quota_period_end: quotaPeriodEnd,
-    monthly_included_credits: 50,
+    monthly_included_credits: monthlyIncludedCredits,
     purchased_credits_balance: 0,
     bonus_credits_balance: 0,
     used_credits: 0,
-    remaining_credits: 50,
+    remaining_credits: monthlyIncludedCredits,
     reset_source: 'quota_read_healing',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
@@ -421,7 +454,8 @@ function seedLinkedSiteWithStaleQuotaAndUsage(supabase, account, {
       license_key: account.license_key,
       site_hash: site.site_hash,
       credits_used: creditCount,
-      created_at: createdAt
+      created_at: createdAt,
+      ...(index < trialFlags.length ? { is_trial: trialFlags[index] } : {})
     });
   });
 
@@ -639,6 +673,39 @@ describe('authenticated site healing on read paths', () => {
       used_credits: 0,
       remaining_credits: 50
     }));
+  });
+
+  test('quota status excludes guest-trial usage rows from the free allowance', async () => {
+    const supabase = createSupabaseMock();
+    const account = supabase._state.licenses[0];
+    // Production free plan is 25 credits.
+    Object.assign(supabase._state.plans[0], { monthly_included_credits: 25, credit_grant_amount: 25 });
+    // 10 guest-trial rows, then 14 signed-in rows (one null is_trial legacy row must still count).
+    const trialFlags = [
+      ...Array(10).fill(true),
+      ...Array(13).fill(false),
+      null
+    ];
+    seedLinkedSiteWithStaleQuotaAndUsage(supabase, account, {
+      creditsUsed: Array(24).fill(1),
+      trialFlags,
+      monthlyIncludedCredits: 25
+    });
+
+    const result = await getQuotaStatus(supabase, {
+      account,
+      licenseKey: account.license_key,
+      siteHash: 'site-legacy-credits',
+      installUuid: 'site-legacy-credits',
+      siteUrl: 'https://legacy-credits.example.com/wp-admin/',
+      siteFingerprint: 'fp-legacy-credits',
+      requestId: 'req-exclude-trial-rows'
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.total_limit).toBe(25);
+    expect(result.credits_used).toBe(14);
+    expect(result.credits_remaining).toBe(11);
   });
 
   test('quota status keeps paid site_quotas authoritative when legacy usage logs are higher', async () => {

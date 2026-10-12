@@ -11,6 +11,33 @@ const logger = require('../../lib/logger');
 const { getAnonymousTrialStatus } = require('../../services/anonymousTrial');
 const { getQuotaStatus, reserveGenerationQuota } = require('../../services/quota');
 
+function parseFilterValue(raw) {
+  if (raw === 'null') return null;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (raw !== '' && !Number.isNaN(Number(raw))) return Number(raw);
+  return raw;
+}
+
+// Minimal PostgREST `.or()` support: "col.op.value,col.op.value" (eq, neq, is, gt, gte, lt, lte).
+function matchesOrFilter(row, expression) {
+  return String(expression || '').split(',').some((clause) => {
+    const [column, op, ...rest] = clause.trim().split('.');
+    const expected = parseFilterValue(rest.join('.'));
+    const actual = row?.[column] === undefined ? null : row[column];
+    switch (op) {
+      case 'is': return actual === expected;
+      case 'eq': return actual !== null && actual === expected;
+      case 'neq': return actual !== null && actual !== expected;
+      case 'gt': return actual !== null && actual > expected;
+      case 'gte': return actual !== null && actual >= expected;
+      case 'lt': return actual !== null && actual < expected;
+      case 'lte': return actual !== null && actual <= expected;
+      default: throw new Error(`Unsupported or() operator: ${op}`);
+    }
+  });
+}
+
 function createQuery(rows, { countMode = false, error = null } = {}) {
   const state = {
     rows: Array.isArray(rows) ? rows.slice() : [],
@@ -36,6 +63,10 @@ function createQuery(rows, { countMode = false, error = null } = {}) {
     },
     lt(column, value) {
       state.rows = state.rows.filter((row) => row?.[column] < value);
+      return chain;
+    },
+    or(expression) {
+      state.rows = state.rows.filter((row) => matchesOrFilter(row, expression));
       return chain;
     },
     order(column, options = {}) {
