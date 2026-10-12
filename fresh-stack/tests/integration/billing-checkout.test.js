@@ -584,6 +584,46 @@ describe('POST /billing/checkout', () => {
     );
   });
 
+  test('idempotency key covers the full session params: same params dedupe, different return URL or plugin_version do not', async () => {
+    const stripeClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn().mockResolvedValue({ id: 'cs_idem', url: 'https://stripe.test/idem' })
+        }
+      }
+    };
+    const supabase = createSupabaseMock({
+      siteRecord: { id: 'site_idem', site_hash: 'site_hash_idem', license_key: 'lic_idem' },
+      siteSubscriptions: [],
+      licenses: [{ license_key: 'lic_idem', plan: 'free' }]
+    });
+    const app = createApp({
+      supabase,
+      stripeClient,
+      license: { id: 'account_idem', email: 'idem@example.com', license_key: 'lic_idem', plan: 'free' }
+    });
+    const base = {
+      priceId: 'price_pro',
+      successUrl: 'https://app.example.com/s',
+      cancelUrl: 'https://app.example.com/c',
+      plugin_version: '4.6.137'
+    };
+    const send = (body) => request(app).post('/billing/checkout').set('X-Site-Key', 'site_hash_idem').send(body);
+
+    expect((await send(base)).status).toBe(200);
+    expect((await send({ ...base })).status).toBe(200);
+    expect((await send({ ...base, successUrl: 'https://app.example.com/s2' })).status).toBe(200);
+    expect((await send({ ...base, plugin_version: '4.6.138' })).status).toBe(200);
+
+    const keys = stripeClient.checkout.sessions.create.mock.calls.map(([, options]) => options.idempotencyKey);
+    expect(keys).toHaveLength(4);
+    keys.forEach((key) => expect(key).toMatch(/^checkout:[0-9a-f]{64}$/));
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[0]);
+    expect(keys[3]).not.toBe(keys[0]);
+    expect(keys[3]).not.toBe(keys[2]);
+  });
+
   test('still blocks a duplicate subscription when an active same-plan subscription exists without a resolvable customer', async () => {
     const stripeClient = {
       checkout: { sessions: { create: jest.fn() } },

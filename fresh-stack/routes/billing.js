@@ -219,12 +219,36 @@ function checkCheckoutRateLimit(req, { siteKey, priceId, selectedPlanId }) {
   };
 }
 
-function buildCheckoutIdempotencyKey({ licenseKey, siteId, priceId, billingCycle, attemptId }) {
+function canonicalizeForHash(value) {
+  if (Array.isArray(value)) return value.map(canonicalizeForHash);
+  if (value && typeof value === 'object') {
+    return Object.keys(value)
+      .sort()
+      .reduce((acc, key) => {
+        if (value[key] !== undefined) acc[key] = canonicalizeForHash(value[key]);
+        return acc;
+      }, {});
+  }
+  return value;
+}
+
+function hashCheckoutParams(params) {
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(canonicalizeForHash(params || {})))
+    .digest('hex');
+}
+
+// Stripe rejects a reused idempotency key whose request params differ (for 24h),
+// so the key must cover the full session params. It stays deterministic so a
+// true double-click (identical params) still dedupes to the same session.
+function buildCheckoutIdempotencyKey({ licenseKey, siteId, priceId, billingCycle, attemptId, checkoutParams }) {
   const stablePayload = [
     licenseKey || 'anonymous',
     siteId || 'unknown-site',
     priceId || 'unknown-price',
-    billingCycle || 'unknown-cycle'
+    billingCycle || 'unknown-cycle',
+    hashCheckoutParams(checkoutParams)
   ];
   if (attemptId) {
     stablePayload.push(attemptId);
@@ -623,20 +647,24 @@ function normalizeEmailForMatch(email) {
 }
 
 function escapeLikePattern(value) {
-  // Escape LIKE metacharacters so ILIKE behaves as a case-insensitive exact match.
-  return String(value).replace(/[\\%_]/g, (ch) => `\\${ch}`);
+  // Escape LIKE metacharacters (\\, %, _) plus `*`, which PostgREST treats as a
+  // `%` wildcard alias in like/ilike filters, so ILIKE is a case-insensitive exact match.
+  // Candidates are re-verified in JS below, so an escaped `*` can only cause a miss,
+  // never a wrong link.
+  return String(value).replace(/[\\%_*]/g, (ch) => `\\${ch}`);
 }
 
 async function findAccountByEmail(supabase, email) {
+  const trimmedEmail = typeof email === 'string' ? email.trim() : '';
   const normalizedEmail = normalizeEmailForMatch(email);
   if (!supabase || !normalizedEmail) return null;
 
   // `licenses` is the canonical account table in this backend.
-  // 1) Fast path: exact match on the normalized email (uses the email index).
+  // 1) Exact match on the trimmed (case-preserved) Stripe email wins outright.
   const { data, error } = await supabase
     .from('licenses')
     .select(ACCOUNT_SELECT)
-    .eq('email', normalizedEmail)
+    .eq('email', trimmedEmail)
     .maybeSingle();
 
   if (error) {
@@ -649,14 +677,13 @@ async function findAccountByEmail(supabase, email) {
 
   if (data) return data;
 
-  // 2) Case-insensitive exact match for rows stored with different casing.
-  //    ILIKE with escaped % and _ (no wildcards), then re-verify lower(trim()) in JS
-  //    and refuse ambiguous matches so we never link a payment to the wrong account.
+  // 2) Case-insensitive exact match (ILIKE with escaped metacharacters), re-verified
+  //    with lower(trim()) in JS. If 2+ accounts match, link neither.
   const { data: candidates, error: ilikeError } = await supabase
     .from('licenses')
     .select(ACCOUNT_SELECT)
     .ilike('email', escapeLikePattern(normalizedEmail))
-    .limit(2);
+    .limit(3);
 
   if (ilikeError) {
     logger.warn('[billing] case-insensitive account lookup by email failed', {
@@ -3041,7 +3068,8 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         siteId: metadata.site_id,
         priceId,
         billingCycle: metadata.billing_interval,
-        attemptId: mode === 'payment' && selectedPlanId === 'credits' ? crypto.randomUUID() : null
+        attemptId: mode === 'payment' && selectedPlanId === 'credits' ? crypto.randomUUID() : null,
+        checkoutParams: checkoutPayload
       });
       const session = await stripeClient.checkout.sessions.create(checkoutPayload, { idempotencyKey });
       // sessionId kept for existing clients; session_id/checkout_url are aliases.

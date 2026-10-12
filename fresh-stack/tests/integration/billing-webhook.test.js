@@ -568,6 +568,80 @@ describe('POST /billing/webhook', () => {
     ]);
   });
 
+  function buildCiCheckoutEvent(eventId, stripeEmail) {
+    return {
+      id: eventId,
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: `cs_${eventId}`,
+          mode: 'payment',
+          payment_status: 'paid',
+          amount_total: 1999,
+          currency: 'gbp',
+          customer: null,
+          customer_details: { email: stripeEmail },
+          subscription: null,
+          livemode: false,
+          payment_link: 'plink_tie',
+          metadata: {}
+        }
+      }
+    };
+  }
+
+  function ciStripeClient() {
+    return {
+      checkout: {
+        sessions: {
+          listLineItems: jest.fn().mockResolvedValue({
+            data: [{ price: { id: 'price_credits', product: 'prod_credits' } }]
+          })
+        }
+      }
+    };
+  }
+
+  test('email tie: exact (trimmed, case-preserved) match on the mixed-case account wins', async () => {
+    const supabase = createSupabaseMock({
+      accounts: [
+        { id: 'account_lower', email: 'tie@example.com', license_key: 'lic_lower', plan: 'free' },
+        { id: 'account_mixed', email: 'Tie@Example.com', license_key: 'lic_mixed', plan: 'free' }
+      ]
+    });
+    verifyWebhookSignature.mockReturnValue(buildCiCheckoutEvent('evt_tie_exact', ' Tie@Example.com '));
+
+    const res = await sendWebhook(createApp({ supabase, stripeClient: ciStripeClient() }), 'evt_tie_exact');
+
+    expect(res.status).toBe(200);
+    expect(captureServerEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'payment_succeeded',
+      distinctId: 'account_mixed',
+      properties: expect.objectContaining({ account_id: 'account_mixed', license_key: 'lic_mixed' })
+    }));
+  });
+
+  test('email tie: no exact match and 2+ case-insensitive matches links neither', async () => {
+    const supabase = createSupabaseMock({
+      accounts: [
+        { id: 'account_lower', email: 'tie@example.com', license_key: 'lic_lower', plan: 'free' },
+        { id: 'account_mixed', email: 'Tie@Example.com', license_key: 'lic_mixed', plan: 'free' }
+      ]
+    });
+    verifyWebhookSignature.mockReturnValue(buildCiCheckoutEvent('evt_tie_none', 'TIE@EXAMPLE.COM'));
+
+    const res = await sendWebhook(createApp({ supabase, stripeClient: ciStripeClient() }), 'evt_tie_none');
+
+    expect(res.status).toBe(200);
+    const paymentCalls = captureServerEvent.mock.calls.filter(([arg]) => arg.event === 'payment_succeeded');
+    expect(paymentCalls.length).toBeGreaterThan(0);
+    for (const [arg] of paymentCalls) {
+      expect(arg.distinctId).not.toBe('account_lower');
+      expect(arg.distinctId).not.toBe('account_mixed');
+      expect(arg.properties.account_id ?? null).toBeNull();
+    }
+  });
+
   test('does not resend the purchase email for subscription renewal invoices', async () => {
     const supabase = createSupabaseMock({
       accounts: [
