@@ -44,6 +44,18 @@ function buildPrompt(context = {}) {
   return lines.join('\n');
 }
 
+// Whole-generation provider budget. Must stay well under the 2-minute
+// Idempotency-Key claim TTL (services/idempotencyClaims.js), otherwise a
+// still-running request can be taken over and charged twice. The budget is
+// shared by the primary call and the model-missing fallback call.
+const ALT_TEXT_PER_CALL_TIMEOUT_MS = 60000;
+const ALT_TEXT_TOTAL_BUDGET_MS = 90000;
+
+function altTextCallTimeout(startedAt, now = Date.now()) {
+  const remaining = ALT_TEXT_TOTAL_BUDGET_MS - (now - startedAt);
+  return Math.max(1000, Math.min(ALT_TEXT_PER_CALL_TIMEOUT_MS, remaining));
+}
+
 async function generateAltText({ image, context }) {
   const apiKey = process.env.ALTTEXT_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
   // Prefer a vision-capable model; fall back to gpt-4o-mini if not available.
@@ -145,7 +157,7 @@ async function generateAltText({ image, context }) {
             Authorization: `Bearer ${apiKey}`,
             'Content-Type': 'application/json'
           },
-          timeout: 60000
+          timeout: altTextCallTimeout(tsStart)
         }
       );
     } catch (firstError) {
@@ -175,7 +187,7 @@ async function generateAltText({ image, context }) {
               Authorization: `Bearer ${apiKey}`,
               'Content-Type': 'application/json'
             },
-            timeout: 60000
+            timeout: altTextCallTimeout(tsStart)
           }
         );
       } else {
@@ -565,5 +577,7 @@ async function reviewAltText({ altText, image = null, context = {}, service = 'a
 module.exports = {
   generateAltText,
   reviewAltText,
+  altTextCallTimeout,
+  ALT_TEXT_TOTAL_BUDGET_MS,
   buildPrompt
 };
