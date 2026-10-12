@@ -1,3 +1,5 @@
+process.env.OPTIMIZER_AUDIT_ENABLED = 'true';
+
 const {
   gradeFor,
   computeWeekly,

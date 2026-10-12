@@ -22,6 +22,20 @@ const { getOptimizerProgress } = require('../services/optimizerProgress');
 function createOptimizerRouter({ supabase = null } = {}) {
   const router = express.Router();
 
+  // Kill switch: audits stay off until OPTIMIZER_AUDIT_ENABLED=true is set on
+  // the host. Off by default so a live deploy cannot be used as an open crawl
+  // proxy before the Auditor plugin ships. Auth, lasting rate limits and the
+  // redirect/DNS hardenings land before this flag is flipped on.
+  router.use((req, res, next) => {
+    if (process.env.OPTIMIZER_AUDIT_ENABLED !== 'true') {
+      return res.status(503).json({
+        error: 'OPTIMIZER_DISABLED',
+        retryable: false
+      });
+    }
+    return next();
+  });
+
   // Per-site crawl throttle — crawling is the expensive bit.
   const rateLimitMap = new Map();
   const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;

@@ -1,3 +1,5 @@
+process.env.OPTIMIZER_AUDIT_ENABLED = 'true';
+
 const { getOptimizerAudit } = require('../../services/optimizerAudit');
 
 /* Minimal Supabase stub: supports the select-one read and the update-back
