@@ -1,13 +1,29 @@
 const logger = require('../lib/logger');
 
 // Website Auditor check ids accepted for sign-up attribution (new ids only).
+// Mirrors check_categories() in the Auditor's includes/check-copy.php plus
+// title_too_long. Must equal fresh-stack/tests/fixtures/auditor-check-ids.json
+// (a test enforces this). The DB only checks the format.
 const AUDITOR_FINDING_IDS = Object.freeze([
   'missing_alt',
+  'needs_review',
+  'missing_title',
+  'duplicate_title',
+  'missing_meta',
+  'noindex_pages',
+  'canonical_missing',
+  'og_tags_missing',
+  'orphan_pages',
+  'thin_links',
   'search_engines_discouraged',
   'https_not_enforced',
+  'robots_txt',
   'sitemap_missing',
-  'canonical_missing',
-  'og_tags_missing'
+  'llms_txt',
+  'schema',
+  'performance',
+  'accessibility',
+  'title_too_long'
 ]);
 
 // Pre-rename check names, mapped the same way Alt Text #61 maps them.

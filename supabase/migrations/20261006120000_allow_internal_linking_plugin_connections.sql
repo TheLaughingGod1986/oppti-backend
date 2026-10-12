@@ -23,7 +23,5 @@ ALTER TABLE public.licenses
   DROP CONSTRAINT IF EXISTS licenses_auditor_finding_check;
 ALTER TABLE public.licenses
   ADD CONSTRAINT licenses_auditor_finding_check
-  CHECK (auditor_finding IS NULL OR auditor_finding IN (
-    'missing_alt', 'search_engines_discouraged', 'https_not_enforced',
-    'sitemap_missing', 'canonical_missing', 'og_tags_missing'
-  ));
+  -- Format only; the exact allow-list lives in fresh-stack/services/auditorAttribution.js.
+  CHECK (auditor_finding IS NULL OR auditor_finding ~ '^[a-z0-9_]{1,64}$');

@@ -771,6 +771,14 @@ describe('register stores Website Auditor attribution', () => {
     expect(row).toMatchObject({ auditor_finding: 'canonical_missing', signup_source_auditor: true, signup_plugin: 'titles' });
   });
 
+  test.each(['missing_title', 'duplicate_title'])('%s is stored', async (id) => {
+    const email = `aud-${id}@example.com`;
+    const { res, supabase } = await register({ ...base, email, plugin_id: 'titles', finding: id });
+    expect(res.status).toBe(200);
+    const row = supabase._state.licenses.find((l) => l.email === email);
+    expect(row).toMatchObject({ auditor_finding: id, signup_source_auditor: true, signup_plugin: 'titles' });
+  });
+
   test('old id is mapped', async () => {
     const { res, supabase } = await register({ ...base, email: 'aud-old@example.com', auditor_source: 'open_graph' });
     expect(res.status).toBe(200);

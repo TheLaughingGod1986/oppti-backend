@@ -10,6 +10,18 @@ describe('auditor sign-up attribution', () => {
     expect(normalizeAuditorFinding({ finding: id })).toBe(id);
   });
 
+  // The fixture must be synced from check_categories() in the Auditor's
+  // includes/check-copy.php (plus any newer checks such as title_too_long).
+  test('allow-list equals the canonical Auditor check-id fixture exactly', () => {
+    const fixture = require('../fixtures/auditor-check-ids.json');
+    expect([...AUDITOR_FINDING_IDS]).toEqual(fixture);
+    expect(new Set(AUDITOR_FINDING_IDS).size).toBe(AUDITOR_FINDING_IDS.length);
+  });
+
+  test('title_too_long is stored', () => {
+    expect(normalizeAuditorFinding({ finding: 'title_too_long' })).toBe('title_too_long');
+  });
+
   test.each([
     ['search_indexing', 'search_engines_discouraged'],
     ['https', 'https_not_enforced'],

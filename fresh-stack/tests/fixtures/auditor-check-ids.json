@@ -1,0 +1,21 @@
+[
+  "missing_alt",
+  "needs_review",
+  "missing_title",
+  "duplicate_title",
+  "missing_meta",
+  "noindex_pages",
+  "canonical_missing",
+  "og_tags_missing",
+  "orphan_pages",
+  "thin_links",
+  "search_engines_discouraged",
+  "https_not_enforced",
+  "robots_txt",
+  "sitemap_missing",
+  "llms_txt",
+  "schema",
+  "performance",
+  "accessibility",
+  "title_too_long"
+]
