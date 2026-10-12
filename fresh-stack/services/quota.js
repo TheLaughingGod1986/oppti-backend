@@ -177,7 +177,8 @@ async function getLegacyQuotaStatus(supabase, {
       .from('usage_logs')
       .select('credits_used, site_hash, license_key')
       .gte('created_at', periodStart.toISOString())
-      .lt('created_at', periodEnd.toISOString());
+      .lt('created_at', periodEnd.toISOString())
+      .or('is_trial.is.null,is_trial.eq.false');
 
     if (siteHash) {
       // Query by site_hash to get ALL usage for the site (credit sharing)
