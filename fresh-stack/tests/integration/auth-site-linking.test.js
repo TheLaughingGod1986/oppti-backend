@@ -743,10 +743,25 @@ describe('register signup_source ("How did you find us?")', () => {
     expect(identifyServerUser).not.toHaveBeenCalled();
   });
 
-  test('oppti_site is accepted', async () => {
+  test.each(['wporg', 'search', 'x', 'facebook_group', 'friend'])('new code %s is accepted', async (code) => {
     const supabase = createSupabaseMock();
-    await register(createApp(supabase), { signup_source: 'oppti_site' });
-    expect(supabase._state.licenses[0].signup_source).toBe('oppti_site');
+    await register(createApp(supabase), { signup_source: code });
+    expect(supabase._state.licenses[0].signup_source).toBe(code);
+  });
+
+  test.each([
+    ['wporg_search', 'wporg', null],
+    ['google', 'search', null],
+    ['friend_colleague', 'friend', null],
+    ['ai_assistant', 'other', 'ai_assistant'],
+    ['oppti_site', 'other', 'oppti_site'],
+    ['social', 'other', 'social']
+  ])('old code %s is stored as %s', async (oldCode, newCode, otherText) => {
+    const supabase = createSupabaseMock();
+    const res = await register(createApp(supabase), { signup_source: oldCode });
+    expect(res.body.success).toBe(true);
+    expect(supabase._state.licenses[0].signup_source).toBe(newCode);
+    expect(supabase._state.licenses[0].signup_source_other).toBe(otherText);
   });
 
   test('sign-up still succeeds when the signup_source columns do not exist yet', async () => {
@@ -779,14 +794,14 @@ describe('register signup_source ("How did you find us?")', () => {
 
   test('valid answer is stored on the license row and sent as PostHog person properties', async () => {
     const supabase = createSupabaseMock();
-    const res = await register(createApp(supabase), { signup_source: 'wporg_search', signup_source_other: 'drop me', plugin_id: 'alt_text' });
+    const res = await register(createApp(supabase), { signup_source: 'wporg', signup_source_other: 'drop me', plugin_id: 'alt_text' });
     expect(res.body.success).toBe(true);
     const row = supabase._state.licenses[0];
-    expect(row.signup_source).toBe('wporg_search');
+    expect(row.signup_source).toBe('wporg');
     expect(row.signup_source_other).toBeNull();
     expect(identifyServerUser).toHaveBeenCalledWith({
       distinctId: row.id,
-      properties: { $set: { signup_source: 'wporg_search', signup_source_other: null, signup_source_plugin: 'alt_text' } }
+      properties: { $set: { signup_source: 'wporg', signup_source_other: null, signup_source_plugin: 'alt_text' } }
     });
   });
 
