@@ -618,25 +618,67 @@ async function findAccountById(supabase, accountId) {
   return data || null;
 }
 
+function normalizeEmailForMatch(email) {
+  return typeof email === 'string' ? email.trim().toLowerCase() : '';
+}
+
+function escapeLikePattern(value) {
+  // Escape LIKE metacharacters so ILIKE behaves as a case-insensitive exact match.
+  return String(value).replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 async function findAccountByEmail(supabase, email) {
-  if (!supabase || !email) return null;
+  const normalizedEmail = normalizeEmailForMatch(email);
+  if (!supabase || !normalizedEmail) return null;
 
   // `licenses` is the canonical account table in this backend.
+  // 1) Fast path: exact match on the normalized email (uses the email index).
   const { data, error } = await supabase
     .from('licenses')
     .select(ACCOUNT_SELECT)
-    .eq('email', email)
+    .eq('email', normalizedEmail)
     .maybeSingle();
 
   if (error) {
     logger.warn('[billing] account lookup by email failed', {
-      email,
+      email: normalizedEmail,
       error: error.message
     });
     return null;
   }
 
-  return data || null;
+  if (data) return data;
+
+  // 2) Case-insensitive exact match for rows stored with different casing.
+  //    ILIKE with escaped % and _ (no wildcards), then re-verify lower(trim()) in JS
+  //    and refuse ambiguous matches so we never link a payment to the wrong account.
+  const { data: candidates, error: ilikeError } = await supabase
+    .from('licenses')
+    .select(ACCOUNT_SELECT)
+    .ilike('email', escapeLikePattern(normalizedEmail))
+    .limit(2);
+
+  if (ilikeError) {
+    logger.warn('[billing] case-insensitive account lookup by email failed', {
+      email: normalizedEmail,
+      error: ilikeError.message
+    });
+    return null;
+  }
+
+  const matches = (candidates || []).filter(
+    (row) => normalizeEmailForMatch(row?.email) === normalizedEmail
+  );
+
+  if (matches.length > 1) {
+    logger.warn('[billing] ambiguous case-insensitive email match; not linking', {
+      email: normalizedEmail,
+      matches: matches.length
+    });
+    return null;
+  }
+
+  return matches[0] || null;
 }
 
 async function findAccountByLicenseKey(supabase, licenseKey) {
@@ -3002,7 +3044,8 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         attemptId: mode === 'payment' && selectedPlanId === 'credits' ? crypto.randomUUID() : null
       });
       const session = await stripeClient.checkout.sessions.create(checkoutPayload, { idempotencyKey });
-      res.json({ success: true, url: session.url, sessionId: session.id });
+      // sessionId kept for existing clients; session_id/checkout_url are aliases.
+      res.json({ success: true, url: session.url, sessionId: session.id, session_id: session.id, checkout_url: session.url });
     } catch (error) {
       logger.error('[billing] checkout error', error.message);
       res.status(500).json({ error: 'Failed to create checkout session' });
