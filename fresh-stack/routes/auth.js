@@ -483,9 +483,12 @@ async function loadAuthEntitlementState({
 }
 
 async function recordSignupSource({ supabase, user, body, pluginId, requestId }) {
-  const { source, other, invalid } = normalizeSignupSource(body);
+  const { source, other, invalid, legacy } = normalizeSignupSource(body);
   if (invalid) {
     logger.warn('[Auth] Ignoring unknown signup_source', { value: invalid, requestId });
+  }
+  if (legacy) {
+    logger.info('[Auth] Mapped legacy signup_source', { from: legacy, to: source, requestId });
   }
   if (!source || !user?.id) return null;
 
