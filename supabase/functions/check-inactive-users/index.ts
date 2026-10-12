@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { isLoopsSkippedEmail } from './skip.js';
 
 Deno.serve(async (_req) => {
   const supabase = createClient(
@@ -20,8 +21,14 @@ Deno.serve(async (_req) => {
     .or(`last_generation_at.lt.${fourteenDaysAgo},and(last_generation_at.is.null,created_at.lt.${fourteenDaysAgo})`);
 
   let processed = 0;
+  let skipped = 0;
+  const skipEnv = Deno.env.get('LOOPS_SKIP_DOMAINS');
 
   for (const user of inactiveUsers || []) {
+    if (isLoopsSkippedEmail(user.email, skipEnv)) {
+      skipped++;
+      continue;
+    }
     const res = await fetch('https://app.loops.so/api/v1/events/send', {
       method: 'POST',
       headers: {
@@ -44,7 +51,7 @@ Deno.serve(async (_req) => {
   }
 
   return new Response(
-    JSON.stringify({ processed, total: (inactiveUsers || []).length }),
+    JSON.stringify({ processed, skipped, total: (inactiveUsers || []).length }),
     { headers: { 'Content-Type': 'application/json' } },
   );
 });

@@ -57,7 +57,28 @@ function buildIdempotencyKey(...parts) {
   return `bbai-${crypto.createHash('sha256').update(input).digest('hex')}`;
 }
 
+// Every email a Loops request targets: body.email plus any email= query param
+// (e.g. GET /contacts/find?email=...). Used to enforce the skip list centrally.
+function getRequestEmails(path, body) {
+  const emails = [];
+  if (body && typeof body === 'object' && typeof body.email === 'string') {
+    emails.push(body.email);
+  }
+  const query = typeof path === 'string' && path.includes('?') ? path.slice(path.indexOf('?') + 1) : '';
+  if (query) {
+    try {
+      for (const value of new URLSearchParams(query).getAll('email')) emails.push(value);
+    } catch (_) { /* malformed query: nothing extra to check */ }
+  }
+  return emails.map((email) => String(email).trim().toLowerCase()).filter(Boolean);
+}
+
 async function loopsRequest(method, path, body, { idempotencyKey = null } = {}) {
+  const skippedEmail = getRequestEmails(path, body).find((email) => isLoopsSkippedEmail(email));
+  if (skippedEmail) {
+    logSkippedEmail(skippedEmail, { path: String(path).split('?')[0], method });
+    return null;
+  }
   const apiKey = getApiKey();
   if (!apiKey) {
     logger.info('[loops] Request skipped', {
@@ -625,7 +646,10 @@ async function upsertAuditLeadContact({
 }
 
 module.exports = {
+  DEFAULT_LOOPS_SKIP_DOMAINS,
   buildIdempotencyKey,
+  findExistingContact,
+  getRequestEmails,
   getSkipDomains,
   isLoopsSkippedEmail,
   upsertAuditLeadContact,
