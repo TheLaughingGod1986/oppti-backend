@@ -7,6 +7,12 @@ jest.mock('../../../src/services/loops', () => ({
   trackAccountCreated: jest.fn().mockResolvedValue(undefined)
 }));
 
+jest.mock('../../lib/posthog', () => ({
+  identifyServerUser: jest.fn().mockResolvedValue({ ok: true }),
+  captureServerEvent: jest.fn().mockResolvedValue({ ok: true }),
+  aliasServerUser: jest.fn().mockResolvedValue({ ok: true })
+}));
+
 jest.mock('../../services/quota', () => ({
   getQuotaStatus: jest.fn().mockResolvedValue({
     error: null,
@@ -813,5 +819,111 @@ describe('register stores Website Auditor attribution', () => {
     const { res } = await register({ ...base, email: 'aud-nomig@example.com', finding: 'missing_alt' }, supabase);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
+  });
+});
+
+describe('register signup_source ("How did you find us?")', () => {
+  const { identifyServerUser } = require('../../lib/posthog');
+  const register = (app, extra = {}) => request(app)
+    .post('/auth/register')
+    .send({ email: `u${Math.random().toString(36).slice(2)}@example.com`, password: 'Password123!', ...extra });
+
+  beforeEach(() => identifyServerUser.mockClear());
+
+  test('old plugin (no fields at all) registers exactly as before', async () => {
+    const supabase = createSupabaseMock();
+    const res = await register(createApp(supabase));
+    expect(res.body.success).toBe(true);
+    expect('signup_source' in supabase._state.licenses[0]).toBe(false);
+    expect(identifyServerUser).not.toHaveBeenCalled();
+  });
+
+  test.each(['wporg', 'search', 'x', 'facebook_group', 'friend'])('new code %s is accepted', async (code) => {
+    const supabase = createSupabaseMock();
+    await register(createApp(supabase), { signup_source: code });
+    expect(supabase._state.licenses[0].signup_source).toBe(code);
+  });
+
+  test.each([
+    ['wporg_search', 'wporg', null],
+    ['google', 'search', null],
+    ['friend_colleague', 'friend', null],
+    ['ai_assistant', 'other', 'ai_assistant'],
+    ['oppti_site', 'other', 'oppti_site'],
+    ['social', 'other', 'social']
+  ])('old code %s is stored as %s', async (oldCode, newCode, otherText) => {
+    const supabase = createSupabaseMock();
+    const res = await register(createApp(supabase), { signup_source: oldCode });
+    expect(res.body.success).toBe(true);
+    expect(supabase._state.licenses[0].signup_source).toBe(newCode);
+    expect(supabase._state.licenses[0].signup_source_other).toBe(otherText);
+  });
+
+  test('sign-up still succeeds when the signup_source columns do not exist yet', async () => {
+    const supabase = createSupabaseMock();
+    const realFrom = supabase.from.bind(supabase);
+    supabase.from = (table) => {
+      const api = realFrom(table);
+      if (table !== 'licenses') return api;
+      return { ...api, update(patch) {
+        if ('signup_source' in patch) {
+          return { eq: () => Promise.resolve({ data: null, error: { code: '42703', message: 'column "signup_source" does not exist' } }) };
+        }
+        return api.update(patch);
+      } };
+    };
+    const res = await register(createApp(supabase), { signup_source: 'google' });
+    expect(res.body.success).toBe(true);
+    expect(res.body.token).toBeTruthy();
+  });
+
+  test('blank answer stores nothing and skips PostHog', async () => {
+    const supabase = createSupabaseMock();
+    const res = await register(createApp(supabase), { signup_source: '', signup_source_other: 'ignored' });
+    expect(res.body.success).toBe(true);
+    const row = supabase._state.licenses[0];
+    expect(row.signup_source).toBeUndefined();
+    expect(row.signup_source_other).toBeUndefined();
+    expect(identifyServerUser).not.toHaveBeenCalled();
+  });
+
+  test('valid answer is stored on the license row and sent as PostHog person properties', async () => {
+    const supabase = createSupabaseMock();
+    const res = await register(createApp(supabase), { signup_source: 'wporg', signup_source_other: 'drop me', plugin_id: 'alt_text' });
+    expect(res.body.success).toBe(true);
+    const row = supabase._state.licenses[0];
+    expect(row.signup_source).toBe('wporg');
+    expect(row.signup_source_other).toBeNull();
+    expect(identifyServerUser).toHaveBeenCalledWith({
+      distinctId: row.id,
+      properties: { $set: { signup_source: 'wporg', signup_source_other: null, signup_source_plugin: 'alt_text' } }
+    });
+  });
+
+  test('unknown value is ignored and sign-up still succeeds', async () => {
+    const supabase = createSupabaseMock();
+    const res = await register(createApp(supabase), { signup_source: 'tiktok-ads' });
+    expect(res.body.success).toBe(true);
+    expect(supabase._state.licenses[0].signup_source).toBeUndefined();
+    expect(identifyServerUser).not.toHaveBeenCalled();
+  });
+
+  test('non-string value is ignored and sign-up still succeeds', async () => {
+    const supabase = createSupabaseMock();
+    const res = await register(createApp(supabase), { signup_source: { evil: true } });
+    expect(res.body.success).toBe(true);
+    expect(supabase._state.licenses[0].signup_source).toBeUndefined();
+  });
+
+  test('"other" keeps free text, stripped of tags and capped at 200 chars', async () => {
+    const supabase = createSupabaseMock();
+    const long = `<b>Podcast</b> <script>x</script>${'a'.repeat(300)}`;
+    const res = await register(createApp(supabase), { signup_source: 'other', signup_source_other: long });
+    expect(res.body.success).toBe(true);
+    const row = supabase._state.licenses[0];
+    expect(row.signup_source).toBe('other');
+    expect(row.signup_source_other).not.toMatch(/[<>]/);
+    expect(row.signup_source_other.startsWith('Podcast')).toBe(true);
+    expect(row.signup_source_other.length).toBeLessThanOrEqual(200);
   });
 });

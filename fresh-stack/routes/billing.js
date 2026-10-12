@@ -219,12 +219,36 @@ function checkCheckoutRateLimit(req, { siteKey, priceId, selectedPlanId }) {
   };
 }
 
-function buildCheckoutIdempotencyKey({ licenseKey, siteId, priceId, billingCycle, attemptId }) {
+function canonicalizeForHash(value) {
+  if (Array.isArray(value)) return value.map(canonicalizeForHash);
+  if (value && typeof value === 'object') {
+    return Object.keys(value)
+      .sort()
+      .reduce((acc, key) => {
+        if (value[key] !== undefined) acc[key] = canonicalizeForHash(value[key]);
+        return acc;
+      }, {});
+  }
+  return value;
+}
+
+function hashCheckoutParams(params) {
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(canonicalizeForHash(params || {})))
+    .digest('hex');
+}
+
+// Stripe rejects a reused idempotency key whose request params differ (for 24h),
+// so the key must cover the full session params. It stays deterministic so a
+// true double-click (identical params) still dedupes to the same session.
+function buildCheckoutIdempotencyKey({ licenseKey, siteId, priceId, billingCycle, attemptId, checkoutParams }) {
   const stablePayload = [
     licenseKey || 'anonymous',
     siteId || 'unknown-site',
     priceId || 'unknown-price',
-    billingCycle || 'unknown-cycle'
+    billingCycle || 'unknown-cycle',
+    hashCheckoutParams(checkoutParams)
   ];
   if (attemptId) {
     stablePayload.push(attemptId);
@@ -618,25 +642,70 @@ async function findAccountById(supabase, accountId) {
   return data || null;
 }
 
+function normalizeEmailForMatch(email) {
+  return typeof email === 'string' ? email.trim().toLowerCase() : '';
+}
+
+function escapeLikePattern(value) {
+  // Escape LIKE metacharacters (\\, %, _) plus `*`, which PostgREST treats as a
+  // `%` wildcard alias in like/ilike filters, so ILIKE is a case-insensitive exact match.
+  // Candidates are re-verified in JS below, so an escaped `*` can only cause a miss,
+  // never a wrong link.
+  return String(value).replace(/[\\%_*]/g, (ch) => `\\${ch}`);
+}
+
 async function findAccountByEmail(supabase, email) {
-  if (!supabase || !email) return null;
+  const trimmedEmail = typeof email === 'string' ? email.trim() : '';
+  const normalizedEmail = normalizeEmailForMatch(email);
+  if (!supabase || !normalizedEmail) return null;
 
   // `licenses` is the canonical account table in this backend.
+  // 1) Exact match on the trimmed (case-preserved) Stripe email wins outright.
   const { data, error } = await supabase
     .from('licenses')
     .select(ACCOUNT_SELECT)
-    .eq('email', email)
+    .eq('email', trimmedEmail)
     .maybeSingle();
 
   if (error) {
     logger.warn('[billing] account lookup by email failed', {
-      email,
+      email: normalizedEmail,
       error: error.message
     });
     return null;
   }
 
-  return data || null;
+  if (data) return data;
+
+  // 2) Case-insensitive exact match (ILIKE with escaped metacharacters), re-verified
+  //    with lower(trim()) in JS. If 2+ accounts match, link neither.
+  const { data: candidates, error: ilikeError } = await supabase
+    .from('licenses')
+    .select(ACCOUNT_SELECT)
+    .ilike('email', escapeLikePattern(normalizedEmail))
+    .limit(3);
+
+  if (ilikeError) {
+    logger.warn('[billing] case-insensitive account lookup by email failed', {
+      email: normalizedEmail,
+      error: ilikeError.message
+    });
+    return null;
+  }
+
+  const matches = (candidates || []).filter(
+    (row) => normalizeEmailForMatch(row?.email) === normalizedEmail
+  );
+
+  if (matches.length > 1) {
+    logger.warn('[billing] ambiguous case-insensitive email match; not linking', {
+      email: normalizedEmail,
+      matches: matches.length
+    });
+    return null;
+  }
+
+  return matches[0] || null;
 }
 
 async function findAccountByLicenseKey(supabase, licenseKey) {
@@ -2999,10 +3068,12 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         siteId: metadata.site_id,
         priceId,
         billingCycle: metadata.billing_interval,
-        attemptId: mode === 'payment' && selectedPlanId === 'credits' ? crypto.randomUUID() : null
+        attemptId: mode === 'payment' && selectedPlanId === 'credits' ? crypto.randomUUID() : null,
+        checkoutParams: checkoutPayload
       });
       const session = await stripeClient.checkout.sessions.create(checkoutPayload, { idempotencyKey });
-      res.json({ success: true, url: session.url, sessionId: session.id });
+      // sessionId kept for existing clients; session_id/checkout_url are aliases.
+      res.json({ success: true, url: session.url, sessionId: session.id, session_id: session.id, checkout_url: session.url });
     } catch (error) {
       logger.error('[billing] checkout error', error.message);
       res.status(500).json({ error: 'Failed to create checkout session' });
