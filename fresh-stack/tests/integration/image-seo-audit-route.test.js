@@ -41,7 +41,8 @@ describe('image SEO audit route', () => {
     expect(runAudit).toHaveBeenCalledWith(expect.objectContaining({
       auditId: res.body.auditId,
       email: 'lead@example.com',
-      siteUrl: 'https://example.com/'
+      siteUrl: 'https://example.com/',
+      source: 'image-seo-audit'
     }));
   });
 

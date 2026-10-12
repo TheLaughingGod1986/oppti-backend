@@ -26,9 +26,12 @@ if (write && (!process.env.LOOPS_API_KEY || !process.env.LOOPS_PLUGIN_USERS_LIST
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 function membershipExtra(pluginId, firstSeenAt) {
-  return pluginId === 'titles'
-    ? { titlesFirstSeenAt: firstSeenAt }
-    : { altTextFirstSeenAt: firstSeenAt };
+  const prefix = {
+    alt_text: 'altText',
+    titles: 'titles',
+    internal_linking: 'internalLinking'
+  }[pluginId];
+  return { [`${prefix}FirstSeenAt`]: firstSeenAt };
 }
 
 async function main() {
@@ -99,7 +102,7 @@ async function main() {
         userId: account.id,
         pluginId,
         pluginVersion: membership.pluginVersion,
-        acquisition: pluginId === acquisitionPluginId,
+        acquisition: false,
         timestamp: membership.lastSeenAt,
         extra: {
           ...membershipExtra(pluginId, membership.firstSeenAt),

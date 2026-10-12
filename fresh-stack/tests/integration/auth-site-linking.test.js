@@ -74,7 +74,8 @@ function stripToLegacySitePayload(payload = {}) {
 
 function createSupabaseMock({
   legacySiteSchema = false,
-  missingSiteMembershipsTable = false
+  missingSiteMembershipsTable = false,
+  pluginConnectionInsertError = null
 } = {}) {
   const licenses = [];
   const sites = [];
@@ -359,6 +360,9 @@ function createSupabaseMock({
             return buildFilterableChain(pluginConnections);
           },
           insert(payload) {
+            if (pluginConnectionInsertError) {
+              return Promise.resolve({ data: null, error: pluginConnectionInsertError });
+            }
             const row = {
               id: `plugin_connection_${pluginConnections.length + 1}`,
               first_connected_at: new Date().toISOString(),
@@ -396,6 +400,36 @@ function createApp(supabase, { includeLicenseRoutes = false } = {}) {
 }
 
 describe('site-aware auth linking', () => {
+  test.each([null, {
+    code: '23514',
+    message: 'account_plugin_connections_plugin_id_check violated'
+  }])('internal linking register/login succeeds with connection insert error %j', async (pluginConnectionInsertError) => {
+    const supabase = createSupabaseMock({ pluginConnectionInsertError });
+    const app = createApp(supabase);
+    const credentials = {
+      email: 'internal-linking@example.com',
+      password: 'Password123!',
+      plugin_id: 'internal_linking',
+      plugin_version: '1.0.0'
+    };
+    const logger = require('../../lib/logger');
+    const warning = jest.spyOn(logger, 'warn');
+    try {
+      const registered = await request(app).post('/auth/register').send(credentials).expect(200);
+      expect(registered.body.success).toBe(true);
+      const loggedIn = await request(app).post('/auth/login').send(credentials).expect(200);
+      expect(loggedIn.body.success).toBe(true);
+      if (pluginConnectionInsertError) {
+        expect(warning).toHaveBeenCalledWith('[auth] plugin_connection_state_failed', expect.objectContaining({
+          plugin_id: 'internal_linking',
+          error: pluginConnectionInsertError.message
+        }));
+      }
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   test('same site registered with two emails resolves to one canonical site and shared membership', async () => {
     const supabase = createSupabaseMock();
     const app = createApp(supabase);
@@ -724,6 +758,67 @@ describe('site-aware auth linking', () => {
       license_key: register.body.user.license_key
     }));
     expect(supabase._state.siteMemberships).toHaveLength(0);
+  });
+});
+
+describe('register stores Website Auditor attribution', () => {
+  const base = { password: 'Password123!', plugin_version: '1.0.0' };
+
+  async function register(body, supabase = createSupabaseMock()) {
+    const res = await request(createApp(supabase)).post('/auth/register').send(body);
+    return { res, supabase };
+  }
+
+  test('new id is stored with flag and signup plugin', async () => {
+    const { res, supabase } = await register({ ...base, email: 'aud-new@example.com', plugin_id: 'titles', finding: 'canonical_missing', auditor_source: 'canonical_missing' });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    const row = supabase._state.licenses.find((l) => l.email === 'aud-new@example.com');
+    expect(row).toMatchObject({ auditor_finding: 'canonical_missing', signup_source_auditor: true, signup_plugin: 'titles' });
+  });
+
+  test.each(['missing_title', 'duplicate_title'])('%s is stored', async (id) => {
+    const email = `aud-${id}@example.com`;
+    const { res, supabase } = await register({ ...base, email, plugin_id: 'titles', finding: id });
+    expect(res.status).toBe(200);
+    const row = supabase._state.licenses.find((l) => l.email === email);
+    expect(row).toMatchObject({ auditor_finding: id, signup_source_auditor: true, signup_plugin: 'titles' });
+  });
+
+  test('old id is mapped', async () => {
+    const { res, supabase } = await register({ ...base, email: 'aud-old@example.com', auditor_source: 'open_graph' });
+    expect(res.status).toBe(200);
+    const row = supabase._state.licenses.find((l) => l.email === 'aud-old@example.com');
+    expect(row).toMatchObject({ auditor_finding: 'og_tags_missing', signup_source_auditor: true, signup_plugin: 'alt_text' });
+  });
+
+  test.each([
+    ['unknown', { finding: 'internal_links' }],
+    ['over 64 chars', { finding: 'x'.repeat(71) }],
+    ['non-string', { finding: { a: 1 }, auditor_source: 123 }],
+    ['missing', {}]
+  ])('%s value still registers and stores null', async (_label, extra) => {
+    const email = `aud-${_label.replace(/\W/g, '')}@example.com`;
+    const { res, supabase } = await register({ ...base, email, ...extra });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    const row = supabase._state.licenses.find((l) => l.email === email);
+    expect(row).toMatchObject({ auditor_finding: null, signup_source_auditor: false, signup_plugin: 'alt_text' });
+  });
+
+  test('registration succeeds when the attribution columns are missing (migration not applied)', async () => {
+    const supabase = createSupabaseMock();
+    const origFrom = supabase.from.bind(supabase);
+    supabase.from = (table) => {
+      const t = origFrom(table);
+      if (table !== 'licenses') return t;
+      return { ...t, update: (patch) => ('auditor_finding' in patch
+        ? { eq: async () => ({ data: null, error: { code: '42703', message: 'column "auditor_finding" does not exist' } }) }
+        : t.update(patch)) };
+    };
+    const { res } = await register({ ...base, email: 'aud-nomig@example.com', finding: 'missing_alt' }, supabase);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
   });
 });
 

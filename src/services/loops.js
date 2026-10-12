@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const logger = require('../../fresh-stack/lib/logger');
-const { getPlugin, normalizePluginId } = require('./pluginIdentity');
+const { getPlugin, normalizePluginId, LOOPS_SOURCE_BY_PLUGIN } = require('./pluginIdentity');
 
 const LOOPS_BASE = 'https://app.loops.so/api/v1';
 const LOOPS_TIMEOUT_MS = Number(process.env.LOOPS_TIMEOUT_MS || 5000);
@@ -57,7 +57,28 @@ function buildIdempotencyKey(...parts) {
   return `bbai-${crypto.createHash('sha256').update(input).digest('hex')}`;
 }
 
+// Every email a Loops request targets: body.email plus any email= query param
+// (e.g. GET /contacts/find?email=...). Used to enforce the skip list centrally.
+function getRequestEmails(path, body) {
+  const emails = [];
+  if (body && typeof body === 'object' && typeof body.email === 'string') {
+    emails.push(body.email);
+  }
+  const query = typeof path === 'string' && path.includes('?') ? path.slice(path.indexOf('?') + 1) : '';
+  if (query) {
+    try {
+      for (const value of new URLSearchParams(query).getAll('email')) emails.push(value);
+    } catch (_) { /* malformed query: nothing extra to check */ }
+  }
+  return emails.map((email) => String(email).trim().toLowerCase()).filter(Boolean);
+}
+
 async function loopsRequest(method, path, body, { idempotencyKey = null } = {}) {
+  const skippedEmail = getRequestEmails(path, body).find((email) => isLoopsSkippedEmail(email));
+  if (skippedEmail) {
+    logSkippedEmail(skippedEmail, { path: String(path).split('?')[0], method });
+    return null;
+  }
   const apiKey = getApiKey();
   if (!apiKey) {
     logger.info('[loops] Request skipped', {
@@ -111,15 +132,29 @@ async function loopsPost(path, body, options = {}) {
   return loopsRequest('POST', path, body, options);
 }
 
+const PLUGIN_PROPERTY_PREFIX = Object.freeze({
+  alt_text: 'altText',
+  titles: 'titles',
+  internal_linking: 'internalLinking'
+});
+
+function pluginFirstSeenKey(pluginId) {
+  return `${PLUGIN_PROPERTY_PREFIX[getPlugin(pluginId).id]}FirstSeenAt`;
+}
+
 function pluginContactProperties(pluginId, pluginVersion, timestamp, { includeFirstSeen = false } = {}) {
   const plugin = getPlugin(pluginId);
-  const isAltText = plugin.id === 'alt_text';
-  const prefix = isAltText ? 'altText' : 'titles';
+  const prefix = PLUGIN_PROPERTY_PREFIX[plugin.id];
+  const flag = {
+    alt_text: 'usesAltText',
+    titles: 'usesTitles',
+    internal_linking: 'usesInternalLinking'
+  }[plugin.id];
   return {
     lastActivePluginId: plugin.id,
     lastActivePluginTitle: plugin.title,
     lastPluginSeenAt: timestamp,
-    [isAltText ? 'usesAltText' : 'usesTitles']: true,
+    [flag]: true,
     [`${prefix}PluginVersion`]: pluginVersion || '',
     [`${prefix}LastActiveAt`]: timestamp,
     ...(includeFirstSeen ? { [`${prefix}FirstSeenAt`]: timestamp } : {})
@@ -129,6 +164,69 @@ function pluginContactProperties(pluginId, pluginVersion, timestamp, { includeFi
 function mailingListsPayload() {
   const listId = getPluginUsersListId();
   return listId ? { mailingLists: { [listId]: true } } : {};
+}
+
+// Loops /contacts/update overwrites every field it is sent, so account
+// creation for an email already in Loops (e.g. an audit or newsletter lead, or
+// a paid customer) must not clobber attribution or lifecycle fields. We look
+// the contact up once and only fill first-touch fields that are empty. If the
+// lookup fails or is ambiguous we omit them all, so we never overwrite by default.
+async function findExistingContact(email) {
+  try {
+    const contacts = await loopsRequest('GET', `/contacts/find?email=${encodeURIComponent(email)}`);
+    if (!Array.isArray(contacts)) {
+      logger.warn('[loops] Contact lookup returned no usable result; leaving first-touch fields unchanged', {
+        email_domain: getEmailDomain(email)
+      });
+      return { status: 'unknown', contact: null };
+    }
+    if (contacts.length === 0) return { status: 'missing', contact: null };
+    return { status: 'found', contact: contacts[0] || {} };
+  } catch (error) {
+    logger.warn('[loops] Contact lookup failed; leaving first-touch fields unchanged', {
+      email_domain: getEmailDomain(email),
+      error: error.message,
+      status: error.status || null
+    });
+    return { status: 'unknown', contact: null };
+  }
+}
+
+function isBlankContactValue(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value === 'string') return value.trim() === '';
+  return false;
+}
+
+// Loops assigns "API" as the default source to contacts created via the API
+// without one; that carries no channel attribution, so treat it as empty.
+function isBlankContactSource(value) {
+  return isBlankContactValue(value)
+    || (typeof value === 'string' && value.trim().toLowerCase() === 'api');
+}
+
+// A lead that creates an account is now a user, so "lead" may be upgraded to
+// "free". Any other non-empty group (e.g. "paid") is never overwritten.
+function isReplaceableUserGroup(value) {
+  return isBlankContactValue(value)
+    || (typeof value === 'string' && value.trim().toLowerCase() === 'lead');
+}
+
+// Returns the subset of first-touch account-creation fields that are safe to send.
+function firstTouchAccountFields(lookup, plugin, timestamp) {
+  if (lookup.status === 'unknown') return {};
+  const contact = lookup.contact || {};
+  const isNew = lookup.status === 'missing';
+  const fill = (key, value, isBlank = isBlankContactValue) =>
+    (isNew || isBlank(contact[key]) ? { [key]: value } : {});
+  return {
+    ...fill('source', LOOPS_SOURCE_BY_PLUGIN[plugin.id], isBlankContactSource),
+    ...fill('userGroup', 'free', isReplaceableUserGroup),
+    ...fill('acquisitionPluginId', plugin.id),
+    ...fill('acquisitionPluginTitle', plugin.title),
+    ...fill('firstPluginSeenAt', timestamp),
+    ...fill(pluginFirstSeenKey(plugin.id), timestamp)
+  };
 }
 
 async function upsertPluginContact({
@@ -146,22 +244,18 @@ async function upsertPluginContact({
     return null;
   }
   const plugin = getPlugin(pluginId);
-  const properties = pluginContactProperties(plugin.id, pluginVersion, timestamp, {
-    includeFirstSeen: acquisition
-  });
+  // Per-plugin FirstSeenAt on account creation is first-touch only (see firstTouchAccountFields).
+  const properties = pluginContactProperties(plugin.id, pluginVersion, timestamp);
+  const firstTouch = acquisition === true
+    ? firstTouchAccountFields(await findExistingContact(email), plugin, timestamp)
+    : {};
   const payload = {
     email,
     ...(userId ? { userId: String(userId) } : {}),
     ...(firstName ? { firstName } : {}),
-    userGroup: 'plugin_user',
-    source: 'plugin_signup',
     ...mailingListsPayload(),
     ...properties,
-    ...(acquisition ? {
-      acquisitionPluginId: plugin.id,
-      acquisitionPluginTitle: plugin.title,
-      firstPluginSeenAt: timestamp
-    } : {}),
+    ...(acquisition === true ? { ...firstTouch, signupPlugin: plugin.id } : {}),
     ...extra
   };
   await loopsRequest('PUT', '/contacts/update', payload);
@@ -321,7 +415,9 @@ async function trackPlanUpgraded({
   await loopsRequest('PUT', '/contacts/update', {
     email,
     ...(userId ? { userId: String(userId) } : {}),
-    plan: planName
+    plan: planName,
+    // Subscription updates can report a downgrade to free; only mark real paid plans.
+    ...(planName && String(planName).toLowerCase() !== 'free' ? { userGroup: 'paid' } : {})
   });
   await sendEvent('plan_upgraded', {
     email,
@@ -396,6 +492,7 @@ async function trackPaymentSucceeded({
   await loopsRequest('PUT', '/contacts/update', {
     email,
     plan: planName || '',
+    userGroup: 'paid',
     lastSuccessfulPaymentAt: succeededAt,
     lastSuccessfulPaymentPlan: planName || '',
     lastSuccessfulPaymentPurchaseType: purchaseType || '',
@@ -423,8 +520,12 @@ async function trackImageSeoAuditRequested({
   websiteUrl,
   normalizedDomain,
   auditId,
-  source = 'image_seo_audit'
+  source = 'image-seo-audit'
 }) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { context: 'trackImageSeoAuditRequested' });
+    return null;
+  }
   await upsertAuditLeadContact({ email, websiteUrl, normalizedDomain, source });
   await loopsPost('/events/send', {
     email,
@@ -447,8 +548,12 @@ async function trackImageSeoAuditCompleted({
   pagesScanned,
   imagesScanned,
   missingAltPercent,
-  source = 'image_seo_audit'
+  source = 'image-seo-audit'
 }) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { context: 'trackImageSeoAuditCompleted' });
+    return null;
+  }
   await upsertAuditLeadContact({
     email,
     websiteUrl,
@@ -481,8 +586,12 @@ async function trackImageSeoAuditFailed({
   normalizedDomain,
   auditId,
   errorCode,
-  source = 'image_seo_audit'
+  source = 'image-seo-audit'
 }) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { context: 'trackImageSeoAuditFailed' });
+    return null;
+  }
   await upsertAuditLeadContact({ email, websiteUrl, normalizedDomain, source });
   await loopsPost('/events/send', {
     email,
@@ -507,14 +616,14 @@ async function upsertAuditLeadContact({
   imagesScanned = null,
   missingAltPercent = null
 }) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { path: '/contacts/create', method: 'POST' });
+    return null;
+  }
   const body = {
     email,
-    firstName: '',
-    userGroup: 'audit_lead',
-    source,
     websiteUrl,
-    normalizedDomain,
-    subscribed: true
+    normalizedDomain
   };
   if (auditScore !== null) body.auditScore = auditScore;
   if (pagesScanned !== null) body.pagesScanned = pagesScanned;
@@ -522,7 +631,12 @@ async function upsertAuditLeadContact({
   if (missingAltPercent !== null) body.missingAltPercent = missingAltPercent;
 
   try {
-    await loopsRequest('POST', '/contacts/create', body);
+    await loopsRequest('POST', '/contacts/create', {
+      ...body,
+      userGroup: 'lead',
+      source,
+      subscribed: true
+    });
   } catch (error) {
     if (error.status !== 409) {
       throw error;
@@ -532,9 +646,13 @@ async function upsertAuditLeadContact({
 }
 
 module.exports = {
+  DEFAULT_LOOPS_SKIP_DOMAINS,
   buildIdempotencyKey,
+  findExistingContact,
+  getRequestEmails,
   getSkipDomains,
   isLoopsSkippedEmail,
+  upsertAuditLeadContact,
   pluginContactProperties,
   sendEvent,
   trackAccountCreated,

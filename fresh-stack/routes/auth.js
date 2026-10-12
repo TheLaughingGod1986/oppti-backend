@@ -22,6 +22,7 @@ const {
 const { trackAccountCreated, trackPluginConnected, isLoopsSkippedEmail } = require('../../src/services/loops');
 const { PLUGIN_IDS } = require('../../src/services/pluginIdentity');
 const { recordPluginConnection } = require('../services/pluginConnections');
+const { recordSignupAttribution } = require('../services/auditorAttribution');
 const { normalizeSignupSource } = require('../lib/signupSource');
 const { identifyServerUser } = require('../lib/posthog');
 
@@ -581,6 +582,10 @@ function createAuthRouter({ supabase }) {
       plugin_version: z.string().optional(),
       plugin_id: z.enum(PLUGIN_IDS).optional().default('alt_text'),
       wordpress_version: z.string().optional(),
+      // Website Auditor attribution. Accepted as anything so a bad value can
+      // never fail registration; normalised in services/auditorAttribution.
+      auditor_source: z.any().optional(),
+      finding: z.any().optional(),
       // Optional "How did you find us?" answer. Accepted loosely and validated
       // by normalizeSignupSource so a bad value can never fail sign-up.
       signup_source: z.any().optional(),
@@ -731,6 +736,13 @@ function createAuthRouter({ supabase }) {
         userId: user.id,
         pluginId: parsed.data.plugin_id,
         pluginVersion: parsed.data.plugin_version
+      });
+      await recordSignupAttribution({
+        supabase,
+        userId: user.id,
+        pluginId: parsed.data.plugin_id,
+        body: parsed.data,
+        requestId: req.id || null
       });
       registerTrace.loops_account_created = await fireLoopsAccountCreated({
         email,
