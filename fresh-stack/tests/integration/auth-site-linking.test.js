@@ -754,3 +754,56 @@ describe('site-aware auth linking', () => {
     expect(supabase._state.siteMemberships).toHaveLength(0);
   });
 });
+
+describe('register stores Website Auditor attribution', () => {
+  const base = { password: 'Password123!', plugin_version: '1.0.0' };
+
+  async function register(body, supabase = createSupabaseMock()) {
+    const res = await request(createApp(supabase)).post('/auth/register').send(body);
+    return { res, supabase };
+  }
+
+  test('new id is stored with flag and signup plugin', async () => {
+    const { res, supabase } = await register({ ...base, email: 'aud-new@example.com', plugin_id: 'titles', finding: 'canonical_missing', auditor_source: 'canonical_missing' });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    const row = supabase._state.licenses.find((l) => l.email === 'aud-new@example.com');
+    expect(row).toMatchObject({ auditor_finding: 'canonical_missing', signup_source_auditor: true, signup_plugin: 'titles' });
+  });
+
+  test('old id is mapped', async () => {
+    const { res, supabase } = await register({ ...base, email: 'aud-old@example.com', auditor_source: 'open_graph' });
+    expect(res.status).toBe(200);
+    const row = supabase._state.licenses.find((l) => l.email === 'aud-old@example.com');
+    expect(row).toMatchObject({ auditor_finding: 'og_tags_missing', signup_source_auditor: true, signup_plugin: 'alt_text' });
+  });
+
+  test.each([
+    ['unknown', { finding: 'internal_links' }],
+    ['over 64 chars', { finding: 'x'.repeat(71) }],
+    ['non-string', { finding: { a: 1 }, auditor_source: 123 }],
+    ['missing', {}]
+  ])('%s value still registers and stores null', async (_label, extra) => {
+    const email = `aud-${_label.replace(/\W/g, '')}@example.com`;
+    const { res, supabase } = await register({ ...base, email, ...extra });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    const row = supabase._state.licenses.find((l) => l.email === email);
+    expect(row).toMatchObject({ auditor_finding: null, signup_source_auditor: false, signup_plugin: 'alt_text' });
+  });
+
+  test('registration succeeds when the attribution columns are missing (migration not applied)', async () => {
+    const supabase = createSupabaseMock();
+    const origFrom = supabase.from.bind(supabase);
+    supabase.from = (table) => {
+      const t = origFrom(table);
+      if (table !== 'licenses') return t;
+      return { ...t, update: (patch) => ('auditor_finding' in patch
+        ? { eq: async () => ({ data: null, error: { code: '42703', message: 'column "auditor_finding" does not exist' } }) }
+        : t.update(patch)) };
+    };
+    const { res } = await register({ ...base, email: 'aud-nomig@example.com', finding: 'missing_alt' }, supabase);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+});
