@@ -1,5 +1,7 @@
 # AGENTS.md
 
+> **Handover:** read `HANDOVER.md` first (standing rules, release state, Auditor param compat, what lives outside git). Updated 12 Oct 2026.
+
 ## Repo Scope
 
 - Main entrypoint: `fresh-stack/server.js`
