@@ -4,6 +4,36 @@ const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const TABLE = 'generation_idempotency_claims';
 const DEFAULT_CLAIM_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_REPLAY_TTL_MS = 24 * 60 * 60 * 1000;
+// Opportunistic sweep of expired rows, at most once per interval per process.
+// Only rows expired for longer than the grace period are deleted, so a row
+// that a concurrent request is about to take over is never swept from under it.
+const SWEEP_INTERVAL_MS = Number(process.env.IDEMPOTENCY_CLAIM_SWEEP_INTERVAL_MS || 10 * 60 * 1000);
+const SWEEP_GRACE_MS = 60 * 60 * 1000;
+let lastSweepAt = 0;
+
+async function sweepExpiredClaims(supabase, { now = Date.now(), graceMs = SWEEP_GRACE_MS } = {}) {
+  const cutoff = new Date(now - graceMs).toISOString();
+  try {
+    const { error } = await supabase.from(TABLE).delete().lt('expires_at', cutoff);
+    if (error) {
+      logger.warn('[idempotency] claim_sweep_failed', { error: serializeSupabaseError(error) });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logger.warn('[idempotency] claim_sweep_failed', { error: err?.message });
+    return false;
+  }
+}
+
+function maybeSweepExpiredClaims(supabase, now = Date.now()) {
+  if (now - lastSweepAt < SWEEP_INTERVAL_MS) return null;
+  lastSweepAt = now;
+  // Fire and forget: never block or fail a claim on cleanup.
+  return sweepExpiredClaims(supabase, { now });
+}
+
+function resetSweepStateForTests() { lastSweepAt = 0; }
 
 function isUniqueViolation(error) {
   return Boolean(error) && (error.code === '23505' || /duplicate key/i.test(error.message || ''));
@@ -28,6 +58,8 @@ async function claimIdempotencyKey(supabase, { scope, key, endpoint = 'api/alt-t
     owner_request_id: requestId,
     expires_at: new Date(now + ttlMs).toISOString()
   };
+
+  maybeSweepExpiredClaims(supabase, now);
 
   const { error } = await supabase.from(TABLE).insert(row);
   if (!error) return { claimed: true };
@@ -108,5 +140,9 @@ module.exports = {
   getClaim,
   completeIdempotencyClaim,
   releaseIdempotencyClaim,
-  isUniqueViolation
+  isUniqueViolation,
+  sweepExpiredClaims,
+  maybeSweepExpiredClaims,
+  resetSweepStateForTests,
+  DEFAULT_CLAIM_TTL_MS
 };

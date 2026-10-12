@@ -11,7 +11,7 @@ jest.mock('../../lib/openai', () => ({ generateAltText: jest.fn() }));
 // Quota sim mirroring bbai_reserve/finalize_site_generation as on main: a
 // same-key duplicate that is still 'reserved' is NOT treated as succeeded, so
 // without the claim both concurrent requests would be charged.
-const mockDb = { gen: [], usage_logs: [], site_used: 0, claims: new Map() };
+const mockDb = { gen: [], usage_logs: [], site_used: 0, claims: new Map(), claimInserts: [] };
 jest.mock('../../services/quota', () => ({
   getQuotaStatus: jest.fn(async () => ({ plan_type: 'pro', credits_used: 0, credits_remaining: 1000, total_limit: 1000 })),
   reserveGenerationQuota: jest.fn(async (_s, { idempotencyKey }) => {
@@ -39,10 +39,15 @@ const lic = { id: '11111111-1111-1111-1111-111111111111', license_key: 'key-123'
 
 // In-memory table with a real PRIMARY KEY (scope, idempotency_key).
 function claimsTable() {
-  const f = {}; let op = null; let payload = null; let wantRows = false;
+  const f = {}; let op = null; let payload = null; let wantRows = false; let ltF = null;
   const id = () => `${f.scope}|${f.idempotency_key}`;
   const run = () => {
+    if (op === 'delete' && ltF) {
+      for (const [k, r] of mockDb.claims) if (new Date(r[ltF[0]]).getTime() < new Date(ltF[1]).getTime()) mockDb.claims.delete(k);
+      return { data: null, error: null };
+    }
     if (op === 'insert') {
+      mockDb.claimInserts.push({ scope: payload.scope, idempotency_key: payload.idempotency_key });
       const k = `${payload.scope}|${payload.idempotency_key}`;
       if (mockDb.claims.has(k)) return { data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint' } };
       mockDb.claims.set(k, { ...payload }); return { data: null, error: null };
@@ -60,6 +65,7 @@ function claimsTable() {
     delete: () => { op = 'delete'; return c; },
     select: () => { if (!op) op = 'select'; else wantRows = true; return c; },
     eq: (col, v) => { f[col] = v; return c; },
+    lt: (col, v) => { ltF = [col, v]; return c; },
     maybeSingle: () => Promise.resolve(run()),
     then: (r, j) => Promise.resolve(run()).then(r, j)
   };
@@ -82,7 +88,7 @@ const charges = () => mockDb.usage_logs.filter((r) => !r.isTrial && !r.is_trial)
 const delayed = (value, ms) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
 
 beforeEach(() => {
-  mockDb.gen = []; mockDb.usage_logs = []; mockDb.site_used = 0; mockDb.claims.clear();
+  mockDb.gen = []; mockDb.usage_logs = []; mockDb.site_used = 0; mockDb.claims.clear(); mockDb.claimInserts = [];
   generateAltText.mockReset();
 });
 
@@ -137,6 +143,29 @@ describe('Idempotency-Key is claimed before the credit hold', () => {
     expect(charges()).toBe(1);
   });
 
+  test('a failed run releases its claim on the real (scope, key)', async () => {
+    const a = app();
+    generateAltText.mockImplementationOnce(() => Promise.reject(Object.assign(new Error('boom'), { code: 'UPSTREAM_GENERATION_ERROR' })));
+    const r = await post(a, 'fail-k', 'f');
+    expect(r.status).toBe(502);
+    await delayed(null, 30); // release runs on response finish
+    // The claim really was taken under the scope the route uses...
+    const taken = mockDb.claimInserts.filter((c) => c.idempotency_key === 'fail-k');
+    expect(taken).toHaveLength(1);
+    expect(taken[0].scope).toBe('default'); // no X-Site-Hash: shared default scope
+    // ...and that exact row is gone (no row for this key under any scope).
+    expect(mockDb.claims.has(`${taken[0].scope}|fail-k`)).toBe(false);
+    expect([...mockDb.claims.values()].filter((c) => c.idempotency_key === 'fail-k')).toHaveLength(0);
+    expect(charges()).toBe(0);
+
+    // A later retry with the same key generates (not a 409, not a replay).
+    generateAltText.mockResolvedValue(ok);
+    const retry = await post(a, 'fail-k', 'f');
+    expect(retry.status).toBe(200);
+    expect(retry.body.idempotent_replay).toBeFalsy();
+    expect(charges()).toBe(1);
+  });
+
   test('a failed first run releases the claim, so the waiting request generates itself', async () => {
     const a = app();
     generateAltText
@@ -145,8 +174,10 @@ describe('Idempotency-Key is claimed before the credit hold', () => {
     const [x, y] = await Promise.all([post(a, 'fail-k', 'f'), post(a, 'fail-k', 'f')]);
     const statuses = [x.status, y.status].sort();
     expect(statuses).toEqual([200, 502]);
+    expect(generateAltText).toHaveBeenCalledTimes(2);
     expect(charges()).toBe(1);
-    expect(mockDb.claims.get('site-key-1|fail-k')).toBeUndefined();
+    await delayed(null, 30);
+    expect(mockDb.claims.get('default|fail-k')).toMatchObject({ status: 'succeeded' });
   });
 
   test('different keys are independent', async () => {
