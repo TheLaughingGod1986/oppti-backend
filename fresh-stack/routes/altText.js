@@ -1445,6 +1445,19 @@ function createAltTextRouter({
           });
         }
       }
+    } else if (
+      reservation.reservation?.duplicate === true
+      && reservation.reservation?.status === 'succeeded'
+    ) {
+      // Retry of a generation that already succeeded and was charged (e.g. the
+      // first response was lost to a 502 during a deploy). Same idempotency key or
+      // request fingerprint: do not write a second usage_logs charge.
+      logger.info('[altText] Skipping usage charge for duplicate succeeded generation', {
+        generation_request_id: reservation.reservation?.generation_request_id || null,
+        generation_run_id: generationRunId,
+        retry_count: retryCount,
+        request_id: req.id || null
+      });
     } else {
       // Normal flow: record in usage_logs with license tracking.
       let licenseId = null;

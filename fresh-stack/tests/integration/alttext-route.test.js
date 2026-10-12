@@ -324,6 +324,45 @@ describe('POST /api/alt-text', () => {
     }));
   });
 
+  test('does not charge a retry of a generation that already succeeded (duplicate idempotency key)', async () => {
+    quotaService.reserveGenerationQuota.mockResolvedValueOnce({
+      error: null,
+      reservation: {
+        ok: true,
+        duplicate: true,
+        status: 'succeeded',
+        generation_request_id: 'generation_request_123'
+      },
+      site: { id: 'site_1', site_hash: 'site-key-1', license_key: 'key-123' }
+    });
+    const supabase = createSupabaseMock({
+      id: '11111111-1111-1111-1111-111111111111',
+      license_key: 'key-123',
+      plan: 'pro',
+      status: 'active'
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(authMiddleware({ supabase }));
+    app.use('/api/alt-text', createAltTextRouter({
+      supabase,
+      redis: null,
+      resultCache: new Map(),
+      checkRateLimit: async () => true,
+      getSiteFromHeaders: async () => ({ quota: 50, used: 0, remaining: 50 })
+    }));
+
+    const res = await request(app)
+      .post('/api/alt-text')
+      .set('X-License-Key', 'key-123')
+      .set('Idempotency-Key', 'run-abc')
+      .send({ image: { url: 'https://example.com/img.jpg', width: 1, height: 1 } });
+
+    expect(res.status).toBe(200);
+    expect(res.body.altText).toBe('mock alt');
+    expect(usageService.recordUsage).not.toHaveBeenCalled();
+  });
+
   test('falls back to site owner when no authenticated user is present', async () => {
     quotaService.reserveGenerationQuota.mockResolvedValueOnce({
       error: null,
