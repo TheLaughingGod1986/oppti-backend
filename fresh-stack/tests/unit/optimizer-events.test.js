@@ -1,3 +1,5 @@
+process.env.OPTIMIZER_AUDIT_ENABLED = 'true';
+
 const { detectEvents, getEvents, categoryGains, _memoryEvents } = require('../../services/optimizerEvents');
 
 function audit(id, overall, cats, ageDays) {
