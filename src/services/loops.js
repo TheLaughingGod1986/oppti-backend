@@ -501,6 +501,10 @@ async function trackImageSeoAuditRequested({
   auditId,
   source = 'image-seo-audit'
 }) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { context: 'trackImageSeoAuditRequested' });
+    return null;
+  }
   await upsertAuditLeadContact({ email, websiteUrl, normalizedDomain, source });
   await loopsPost('/events/send', {
     email,
@@ -525,6 +529,10 @@ async function trackImageSeoAuditCompleted({
   missingAltPercent,
   source = 'image-seo-audit'
 }) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { context: 'trackImageSeoAuditCompleted' });
+    return null;
+  }
   await upsertAuditLeadContact({
     email,
     websiteUrl,
@@ -559,6 +567,10 @@ async function trackImageSeoAuditFailed({
   errorCode,
   source = 'image-seo-audit'
 }) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { context: 'trackImageSeoAuditFailed' });
+    return null;
+  }
   await upsertAuditLeadContact({ email, websiteUrl, normalizedDomain, source });
   await loopsPost('/events/send', {
     email,
@@ -583,6 +595,10 @@ async function upsertAuditLeadContact({
   imagesScanned = null,
   missingAltPercent = null
 }) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { path: '/contacts/create', method: 'POST' });
+    return null;
+  }
   const body = {
     email,
     websiteUrl,
@@ -612,6 +628,7 @@ module.exports = {
   buildIdempotencyKey,
   getSkipDomains,
   isLoopsSkippedEmail,
+  upsertAuditLeadContact,
   pluginContactProperties,
   sendEvent,
   trackAccountCreated,
