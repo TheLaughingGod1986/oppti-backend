@@ -12,6 +12,7 @@ const {
   buildInternalLinkingRequestFingerprint
 } = require('../services/internalLinkingQuota');
 const { recordUsage } = require('../services/usage');
+const { recordInternalLinkingConnection } = require('../services/internalLinkingConnection');
 
 const pageRefSchema = z.object({
   id: z.union([z.string(), z.number()]).optional().nullable(),
@@ -213,6 +214,12 @@ function createInternalLinkingRouter({ supabase, checkRateLimit } = {}) {
         userAgent: req.get('user-agent') || null
       });
 
+      await recordInternalLinkingConnection(supabase, {
+        account,
+        pluginVersion: req.header('X-Plugin-Version') || userInfo?.plugin_version || null,
+        requestId: req.id || null
+      });
+
       const entitlement = buildEntitlementSnapshot(reservation.reservation);
 
       return res.json({
@@ -288,6 +295,12 @@ function createInternalLinkingRouter({ supabase, checkRateLimit } = {}) {
         message: status.message || 'Could not load internal linking quota'
       });
     }
+
+    await recordInternalLinkingConnection(supabase, {
+      account: resolveAccount(req),
+      pluginVersion: req.header('X-Plugin-Version') || null,
+      requestId: req.id || null
+    });
 
     logger.info('[internal-linking.quota] served', { site_id: status.site_id || null });
     return res.json({ success: true, ...status });
