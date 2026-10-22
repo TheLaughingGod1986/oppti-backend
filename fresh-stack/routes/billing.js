@@ -1906,17 +1906,85 @@ async function buildSubscriptionStatusPayload({ supabase, subscription, priceIds
   };
 }
 
+/**
+ * Another still-active paid subscription for the same site or Stripe customer,
+ * other than the one being canceled. Used so canceling or deleting an old
+ * subscription never drops a paying site/account back to free.
+ */
+async function findOtherActivePaidSubscription(supabase, { account, site, stripeSubscriptionId }) {
+  const lookups = [
+    ['site_id', site?.id || null],
+    ['stripe_customer_id', account?.stripe_customer_id || null]
+  ].filter(([, value]) => Boolean(value));
+  const seen = new Set();
+  for (const [column, value] of lookups) {
+    let rows = [];
+    try {
+      const { data, error } = await supabase
+        .from('site_subscriptions')
+        .select(SITE_SUBSCRIPTION_SELECT)
+        .eq(column, value)
+        .in('status', ACTIVE_BILLING_STATUSES);
+      if (error) {
+        logger.warn('[billing] other active subscription lookup failed', { column, error: error.message });
+        continue;
+      }
+      rows = Array.isArray(data) ? data : (data ? [data] : []);
+    } catch (error) {
+      logger.warn('[billing] other active subscription lookup failed', { column, error: error.message });
+      continue;
+    }
+    for (const row of rows) {
+      if (!row || seen.has(row.id)) continue;
+      seen.add(row.id);
+      const plan = normalizePlanValue(row.plan_id);
+      if (
+        row.stripe_subscription_id
+        && row.stripe_subscription_id !== stripeSubscriptionId
+        && ACTIVE_BILLING_STATUSES.includes(String(row.status || '').toLowerCase())
+        && plan
+        && !['free', 'credits', 'trial'].includes(plan)
+      ) {
+        return { ...row, plan_id: plan };
+      }
+    }
+  }
+  return null;
+}
+
 async function syncCanceledSubscriptionPointers(supabase, { account, site, stripeSubscriptionId }) {
   const updates = {};
+  const otherActive = await findOtherActivePaidSubscription(supabase, { account, site, stripeSubscriptionId });
+  if (otherActive) {
+    updates.other_active_subscription = {
+      stripe_subscription_id: otherActive.stripe_subscription_id,
+      plan_id: otherActive.plan_id,
+      site_id: otherActive.site_id || null
+    };
+    logger.info('[billing] canceled subscription has an active replacement; keeping paid entitlement', {
+      account_id: account?.id || null,
+      site_id: site?.id || null,
+      canceled_subscription_id: stripeSubscriptionId || null,
+      active_subscription_id: otherActive.stripe_subscription_id,
+      active_plan_id: otherActive.plan_id
+    });
+  }
 
   if (account?.id && account.stripe_subscription_id === stripeSubscriptionId) {
-    const { error } = await supabase
-      .from('licenses')
-      .update({
+    // Repoint to the subscription that is still paying instead of dropping to free.
+    const licensePayload = otherActive
+      ? {
+        plan: otherActive.plan_id,
+        stripe_subscription_id: otherActive.stripe_subscription_id
+      }
+      : {
         plan: 'free',
         billing_cycle: 'monthly',
         stripe_subscription_id: null
-      })
+      };
+    const { error } = await supabase
+      .from('licenses')
+      .update(licensePayload)
       .eq('id', account.id)
       .select(ACCOUNT_SELECT)
       .single();
@@ -1924,11 +1992,17 @@ async function syncCanceledSubscriptionPointers(supabase, { account, site, strip
     updates.license = {
       attempted: true,
       success: !error,
-      error: error?.message || null
+      error: error?.message || null,
+      repointed: Boolean(otherActive)
     };
   }
 
-  if (site?.id) {
+  // The legacy sites.quota_limit only falls back to the free allowance when no
+  // other paid subscription still covers this site.
+  const siteStillPaid = Boolean(otherActive && (!otherActive.site_id || otherActive.site_id === site?.id));
+  if (site?.id && siteStillPaid) {
+    updates.site = { attempted: false, skipped: 'other_active_subscription' };
+  } else if (site?.id) {
     const { error } = await supabase
       .from('sites')
       .update({
