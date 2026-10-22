@@ -62,6 +62,7 @@ EMAIL_BRAND_NAME=OpptiAI
 RESEND_FROM_EMAIL=noreply@yourdomain.com  # Legacy support, use EMAIL_FROM
 RESEND_CONTACT_EMAIL=support@oppti.dev  # Optional: contact-form inbox (default support@oppti.dev)
 RESEND_AUDIENCE_ID=aud_xxx  # Optional: For subscriber management
+PASSWORD_RESET_BASE_URL=https://oppti.dev  # Optional: base of the emailed reset link (<base>/reset-password?token=...). https only; unset or invalid = https://oppti.dev. Never taken from the request.
 ```
 
 ## Documentation

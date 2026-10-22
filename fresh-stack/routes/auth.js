@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { sendPasswordResetEmail, isAvailable: isEmailAvailable } = require('../lib/email');
+const { buildPasswordResetLink } = require('../lib/passwordReset');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { getAnonymousTrialContinuity } = require('../services/anonymousTrial');
@@ -528,6 +529,76 @@ async function recordSignupSource({ supabase, user, body, pluginId, requestId })
     logger.warn('[Auth] signup_source PostHog identify failed', { requestId, error: error.message });
   }
   return { source, other };
+}
+
+const resetLogger = logger.withEmailRedaction();
+
+// One body for every valid forgot-password request: never the link or token.
+const FORGOT_PASSWORD_RESPONSE = Object.freeze({
+  success: true,
+  message: 'If an account exists with this email, you will receive password reset instructions',
+});
+
+function tokensMatch(stored, provided) {
+  if (typeof stored !== 'string' || typeof provided !== 'string' || !stored || !provided) {
+    return false;
+  }
+  const a = Buffer.from(stored);
+  const b = Buffer.from(provided);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Store a fresh token and email the link to the account's address on file.
+// Runs after the response is sent; failures are logged (email masked) only.
+async function issuePasswordReset({ supabase, account, email }) {
+  const resetToken = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+  const { error: updateError } = await supabase
+    .from('licenses')
+    .update({
+      password_reset_token: resetToken,
+      password_reset_expires: expiresAt
+    })
+    .eq('id', account.id);
+
+  if (updateError) {
+    resetLogger.error('[Auth] Could not store reset token', {
+      email,
+      userId: account.id,
+      code: updateError.code || null,
+      error: updateError.message
+    });
+    return { sent: false, reason: 'TOKEN_STORE_FAILED' };
+  }
+
+  if (!isEmailAvailable()) {
+    resetLogger.error('[Auth] Password reset email not sent: email service not configured', {
+      email,
+      userId: account.id
+    });
+    return { sent: false, reason: 'EMAIL_UNAVAILABLE' };
+  }
+
+  const resetLink = buildPasswordResetLink(resetToken);
+  let result;
+  try {
+    result = await sendPasswordResetEmail(account.email || email, resetLink);
+  } catch (err) {
+    result = { success: false, error: err?.message };
+  }
+
+  if (!result?.success) {
+    resetLogger.error('[Auth] Failed to send password reset email', {
+      email,
+      userId: account.id,
+      error: result?.error || null
+    });
+    return { sent: false, reason: 'SEND_FAILED' };
+  }
+
+  resetLogger.info('[Auth] Password reset email sent', { email, userId: account.id });
+  return { sent: true };
 }
 
 function createAuthRouter({ supabase }) {
@@ -1207,24 +1278,28 @@ function createAuthRouter({ supabase }) {
     }
   });
 
-  // Forgot password (placeholder - would send email in production)
+  // Forgot password.
+  // Security (QA review 22 Oct 2026):
+  // - The reset link is built only from the fixed server-side base
+  //   (lib/passwordReset.js). Any siteUrl in the request is ignored.
+  // - The link and token are never returned in a response, on any branch.
+  // - Every valid request gets the same 200 body. The response is sent right
+  //   after the account lookup; token storage and the email send run after it,
+  //   so timing does not depend on whether the email exists or the send worked.
   router.post('/forgot-password', async (req, res) => {
-    logger.info('[Auth] Forgot password request received', { 
+    resetLogger.info('[Auth] Forgot password request received', {
       email: req.body?.email,
-      siteUrl: req.body?.siteUrl,
       requestId: req.id || 'no-id'
     });
 
     const schema = z.object({
       email: z.string().email(),
-      siteUrl: z.string().url().optional(),
     });
 
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) {
-      logger.warn('[Auth] Forgot password validation failed', { 
-        errors: parsed.error.flatten(),
-        body: req.body 
+      resetLogger.warn('[Auth] Forgot password validation failed', {
+        requestId: req.id || 'no-id'
       });
       return res.status(400).json({
         error: 'INVALID_REQUEST',
@@ -1233,144 +1308,66 @@ function createAuthRouter({ supabase }) {
       });
     }
 
-    const { email, siteUrl } = parsed.data;
+    const { email } = parsed.data;
+    let account = null;
 
     try {
-      // Check if user exists (only if Supabase is available)
-      let userExists = false;
-      let resetToken = null;
-      let resetLink = null;
-
       if (supabase) {
-        const { data: user } = await supabase
+        const { data: user, error: lookupError } = await supabase
           .from('licenses')
           .select('id, email')
           .eq('email', email)
           .maybeSingle();
-
-        if (user) {
-          userExists = true;
-          
-          // Generate reset token (crypto.randomUUID for simplicity)
-          resetToken = crypto.randomUUID();
-          
-          // Store reset token in database (if columns exist)
-          const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-          
-          const { error: updateError } = await supabase
-            .from('licenses')
-            .update({ 
-              password_reset_token: resetToken,
-              password_reset_expires: expiresAt
-            })
-            .eq('id', user.id);
-
-          if (updateError) {
-            if (updateError.code === '42703') { // Column doesn't exist
-              logger.warn('[Auth] Password reset columns not found - run migration 002_add_password_reset.sql', { 
-                error: updateError.message 
-              });
-            } else {
-              logger.error('[Auth] Could not store reset token in DB', { error: updateError.message });
-            }
-          } else {
-            logger.info('[Auth] Reset token stored in database', { 
-              email, 
-              userId: user.id,
-              token: resetToken.substring(0, 8) + '...'
-            });
-          }
-
-          // Build reset link
-          const baseUrl = siteUrl ? new URL(siteUrl).origin : 'http://localhost:8080';
-          resetLink = `${baseUrl}/wp-admin/admin.php?page=optti&reset-password&token=${resetToken}&email=${encodeURIComponent(email)}`;
+        if (lookupError) {
+          resetLogger.error('[Auth] Forgot password lookup failed', { email, error: lookupError.message });
         }
+        account = user || null;
       } else {
-        // Supabase not available - dev mode: generate token anyway
-        resetToken = crypto.randomUUID();
-        const baseUrl = siteUrl ? new URL(siteUrl).origin : 'http://localhost:8080';
-        resetLink = `${baseUrl}/wp-admin/admin.php?page=optti&reset-password&token=${resetToken}&email=${encodeURIComponent(email)}`;
-        logger.warn('[Auth] Supabase not available - dev mode only', { email });
+        resetLogger.warn('[Auth] Forgot password: database unavailable, no reset issued', { email });
       }
-
-      // Send email if service is available and user exists
-      let emailSent = false;
-      if (userExists && resetLink && isEmailAvailable()) {
-        const emailResult = await sendPasswordResetEmail(email, resetLink);
-        emailSent = emailResult.success;
-        
-        if (emailSent) {
-          logger.info('[Auth] Password reset email sent successfully', { email });
-        } else {
-          logger.warn('[Auth] Failed to send password reset email', { 
-            email, 
-            error: emailResult.error 
-          });
-        }
-      }
-
-      // In development mode or if email service not configured, return reset link
-      const isDev = process.env.NODE_ENV !== 'production';
-      const hasEmailService = isEmailAvailable();
-
-      if (isDev || !hasEmailService || !emailSent) {
-        // Return reset link for development/testing or if email failed
-        return res.json({
-          success: true,
-          message: userExists || !supabase 
-            ? (emailSent 
-                ? 'Password reset link has been sent to your email' 
-                : 'Password reset link generated (dev mode)')
-            : 'If an account exists with this email, you will receive password reset instructions',
-          data: {
-            resetLink: resetLink,
-            note: hasEmailService && !emailSent 
-              ? 'Email service failed. Use this link to reset your password.' 
-              : 'Email service not configured. Use this link to reset your password.',
-            emailSent: emailSent
-          }
-        });
-      }
-
-      // Email sent successfully - don't reveal if email exists
-      return res.json({
-        success: true,
-        message: 'If an account exists with this email, you will receive password reset instructions',
-      });
-
     } catch (err) {
-      logger.error('[Auth] Forgot password error:', err);
-      // Don't reveal if email exists on error
-      return res.json({
-        success: true,
-        message: 'If an account exists with this email, you will receive password reset instructions',
-      });
+      resetLogger.error('[Auth] Forgot password lookup error', { email, error: err?.message });
+      account = null;
+    }
+
+    res.json(FORGOT_PASSWORD_RESPONSE);
+
+    if (!account) {
+      return;
+    }
+
+    try {
+      await issuePasswordReset({ supabase, account, email });
+    } catch (err) {
+      resetLogger.error('[Auth] Forgot password background error', { email, error: err?.message });
     }
   });
 
   // Reset password
   router.post('/reset-password', async (req, res) => {
-    logger.info('[Auth] Reset password request received', { 
+    resetLogger.info('[Auth] Reset password request received', {
       email: req.body?.email,
       requestId: req.id || 'no-id'
     });
 
+    // email is optional: the oppti.dev reset page sends only { token, password }.
     const schema = z.object({
-      email: z.string().email(),
-      token: z.string().min(1),
-      newPassword: z.string().min(8).or(z.string().min(8)),
+      email: z.string().email().optional(),
+      token: z.string().min(1).max(256),
+      newPassword: z.string().min(8),
       password: z.string().min(8).optional(), // Alias for newPassword
     });
 
     const parsed = schema.safeParse({
       ...req.body,
-      newPassword: req.body.newPassword || req.body.password
+      newPassword: req.body?.newPassword || req.body?.password
     });
 
     if (!parsed.success) {
-      logger.warn('[Auth] Reset password validation failed', { 
-        errors: parsed.error.flatten(),
-        body: req.body 
+      // Never log the request body here: it carries the new password and token.
+      resetLogger.warn('[Auth] Reset password validation failed', {
+        fields: Object.keys(parsed.error.flatten().fieldErrors || {}),
+        requestId: req.id || 'no-id'
       });
       return res.status(400).json({
         error: 'INVALID_REQUEST',
@@ -1391,25 +1388,18 @@ function createAuthRouter({ supabase }) {
         });
       }
 
-      // Find user by email and validate reset token
-      const { data: user, error: userError } = await supabase
+      // Find the account by email (plugin form) or by token (oppti.dev page).
+      let lookup = supabase
         .from('licenses')
-        .select('id, email, password_reset_token, password_reset_expires')
-        .eq('email', email)
-        .maybeSingle();
+        .select('id, email, password_reset_token, password_reset_expires');
+      lookup = email ? lookup.eq('email', email) : lookup.eq('password_reset_token', token);
+      const { data: user, error: userError } = await lookup.maybeSingle();
 
-      if (userError || !user) {
-        // Don't reveal if email exists
-        return res.status(400).json({
-          error: 'INVALID_TOKEN',
-          code: 'INVALID_TOKEN',
-          message: 'Invalid or expired reset token',
-        });
-      }
-
-      // Check if token matches
-      if (!user.password_reset_token || user.password_reset_token !== token) {
-        logger.warn('[Auth] Invalid reset token', { email, tokenProvided: token.substring(0, 8) + '...' });
+      if (userError || !user || !tokensMatch(user.password_reset_token, token)) {
+        if (user) {
+          resetLogger.warn('[Auth] Invalid reset token', { email: user.email });
+        }
+        // Same answer whether or not the email exists
         return res.status(400).json({
           error: 'INVALID_TOKEN',
           code: 'INVALID_TOKEN',
@@ -1422,7 +1412,7 @@ function createAuthRouter({ supabase }) {
         const expiresAt = new Date(user.password_reset_expires);
         const now = new Date();
         if (now > expiresAt) {
-          logger.warn('[Auth] Expired reset token', { email, expiresAt });
+          resetLogger.warn('[Auth] Expired reset token', { email: user.email, expiresAt });
           return res.status(400).json({
             error: 'TOKEN_EXPIRED',
             code: 'TOKEN_EXPIRED',
@@ -1446,8 +1436,8 @@ function createAuthRouter({ supabase }) {
         .eq('id', user.id);
 
       if (updateError) {
-        logger.error('[Auth] Failed to update password', { 
-          email, 
+        resetLogger.error('[Auth] Failed to update password', {
+          email: user.email,
           error: updateError.message 
         });
         return res.status(500).json({
@@ -1457,7 +1447,7 @@ function createAuthRouter({ supabase }) {
         });
       }
 
-      logger.info('[Auth] Password reset successful', { email, userId: user.id });
+      resetLogger.info('[Auth] Password reset successful', { email: user.email, userId: user.id });
 
       return res.json({
         success: true,
@@ -1465,7 +1455,7 @@ function createAuthRouter({ supabase }) {
       });
 
     } catch (err) {
-      logger.error('[Auth] Reset password error:', err);
+      resetLogger.error('[Auth] Reset password error', { error: err?.message });
       return res.status(500).json({
         error: 'SERVER_ERROR',
         code: 'SERVER_ERROR',
