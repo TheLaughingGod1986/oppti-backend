@@ -4,7 +4,9 @@ const {
   resolveBillingCurrency,
   selectCatalogPriceIds,
   isUsdPriceId,
-  canonicalizePlanKey
+  canonicalizePlanKey,
+  resolveBillingCountryWithSource,
+  findGbpEquivalentPriceId
 } = require('../../lib/billingCurrency');
 
 describe('billingCurrency', () => {
@@ -44,6 +46,30 @@ describe('billingCurrency', () => {
       headers: { 'x-visitor-country': 'us' },
       body: {}
     })).toBe('US');
+  });
+
+  test('plugin-sent admin country beats host geolocation', () => {
+    expect(resolveBillingCountryWithSource({
+      headers: { 'cf-ipcountry': 'US' },
+      body: { admin_country: 'pl' }
+    })).toEqual({ country: 'PL', source: 'body.admin_country' });
+    expect(resolveBillingCountryWithSource({
+      headers: { 'cf-ipcountry': 'US', 'x-admin-country': 'GB' },
+      body: {}
+    })).toEqual({ country: 'GB', source: 'x-admin-country' });
+    // Unknown admin country falls through to edge geo.
+    expect(resolveBillingCountryWithSource({
+      headers: { 'cf-ipcountry': 'US' },
+      body: { admin_country: 'XX' }
+    })).toEqual({ country: 'US', source: 'cf-ipcountry' });
+    expect(resolveBillingCountryWithSource({ headers: {}, body: {} })).toEqual({ country: null, source: 'none' });
+  });
+
+  test('findGbpEquivalentPriceId maps USD prices to the same plan in GBP', () => {
+    expect(findGbpEquivalentPriceId(priceIds, priceIds.starterUsd)).toBe(priceIds.starter);
+    expect(findGbpEquivalentPriceId(priceIds, priceIds.creditsUsd)).toBe(priceIds.credits);
+    expect(findGbpEquivalentPriceId(priceIds, priceIds.starter)).toBeNull();
+    expect(findGbpEquivalentPriceId({ proUsd: 'price_x' }, 'price_x')).toBeNull();
   });
 
   test('missing/unknown country resolves to GBP currency', () => {

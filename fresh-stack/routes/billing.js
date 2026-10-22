@@ -3,11 +3,13 @@ const crypto = require('crypto');
 const logger = require('../lib/logger');
 const {
   resolveBillingCountry,
+  resolveBillingCountryWithSource,
   resolveBillingCurrency,
   selectCatalogPriceIds,
   listConfiguredPriceIds,
   isUsdPriceId,
-  canonicalizePlanKey
+  canonicalizePlanKey,
+  findGbpEquivalentPriceId
 } = require('../lib/billingCurrency');
 const { verifyWebhookSignature } = require('../lib/stripe');
 const { captureServerEvent, identifyServerUser } = require('../lib/posthog');
@@ -2773,6 +2775,41 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
   };
 }
 
+/**
+ * One structured log line per /billing/checkout outcome. Never includes email,
+ * license key (prefix only) or card data.
+ */
+function logCheckoutOutcome(context = {}, fields = {}) {
+  const entry = {
+    status: fields.status,
+    outcome: fields.outcome,
+    error_code: fields.error_code || null,
+    country: context.country || null,
+    country_source: context.countrySource || 'none',
+    currency: context.currency || null,
+    requested_price_id: context.requestedPriceId || null,
+    price_id: fields.price_id !== undefined ? fields.price_id : (context.priceId || null),
+    plan: fields.plan !== undefined ? fields.plan : (context.plan || null),
+    mode: fields.mode || null,
+    session_id: fields.session_id || null,
+    idempotent_replayed: fields.idempotent_replayed === true,
+    account_id: context.accountId || null,
+    site_id: context.siteId || null,
+    site_key: context.siteKey || null,
+    license_key_prefix: context.licenseKeyPrefix || null,
+    plugin_version: context.pluginVersion || null
+  };
+  if (fields.error_message) entry.error_message = String(fields.error_message).slice(0, 300);
+  const level = fields.status >= 500 ? 'error' : fields.status >= 400 ? 'warn' : 'info';
+  logger[level]('[billing] checkout_outcome', entry);
+}
+
+function isIdempotentReplay(session) {
+  const headers = session?.lastResponse?.headers || {};
+  const value = headers['idempotent-replayed'] ?? headers['Idempotent-Replayed'];
+  return value === true || value === 'true';
+}
+
 function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
   const router = express.Router();
 
@@ -2858,32 +2895,74 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
   });
 
   router.post('/checkout', async (req, res) => {
-    if (!requireBillingAuth(req, res)) return;
-    const { priceId, successUrl, cancelUrl } = req.body || {};
     const siteKey = req.header('X-Site-Key');
     const account = req.license || req.user || null;
-    const billingCountry = resolveBillingCountry(req);
+    const { country: billingCountry, source: billingCountrySource } = resolveBillingCountryWithSource(req);
     const billingCurrency = resolveBillingCurrency(billingCountry);
+    const requestedPriceId = typeof req.body?.priceId === 'string' ? req.body.priceId.trim() : (req.body?.priceId || null);
+    const logContext = {
+      country: billingCountry,
+      countrySource: billingCountrySource,
+      currency: billingCurrency,
+      requestedPriceId,
+      priceId: requestedPriceId,
+      accountId: account?.id || null,
+      siteKey: siteKey || null,
+      licenseKeyPrefix: maskSecret(account?.license_key || null),
+      pluginVersion: sanitizeStripeMetadataValue(req.body?.plugin_version, { maxLength: 32 }) || null
+    };
+    const reply = (status, body, fields = {}) => {
+      logCheckoutOutcome(logContext, { status, ...fields });
+      return res.status(status).json(body);
+    };
+
+    if (requiredToken) {
+      const token = req.header('Authorization')?.replace(/^Bearer\s+/i, '') || req.header('X-API-Key');
+      if (token !== requiredToken) {
+        return reply(401, { error: 'Unauthorized' }, { outcome: 'unauthorized', error_code: 'UNAUTHORIZED' });
+      }
+    }
+    if (!siteKey) {
+      return reply(400, { error: 'Missing X-Site-Key header', code: 'MISSING_SITE_KEY' }, {
+        outcome: 'rejected', error_code: 'MISSING_SITE_KEY'
+      });
+    }
+    const { successUrl, cancelUrl } = req.body || {};
+    let priceId = requestedPriceId;
     const catalogPriceIds = selectCatalogPriceIds(priceIds || {}, billingCountry);
-    const selectedPlan = plans.find((plan) => plan.priceId === priceId)
-      || buildPlansList(catalogPriceIds, { currency: billingCurrency }).find((plan) => plan.priceId === priceId)
-      || null;
     const requestedAttribution = normalizeCheckoutAttribution(req.body);
     const allowedPriceIds = listConfiguredPriceIds(priceIds || {});
 
     if (!priceId || !allowedPriceIds.includes(priceId)) {
-      return res.status(400).json({ error: 'Invalid or missing priceId', valid: priceIds });
+      return reply(400, {
+        error: 'Invalid or missing priceId',
+        code: 'INVALID_PRICE_ID',
+        message: 'This plan is not available for checkout. Please refresh the page and try again.',
+        valid: priceIds
+      }, { outcome: 'rejected', error_code: 'INVALID_PRICE_ID' });
     }
 
-    // USD Price IDs are US-geo only. Missing/unknown country stays on GBP.
+    // USD Price IDs are US-only. For any other (or unknown) country, fall back to
+    // the same plan's GBP price rather than dead-ending the customer with a 400.
+    let currencyFallback = null;
     if (isUsdPriceId(priceIds, priceId) && billingCurrency !== 'usd') {
-      return res.status(400).json({
-        error: 'USD priceId requires US visitor country',
-        code: 'USD_PRICE_REQUIRES_US_COUNTRY',
-        country: billingCountry,
-        currency: billingCurrency
-      });
+      const gbpPriceId = findGbpEquivalentPriceId(priceIds, priceId);
+      if (!gbpPriceId) {
+        return reply(400, {
+          error: 'USD priceId requires US visitor country',
+          code: 'USD_PRICE_REQUIRES_US_COUNTRY',
+          message: 'This price is only available in the United States, and no local-currency price is configured for this plan.',
+          country: billingCountry,
+          currency: billingCurrency
+        }, { outcome: 'rejected', error_code: 'USD_PRICE_REQUIRES_US_COUNTRY' });
+      }
+      currencyFallback = { from: priceId, to: gbpPriceId };
+      priceId = gbpPriceId;
+      logContext.priceId = priceId;
     }
+    const selectedPlan = plans.find((plan) => plan.priceId === priceId)
+      || buildPlansList(catalogPriceIds, { currency: billingCurrency }).find((plan) => plan.priceId === priceId)
+      || null;
 
     let siteRecord = null;
     if (supabase && siteKey) {
@@ -2911,9 +2990,13 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       }
     }
 
+    logContext.siteId = siteRecord?.id || null;
+
     const stripeClient = getStripe();
     if (!stripeClient) {
-      return res.status(501).json({ error: 'Stripe not configured' });
+      return reply(501, { error: 'Stripe not configured', code: 'STRIPE_NOT_CONFIGURED' }, {
+        outcome: 'error', error_code: 'STRIPE_NOT_CONFIGURED'
+      });
     }
     try {
       // Resolve from allowlisted priceId first so USD IDs (absent from the GBP
@@ -2926,6 +3009,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       const mode = selectedPlanId === 'credits' || planForCheckout?.interval === 'one-time'
         ? 'payment'
         : 'subscription';
+      logContext.plan = selectedPlanId;
       const checkoutRateLimit = checkCheckoutRateLimit(req, { siteKey, priceId, selectedPlanId });
       if (!checkoutRateLimit.allowed) {
         logger.warn('[billing] checkout rate limit exceeded', {
@@ -2936,12 +3020,12 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
           count: checkoutRateLimit.count,
           limit: checkoutRateLimit.limit
         });
-        return res.status(429).json({
+        return reply(429, {
           error: 'CHECKOUT_RATE_LIMIT_EXCEEDED',
           code: 'CHECKOUT_RATE_LIMIT_EXCEEDED',
           message: 'Too many checkout attempts. Please wait a few minutes before trying again.',
           retry_after: checkoutRateLimit.retryAfterSeconds
-        });
+        }, { outcome: 'rate_limited', error_code: 'CHECKOUT_RATE_LIMIT_EXCEEDED', mode });
       }
       let existingSubscription = null;
       if (mode === 'subscription') {
@@ -2957,11 +3041,12 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
               stripeCustomerId: existingCustomerId,
               stripeSubscriptionId: existingSubscription.stripe_subscription_id || null
             });
-            return res.status(409).json({
+            return reply(409, {
               success: false,
               error: 'ACTIVE_SUBSCRIPTION_EXISTS',
+              code: 'ACTIVE_SUBSCRIPTION_EXISTS',
               message: 'An active subscription already exists for this license.'
-            });
+            }, { outcome: 'rejected', error_code: 'ACTIVE_SUBSCRIPTION_EXISTS', mode });
           }
 
           const portalSession = await stripeClient.billingPortal.sessions.create({
@@ -2976,13 +3061,13 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
             stripeSubscriptionId: existingSubscription.stripe_subscription_id || null,
             billing_info_source: existingBilling.resolutionPath
           });
-          return res.json({
+          return reply(200, {
             success: true,
             url: portalSession.url,
             portal: true,
             customerId: existingCustomerId,
             subscriptionId: existingSubscription.stripe_subscription_id || null
-          });
+          }, { outcome: 'portal_redirect', mode });
         }
       }
 
@@ -2999,11 +3084,12 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       if (mode === 'subscription'
         && existingSubscription
         && normalizePlanValue(existingSubscription.plan_id) === selectedPlanId) {
-        return res.status(403).json({
+        return reply(403, {
           error: 'SITE_LIMIT_EXCEEDED',
+          code: 'SITE_LIMIT_EXCEEDED',
           message: 'This subscription plan is limited to 1 site per subscription.',
           plan: selectedPlanId
-        });
+        }, { outcome: 'rejected', error_code: 'SITE_LIMIT_EXCEEDED', mode });
       }
 
       const purchaseType = inferPurchaseType({
@@ -3084,11 +3170,39 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         checkoutParams: checkoutPayload
       });
       const session = await stripeClient.checkout.sessions.create(checkoutPayload, { idempotencyKey });
-      // sessionId kept for existing clients; session_id/checkout_url are aliases.
-      res.json({ success: true, url: session.url, sessionId: session.id, session_id: session.id, checkout_url: session.url });
+      // Same params within Stripe's 24h idempotency window return the existing
+      // open session instead of a new one; that is a success, not a failure.
+      const reused = isIdempotentReplay(session);
+      const responseBody = {
+        success: true,
+        url: session.url,
+        // sessionId kept for existing clients; session_id/checkout_url are aliases.
+        sessionId: session.id,
+        session_id: session.id,
+        checkout_url: session.url,
+        reused,
+        currency: billingCurrency
+      };
+      if (currencyFallback) {
+        responseBody.currency_fallback = { requested_price_id: currencyFallback.from, price_id: currencyFallback.to, currency: 'gbp' };
+      }
+      return reply(200, responseBody, {
+        outcome: currencyFallback ? 'session_created_gbp_fallback' : (reused ? 'session_reused' : 'session_created'),
+        mode,
+        session_id: session.id,
+        idempotent_replayed: reused
+      });
     } catch (error) {
-      logger.error('[billing] checkout error', error.message);
-      res.status(500).json({ error: 'Failed to create checkout session' });
+      const stripeCode = error?.code || error?.raw?.code || error?.type || null;
+      return reply(500, {
+        error: 'Failed to create checkout session',
+        code: 'CHECKOUT_SESSION_FAILED',
+        message: 'Stripe could not start checkout right now. Please try again in a minute.'
+      }, {
+        outcome: 'error',
+        error_code: stripeCode ? `STRIPE_${String(stripeCode).toUpperCase()}` : 'CHECKOUT_SESSION_FAILED',
+        error_message: error?.message
+      });
     }
   });
 

@@ -32,26 +32,43 @@ function normalizeCountryCode(value) {
 }
 
 /**
- * Resolve visitor country from request geo signals only (not Accept-Language / locale).
- * Preference order:
- *  1. Cloudflare CF-IPCountry
- *  2. Plugin-forwarded admin/visitor country headers
- *  3. Checkout body.country (plugin geo from admin IP) — never locale
+ * Resolve the billing country and where it came from.
+ *
+ * Checkout requests reach us server-to-server from the customer's WordPress
+ * host, so edge geo (CF-IPCountry) describes the *hosting server*, not the
+ * admin clicking Upgrade (e.g. a Polish site on a US host geolocated to US).
+ * The plugin therefore forwards the WP admin's own country, which wins.
+ *
+ * Preference order (never Accept-Language / locale headers):
+ *  1. Plugin-sent admin country: X-Admin-Country header or body.admin_country
+ *  2. Edge geo: CF-IPCountry
+ *  3. Other forwarded geo headers (X-Visitor-Country, X-Client-Country, X-Country)
+ *  4. Checkout body.country (attribution field)
+ * Missing/unknown everywhere -> null (GBP).
+ *
+ * @returns {{ country: string|null, source: string }}
  */
-function resolveBillingCountry(req = {}) {
+function resolveBillingCountryWithSource(req = {}) {
   const headers = req.headers || {};
-  const headerCountry = normalizeCountryCode(
-    headers['cf-ipcountry']
-    || headers['CF-IPCountry']
-    || headers['x-visitor-country']
-    || headers['x-client-country']
-    || headers['x-admin-country']
-    || headers['x-country']
-  );
-  if (headerCountry) return headerCountry;
-
   const body = req.body || {};
-  return normalizeCountryCode(body.country);
+  const candidates = [
+    ['x-admin-country', headers['x-admin-country']],
+    ['body.admin_country', body.admin_country],
+    ['cf-ipcountry', headers['cf-ipcountry'] || headers['CF-IPCountry']],
+    ['x-visitor-country', headers['x-visitor-country']],
+    ['x-client-country', headers['x-client-country']],
+    ['x-country', headers['x-country']],
+    ['body.country', body.country]
+  ];
+  for (const [source, value] of candidates) {
+    const country = normalizeCountryCode(value);
+    if (country) return { country, source };
+  }
+  return { country: null, source: 'none' };
+}
+
+function resolveBillingCountry(req = {}) {
+  return resolveBillingCountryWithSource(req).country;
 }
 
 function shouldUseUsdPrices(country) {
@@ -104,6 +121,17 @@ function canonicalizePlanKey(planKey) {
   return planKey.endsWith('Usd') ? planKey.slice(0, -3) : planKey;
 }
 
+/**
+ * GBP Price ID for the same plan as a USD Price ID (starterUsd -> starter).
+ * Returns null when priceId is not a configured USD price or no GBP twin exists.
+ */
+function findGbpEquivalentPriceId(priceIds = {}, priceId) {
+  const key = findPriceKey(priceIds, priceId);
+  if (!key || !USD_PRICE_KEYS.includes(key)) return null;
+  const gbpPrice = priceIds[canonicalizePlanKey(key)];
+  return typeof gbpPrice === 'string' && gbpPrice.trim() ? gbpPrice : null;
+}
+
 function staticAmountForPlan(planId, currency) {
   const table = currency === 'usd' ? USD_STATIC_AMOUNTS : GBP_STATIC_AMOUNTS;
   return table[planId] ?? null;
@@ -116,6 +144,7 @@ module.exports = {
   GBP_STATIC_AMOUNTS,
   normalizeCountryCode,
   resolveBillingCountry,
+  resolveBillingCountryWithSource,
   shouldUseUsdPrices,
   resolveBillingCurrency,
   selectCatalogPriceIds,
@@ -123,5 +152,6 @@ module.exports = {
   findPriceKey,
   isUsdPriceId,
   canonicalizePlanKey,
+  findGbpEquivalentPriceId,
   staticAmountForPlan
 };
