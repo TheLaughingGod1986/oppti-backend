@@ -3053,7 +3053,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
 
           const portalSession = await stripeClient.billingPortal.sessions.create({
             customer: existingCustomerId,
-            return_url: cancelUrl || successUrl || `${process.env.FRONTEND_URL || 'https://example.com'}/billing`
+            return_url: cancelUrl || successUrl || `${process.env.FRONTEND_URL || 'https://oppti.dev'}/billing`
           });
           logger.info('[billing] active subscription checkout redirected to portal', {
             account_id: account?.id || null,
@@ -3145,8 +3145,8 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       const checkoutPayload = {
         mode,
         line_items: [{ price: priceId, quantity: 1 }],
-        success_url: successUrl || `${process.env.FRONTEND_URL || 'https://example.com'}/billing/success`,
-        cancel_url: cancelUrl || `${process.env.FRONTEND_URL || 'https://example.com'}/billing/cancel`,
+        success_url: successUrl || `${process.env.FRONTEND_URL || 'https://oppti.dev'}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: cancelUrl || `${process.env.FRONTEND_URL || 'https://oppti.dev'}/billing/cancel`,
         client_reference_id: account?.id ? String(account.id) : undefined,
         metadata
       };
@@ -3365,7 +3365,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
     try {
       const session = await stripeClient.billingPortal.sessions.create({
         customer: resolvedCustomerId,
-        return_url: returnUrl || `${process.env.FRONTEND_URL || 'https://example.com'}/billing`
+        return_url: returnUrl || `${process.env.FRONTEND_URL || 'https://oppti.dev'}/billing`
       });
       res.json({
         success: true,
