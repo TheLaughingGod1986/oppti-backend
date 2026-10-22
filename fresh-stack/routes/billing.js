@@ -76,6 +76,14 @@ function normalizeStripeId(value) {
   return null;
 }
 
+// Stripe API >= 2025-03-31 (basil) removed invoice.subscription; the id lives under
+// invoice.parent.subscription_details.subscription.
+function resolveInvoiceSubscriptionId(invoice) {
+  return normalizeStripeId(invoice?.subscription)
+    || normalizeStripeId(invoice?.parent?.subscription_details?.subscription)
+    || null;
+}
+
 function resolvePlanFromPriceId(priceIds = {}, priceId) {
   if (!priceId) return null;
   const match = Object.entries(priceIds).find(([, configuredPriceId]) => configuredPriceId === priceId);
@@ -520,8 +528,12 @@ function resolveCurrentPlan({ metadata, accountPlan }) {
 }
 
 function getPriceContextFromLineItem(lineItem, priceIds) {
-  const priceId = normalizeStripeId(lineItem?.price) || normalizeStripeId(lineItem?.price?.id);
-  const rawProduct = lineItem?.price?.product;
+  // Stripe API >= 2025-03-31 (basil) moved invoice line prices to pricing.price_details.
+  const pricingDetails = lineItem?.pricing?.price_details || null;
+  const priceId = normalizeStripeId(lineItem?.price)
+    || normalizeStripeId(lineItem?.price?.id)
+    || normalizeStripeId(pricingDetails?.price);
+  const rawProduct = lineItem?.price?.product || pricingDetails?.product;
   const productId = normalizeStripeId(rawProduct);
   const recurringInterval = lineItem?.price?.recurring?.interval || null;
 
@@ -1446,7 +1458,7 @@ async function loadCustomerMetadata(stripeClient, stripeCustomerId, livemode) {
 }
 
 async function resolveInvoiceMetadata(stripeClient, invoice) {
-  const stripeSubscriptionId = normalizeStripeId(invoice?.subscription);
+  const stripeSubscriptionId = resolveInvoiceSubscriptionId(invoice);
   const stripeCustomerId = normalizeStripeId(invoice?.customer);
   const invoiceMetadata = mergeStripeMetadata(
     invoice?.metadata,
@@ -1591,7 +1603,7 @@ async function buildInvoiceSucceededPayload({
 }) {
   const metadata = await resolveInvoiceMetadata(stripeClient, invoice);
   const stripeCustomerId = normalizeStripeId(invoice.customer);
-  const stripeSubscriptionId = normalizeStripeId(invoice.subscription);
+  const stripeSubscriptionId = resolveInvoiceSubscriptionId(invoice);
   const identity = await resolveIdentityContext({
     supabase,
     metadata,
