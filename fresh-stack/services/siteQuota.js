@@ -1753,6 +1753,19 @@ async function selectPlan(supabase, planId) {
   return data || null;
 }
 
+// A row still marked active whose billing period ended more than this long ago
+// no longer grants a paid plan. Rows with no current_period_end keep the old
+// behaviour (treated as current).
+const SUBSCRIPTION_PERIOD_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
+const ACTIVE_SUBSCRIPTION_CANDIDATE_LIMIT = 10;
+
+function isSubscriptionPeriodLapsed(subscription, nowMs = Date.now()) {
+  if (!subscription?.current_period_end) return false;
+  const endMs = Date.parse(subscription.current_period_end);
+  if (!Number.isFinite(endMs)) return false;
+  return endMs + SUBSCRIPTION_PERIOD_GRACE_MS < nowMs;
+}
+
 async function selectActiveSiteSubscription(supabase, siteId) {
   if (!supabase || !siteId) return null;
   const { data, error } = await supabase
@@ -1761,14 +1774,23 @@ async function selectActiveSiteSubscription(supabase, siteId) {
     .eq('site_id', siteId)
     .in('status', ['active', 'trialing', 'past_due'])
     .order('current_period_end', { ascending: false, nullsFirst: false })
-    .limit(1);
+    .limit(ACTIVE_SUBSCRIPTION_CANDIDATE_LIMIT);
 
   if (error && !isMissingSchemaError(error)) {
     logger.warn('[siteQuota] subscription lookup failed', { siteId, error: error.message });
     return null;
   }
 
-  return Array.isArray(data) && data.length ? data[0] : null;
+  const rows = Array.isArray(data) ? data : [];
+  const nowMs = Date.now();
+  const current = rows.find((row) => !isSubscriptionPeriodLapsed(row, nowMs)) || null;
+  if (!current && rows.length) {
+    logger.info('[siteQuota] active subscription rows ignored: billing period lapsed', {
+      siteId,
+      lapsed_rows: rows.length
+    });
+  }
+  return current;
 }
 
 function hasLegacyPaidEntitlementEvidence(account) {
@@ -2512,5 +2534,6 @@ module.exports = {
   ensureSiteMembership,
   finalizeSiteGeneration,
   syncLegacySitePointers,
-  selectActiveSiteSubscription
+  selectActiveSiteSubscription,
+  isSubscriptionPeriodLapsed
 };

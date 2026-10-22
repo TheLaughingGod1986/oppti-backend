@@ -84,6 +84,23 @@ function resolveInvoiceSubscriptionId(invoice) {
     || null;
 }
 
+// Stripe API >= 2025-03-31 (basil) moved current_period_start/end from the
+// subscription to each subscription item. Prefer the top-level value (older API
+// versions, and the 2022-11-15 pinned client), then fall back to the first item.
+function resolveSubscriptionPeriod(subscription) {
+  const firstItem = Array.isArray(subscription?.items?.data) ? subscription.items.data[0] : null;
+  return {
+    start: subscription?.current_period_start || firstItem?.current_period_start || null,
+    end: subscription?.current_period_end || firstItem?.current_period_end || null
+  };
+}
+
+function toIsoFromUnix(seconds) {
+  return typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0
+    ? new Date(seconds * 1000).toISOString()
+    : null;
+}
+
 function resolvePlanFromPriceId(priceIds = {}, priceId) {
   if (!priceId) return null;
   const match = Object.entries(priceIds).find(([, configuredPriceId]) => configuredPriceId === priceId);
@@ -1727,6 +1744,7 @@ async function buildSubscriptionStatusPayload({ supabase, subscription, priceIds
     stripeSubscriptionId
   });
   const context = getPriceContextFromSubscription(subscription, priceIds);
+  const subscriptionPeriod = resolveSubscriptionPeriod(subscription);
   const plan = resolveCommercialPlan({
     metadata,
     context,
@@ -1777,12 +1795,8 @@ async function buildSubscriptionStatusPayload({ supabase, subscription, priceIds
     subscription: {
       status: subscription?.status || null,
       cancel_at_period_end: Boolean(subscription?.cancel_at_period_end),
-      current_period_start: subscription?.current_period_start
-        ? new Date(subscription.current_period_start * 1000).toISOString()
-        : null,
-      current_period_end: subscription?.current_period_end
-        ? new Date(subscription.current_period_end * 1000).toISOString()
-        : null,
+      current_period_start: toIsoFromUnix(subscriptionPeriod.start),
+      current_period_end: toIsoFromUnix(subscriptionPeriod.end),
       canceled_at: subscription?.canceled_at
         ? new Date(subscription.canceled_at * 1000).toISOString()
         : null
@@ -1836,10 +1850,15 @@ async function updateSiteSubscriptionStatus(supabase, stripeSubscriptionId, even
   const inactive = INACTIVE_BILLING_STATUSES.includes(status);
   const updatePayload = {
     status,
-    cancel_at_period_end: Boolean(subscription?.cancel_at_period_end),
-    current_period_start: subscription?.current_period_start || null,
-    current_period_end: subscription?.current_period_end || null
+    cancel_at_period_end: Boolean(subscription?.cancel_at_period_end)
   };
+  // Never blank a stored billing period when the event carries none.
+  if (subscription?.current_period_start) {
+    updatePayload.current_period_start = subscription.current_period_start;
+  }
+  if (subscription?.current_period_end) {
+    updatePayload.current_period_end = subscription.current_period_end;
+  }
 
   if (eventProperties?.plan) {
     updatePayload.plan_id = eventProperties.plan;
