@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
-const logger = require('../lib/logger');
+// Stripe errors can echo customer emails: mask them in every billing log line.
+const logger = require('../lib/logger').withEmailRedaction();
 const {
   resolveBillingCountry,
   resolveBillingCountryWithSource,

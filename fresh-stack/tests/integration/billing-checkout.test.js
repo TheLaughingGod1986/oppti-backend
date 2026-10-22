@@ -1025,6 +1025,33 @@ describe('POST /billing/checkout USD allowlist + geo', () => {
     );
   });
 
+  test('a Stripe error that echoes the customer email is logged with the email masked', async () => {
+    const stripeClient = mockStripe();
+    const stripeErr = new Error('Invalid email address: usd@example.com');
+    stripeErr.type = 'StripeInvalidRequestError';
+    stripeErr.code = 'email_invalid';
+    stripeErr.statusCode = 400;
+    stripeErr.raw = { message: 'Invalid email address: usd@example.com' };
+    stripeClient.checkout.sessions.create.mockRejectedValue(stripeErr);
+    const spies = ['info', 'warn', 'error'].map((level) => jest.spyOn(logger, level).mockImplementation(() => {}));
+    const consoleSpies = ['info', 'warn', 'error', 'log'].map((level) => jest.spyOn(console, level).mockImplementation(() => {}));
+    const app = buildUsdApp(stripeClient);
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('CF-IPCountry', 'US')
+      .send({ priceId: USD_STARTER });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    const logged = JSON.stringify(spies.map((spy) => spy.mock.calls));
+    expect(logged).toContain('checkout_outcome');
+    expect(logged).not.toContain('usd@example.com');
+    expect(logged).toContain('u***@example.com');
+    expect(JSON.stringify(consoleSpies.map((spy) => spy.mock.calls))).not.toContain('usd@example.com');
+    spies.concat(consoleSpies).forEach((spy) => spy.mockRestore());
+  });
+
   test('still rejects USD priceId outside the US when no GBP twin is configured, and logs it', async () => {
     const stripeClient = mockStripe();
     const supabase = createSupabaseMock({

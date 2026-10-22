@@ -1,5 +1,6 @@
 const express = require('express');
-const logger = require('../lib/logger');
+// Account/billing errors can carry Stripe messages that echo the customer email.
+const logger = require('../lib/logger').withEmailRedaction();
 const { createAccountDashboardService } = require('../services/accountDashboard');
 
 function createAccountDashboardRouter({ supabase, getStripe, service } = {}) {
