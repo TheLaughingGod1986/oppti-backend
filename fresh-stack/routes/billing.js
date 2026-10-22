@@ -3168,6 +3168,14 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       priceId = gbpPriceId;
       logContext.priceId = priceId;
     }
+    // The currency we report is the one the chosen Price charges in. The
+    // country-derived currency only picks between twins, so a GBP price on a
+    // request whose country resolved to US must not be echoed as 'usd'.
+    const chargeCurrency = isUsdPriceId(priceIds, priceId) ? 'usd' : 'gbp';
+    logContext.currency = chargeCurrency;
+    if (chargeCurrency !== billingCurrency) {
+      logContext.countryCurrency = billingCurrency;
+    }
     const selectedPlan = plans.find((plan) => plan.priceId === priceId)
       || buildPlansList(catalogPriceIds, { currency: billingCurrency }).find((plan) => plan.priceId === priceId)
       || null;
@@ -3389,7 +3397,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         session_id: session.id,
         checkout_url: session.url,
         reused,
-        currency: billingCurrency
+        currency: normalizeCurrency(session.currency) || chargeCurrency
       };
       if (currencyFallback) {
         responseBody.currency_fallback = { requested_price_id: currencyFallback.from, price_id: currencyFallback.to, currency: 'gbp' };

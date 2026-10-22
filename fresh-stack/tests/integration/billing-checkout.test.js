@@ -1100,6 +1100,31 @@ describe('POST /billing/checkout USD allowlist + geo', () => {
     warnSpy.mockRestore();
   });
 
+  test('reports the charged currency: a GBP price is gbp even when the country resolves to US', async () => {
+    const stripeClient = mockStripe();
+    const app = buildUsdApp(stripeClient);
+    const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => {});
+
+    // QA first-open 22 Oct: GBP Starter session (no X-Admin-Country) echoed currency 'usd'.
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('CF-IPCountry', 'US')
+      .send({ priceId: 'price_starter' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.currency).toBe('gbp');
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ line_items: [{ price: 'price_starter', quantity: 1 }] }),
+      expect.any(Object)
+    );
+    const outcome = infoSpy.mock.calls.find(([msg]) => msg === '[billing] checkout_outcome');
+    if (outcome) {
+      expect(outcome[1]).toEqual(expect.objectContaining({ currency: 'gbp' }));
+    }
+    infoSpy.mockRestore();
+  });
+
   test('plugin-sent admin country wins over host geolocation (CF-IPCountry)', async () => {
     const stripeClient = mockStripe();
     const app = buildUsdApp(stripeClient);
