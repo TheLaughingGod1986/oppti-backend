@@ -442,8 +442,47 @@ describe('Loops multi-plugin integration', () => {
     pagesScanned: 0,
     imagesScanned: 0,
     missingAltPercent: 0,
-    errorCode: 'AUDIT_FAILED'
+    errorCode: 'AUDIT_FAILED',
+    // The lead's account has example.com registered, so websiteUrl is kept.
+    registeredSiteHosts: ['example.com']
   };
+
+  describe('contact websiteUrl only for a registered site host', () => {
+    const contactBody = () => JSON.parse(global.fetch.mock.calls[0][1].body);
+
+    test.each([
+      ['exact host', 'https://example.com/', ['example.com']],
+      ['www vs bare', 'https://www.example.com/shop', ['example.com']],
+      ['bare vs www registration', 'https://example.com/', ['www.example.com']],
+      ['subdomain of a registered host', 'https://blog.example.com/', ['example.com']]
+    ])('kept: %s', async (_label, websiteUrl, registeredSiteHosts) => {
+      const loops = require('../../../src/services/loops');
+      await loops.trackImageSeoAuditRequested({ ...auditArgs, websiteUrl, registeredSiteHosts });
+      expect(contactBody().websiteUrl).toBe(websiteUrl);
+    });
+
+    test.each([
+      ['hostile host', 'https://evil-example.com/', ['example.com']],
+      ['lookalike suffix', 'https://example.com.evil.test/', ['example.com']],
+      ['no registered site (audit lead without an account)', 'https://example.com/', []],
+      ['registered hosts not passed', 'https://example.com/', undefined],
+      ['non-http scheme', 'javascript:alert(1)', ['example.com']]
+    ])('dropped: %s', async (_label, websiteUrl, registeredSiteHosts) => {
+      const loops = require('../../../src/services/loops');
+      await loops.trackImageSeoAuditCompleted({ ...auditArgs, websiteUrl, registeredSiteHosts });
+      const body = contactBody();
+      expect(body).not.toHaveProperty('websiteUrl');
+      expect(body.email).toBe(auditArgs.email);
+      expect(body.normalizedDomain).toBe(auditArgs.normalizedDomain);
+    });
+
+    test('dropped on the 409 update path too', async () => {
+      global.fetch.mockResolvedValueOnce({ ok: false, status: 409, json: jest.fn().mockResolvedValue({}) });
+      const loops = require('../../../src/services/loops');
+      await loops.trackImageSeoAuditFailed({ ...auditArgs, websiteUrl: 'https://attacker.test/', registeredSiteHosts: ['example.com'] });
+      expect(JSON.parse(global.fetch.mock.calls[1][1].body)).not.toHaveProperty('websiteUrl');
+    });
+  });
 
   test.each([
     'trackImageSeoAuditRequested',
