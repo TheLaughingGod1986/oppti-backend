@@ -2,6 +2,7 @@ const express = require('express');
 const request = require('supertest');
 
 const { createBillingRouter } = require('../../routes/billing');
+const logger = require('../../lib/logger');
 
 function createSupabaseMock({ siteRecord = null, siteSubscriptions = [], licenses = [] } = {}) {
   const normalizedSiteRecord = siteRecord
@@ -960,7 +961,7 @@ describe('POST /billing/checkout USD allowlist + geo', () => {
     );
   });
 
-  test('rejects USD priceId when country is GB', async () => {
+  test('falls back to the GBP price for the same plan when a USD priceId arrives from GB', async () => {
     const stripeClient = mockStripe();
     const app = buildUsdApp(stripeClient);
 
@@ -970,12 +971,23 @@ describe('POST /billing/checkout USD allowlist + geo', () => {
       .set('CF-IPCountry', 'GB')
       .send({ priceId: USD_STARTER });
 
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe('USD_PRICE_REQUIRES_US_COUNTRY');
-    expect(stripeClient.checkout.sessions.create).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(res.body.currency).toBe('gbp');
+    expect(res.body.currency_fallback).toEqual({
+      requested_price_id: USD_STARTER,
+      price_id: 'price_starter',
+      currency: 'gbp'
+    });
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        line_items: [{ price: 'price_starter', quantity: 1 }],
+        metadata: expect.objectContaining({ plan: 'starter' })
+      }),
+      expect.any(Object)
+    );
   });
 
-  test('rejects USD priceId when country is missing/unknown (GBP fallback)', async () => {
+  test('falls back to GBP when country is missing/unknown', async () => {
     const stripeClient = mockStripe();
     const app = buildUsdApp(stripeClient);
 
@@ -983,11 +995,16 @@ describe('POST /billing/checkout USD allowlist + geo', () => {
       .post('/billing/checkout')
       .set('X-Site-Key', 'site_hash_usd')
       .set('CF-IPCountry', 'XX')
-      .send({ priceId: USD_STARTER });
+      .send({ priceId: USD_PRO });
 
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe('USD_PRICE_REQUIRES_US_COUNTRY');
-    expect(stripeClient.checkout.sessions.create).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        line_items: [{ price: 'price_pro', quantity: 1 }],
+        metadata: expect.objectContaining({ plan: 'pro' })
+      }),
+      expect.any(Object)
+    );
   });
 
   test('does not use Accept-Language locale to unlock USD prices', async () => {
@@ -1000,9 +1017,135 @@ describe('POST /billing/checkout USD allowlist + geo', () => {
       .set('Accept-Language', 'en-US,en;q=0.9')
       .send({ priceId: USD_STARTER });
 
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe('USD_PRICE_REQUIRES_US_COUNTRY');
+    expect(res.status).toBe(200);
+    expect(res.body.currency).toBe('gbp');
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ line_items: [{ price: 'price_starter', quantity: 1 }] }),
+      expect.any(Object)
+    );
+  });
+
+  test('still rejects USD priceId outside the US when no GBP twin is configured, and logs it', async () => {
+    const stripeClient = mockStripe();
+    const supabase = createSupabaseMock({
+      siteRecord: { id: 'site_usd', site_hash: 'site_hash_usd', license_key: 'lic_usd' }
+    });
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const noTwinApp = express();
+    noTwinApp.use(express.json());
+    noTwinApp.use((req, _res, next) => {
+      req.license = { id: 'account_usd', email: 'usd@example.com', license_key: 'lic_usd_123456', plan: 'free' };
+      next();
+    });
+    noTwinApp.use('/billing', createBillingRouter({
+      supabase,
+      getStripe: () => stripeClient,
+      priceIds: { starter: 'price_starter', proUsd: USD_PRO }
+    }));
+    const rejected = await request(noTwinApp)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('CF-IPCountry', 'GB')
+      .send({ priceId: USD_PRO, plugin_version: '4.6.140' });
+
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.code).toBe('USD_PRICE_REQUIRES_US_COUNTRY');
+    expect(typeof rejected.body.message).toBe('string');
     expect(stripeClient.checkout.sessions.create).not.toHaveBeenCalled();
+
+    const outcomeCall = warnSpy.mock.calls.find(([msg]) => msg === '[billing] checkout_outcome');
+    expect(outcomeCall).toBeDefined();
+    expect(outcomeCall[1]).toEqual(expect.objectContaining({
+      status: 400,
+      outcome: 'rejected',
+      error_code: 'USD_PRICE_REQUIRES_US_COUNTRY',
+      country: 'GB',
+      country_source: 'cf-ipcountry',
+      currency: 'gbp',
+      price_id: USD_PRO,
+      session_id: null,
+      account_id: 'account_usd',
+      plugin_version: '4.6.140'
+    }));
+    expect(JSON.stringify(outcomeCall[1])).not.toContain('usd@example.com');
+    expect(JSON.stringify(outcomeCall[1])).not.toContain('lic_usd_123456');
+    warnSpy.mockRestore();
+  });
+
+  test('plugin-sent admin country wins over host geolocation (CF-IPCountry)', async () => {
+    const stripeClient = mockStripe();
+    const app = buildUsdApp(stripeClient);
+
+    // Polish site on a US-geolocated host: admin country PL must give GBP, not USD.
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('CF-IPCountry', 'US')
+      .send({ priceId: USD_STARTER, admin_country: 'PL' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.currency).toBe('gbp');
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ line_items: [{ price: 'price_starter', quantity: 1 }] }),
+      expect.any(Object)
+    );
+
+    stripeClient.checkout.sessions.create.mockClear();
+    const usAdmin = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .set('CF-IPCountry', 'DE')
+      .set('X-Admin-Country', 'US')
+      .send({ priceId: USD_STARTER });
+
+    expect(usAdmin.status).toBe(200);
+    expect(usAdmin.body.currency).toBe('usd');
+    expect(stripeClient.checkout.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ line_items: [{ price: USD_STARTER, quantity: 1 }] }),
+      expect.any(Object)
+    );
+  });
+
+  test('flags an idempotent replay as a reused session and logs session_reused', async () => {
+    const stripeClient = {
+      checkout: {
+        sessions: {
+          create: jest.fn().mockResolvedValue({
+            id: 'cs_existing',
+            url: 'https://stripe.test/existing',
+            lastResponse: { headers: { 'idempotent-replayed': 'true' } }
+          })
+        }
+      }
+    };
+    const app = buildUsdApp(stripeClient);
+    const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => {});
+
+    const res = await request(app)
+      .post('/billing/checkout')
+      .set('X-Site-Key', 'site_hash_usd')
+      .send({ priceId: 'price_starter', admin_country: 'GB' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      success: true,
+      url: 'https://stripe.test/existing',
+      session_id: 'cs_existing',
+      reused: true
+    }));
+    const outcomeCall = infoSpy.mock.calls.find(([msg]) => msg === '[billing] checkout_outcome');
+    expect(outcomeCall[1]).toEqual(expect.objectContaining({
+      status: 200,
+      outcome: 'session_reused',
+      session_id: 'cs_existing',
+      idempotent_replayed: true,
+      country: 'GB',
+      country_source: 'body.admin_country',
+      price_id: 'price_starter',
+      plan: 'starter'
+    }));
+    infoSpy.mockRestore();
   });
 
   test('still accepts GBP starter for non-US country', async () => {
