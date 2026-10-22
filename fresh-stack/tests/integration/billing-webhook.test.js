@@ -1903,6 +1903,110 @@ describe('POST /billing/webhook', () => {
     ]));
   });
 
+  function deletedSubEvent(eventId, subId, customer) {
+    return {
+      id: eventId,
+      type: 'customer.subscription.deleted',
+      data: {
+        object: {
+          id: subId,
+          status: 'canceled',
+          customer,
+          livemode: false,
+          current_period_start: 1780272000,
+          current_period_end: 1782864000,
+          canceled_at: 1780358400,
+          metadata: { account_id: 'account_two_subs', site_id: 'site_two_subs', license_key: 'lic_two_subs' },
+          items: { data: [{ price: { id: 'price_starter', product: 'prod_starter', recurring: { interval: 'month' } } }] }
+        }
+      }
+    };
+  }
+
+  function twoSubsSupabase({ accountSubId }) {
+    return createSupabaseMock({
+      accounts: [{
+        id: 'account_two_subs',
+        email: 'two-subs@example.com',
+        license_key: 'lic_two_subs',
+        stripe_customer_id: 'cus_two_subs',
+        stripe_subscription_id: accountSubId,
+        plan: 'pro',
+        billing_cycle: 'monthly'
+      }],
+      sites: [{ id: 'site_two_subs', site_hash: 'site_hash_two_subs', license_key: 'lic_two_subs', quota_limit: 1000, status: 'active' }],
+      siteSubscriptions: [
+        { id: 'row_old', site_id: 'site_two_subs', plan_id: 'starter', stripe_customer_id: 'cus_two_subs', stripe_subscription_id: 'sub_old_starter', status: 'active' },
+        { id: 'row_new', site_id: 'site_two_subs', plan_id: 'pro', stripe_customer_id: 'cus_two_subs', stripe_subscription_id: 'sub_new_growth', status: 'active' }
+      ]
+    });
+  }
+
+  test('deleting an old subscription keeps the site paid when another active subscription exists', async () => {
+    const supabase = twoSubsSupabase({ accountSubId: 'sub_new_growth' });
+    verifyWebhookSignature.mockReturnValue(deletedSubEvent('evt_old_sub_deleted', 'sub_old_starter', 'cus_two_subs'));
+
+    const res = await sendWebhook(createApp({ supabase }), 'evt_old_sub_deleted');
+
+    expect(res.status).toBe(200);
+    const siteResets = supabase.updates.filter((u) => u.table === 'sites');
+    expect(siteResets).toEqual([]);
+    const licenseUpdates = supabase.updates.filter((u) => u.table === 'licenses' && u.payload && u.payload.plan === 'free');
+    expect(licenseUpdates).toEqual([]);
+  });
+
+  test('canceling the subscription the account points at repoints it to the other active one, not free', async () => {
+    const supabase = twoSubsSupabase({ accountSubId: 'sub_old_starter' });
+    verifyWebhookSignature.mockReturnValue(deletedSubEvent('evt_pointer_sub_deleted', 'sub_old_starter', 'cus_two_subs'));
+
+    const res = await sendWebhook(createApp({ supabase }), 'evt_pointer_sub_deleted');
+
+    expect(res.status).toBe(200);
+    expect(supabase.updates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: 'licenses',
+        value: 'account_two_subs',
+        payload: { plan: 'pro', stripe_subscription_id: 'sub_new_growth' }
+      })
+    ]));
+    expect(supabase.updates.filter((u) => u.table === 'sites')).toEqual([]);
+  });
+
+  test('a Starter checkout stays starter even when session metadata or the account says pro', async () => {
+    const stripeClient = {
+      checkout: { sessions: { listLineItems: jest.fn().mockResolvedValue({ data: [{ price: { id: 'price_starter', product: 'prod_starter', recurring: { interval: 'month' } } }] }) } }
+    };
+    const supabase = createSupabaseMock({
+      accounts: [{ id: 'account_starter_meta', email: 'starter-meta@example.com', license_key: 'lic_starter_meta', plan: 'pro' }]
+    });
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_starter_meta',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: 'cs_test_starter_meta',
+          mode: 'subscription',
+          payment_status: 'paid',
+          amount_total: 499,
+          currency: 'gbp',
+          customer: 'cus_starter_meta',
+          customer_details: { email: 'starter-meta@example.com' },
+          subscription: 'sub_starter_meta',
+          livemode: false,
+          metadata: { account_id: 'account_starter_meta', license_key: 'lic_starter_meta', plan: 'pro' }
+        }
+      }
+    });
+
+    const res = await sendWebhook(createApp({ supabase, stripeClient }), 'evt_starter_meta');
+
+    expect(res.status).toBe(200);
+    const plans = captureServerEvent.mock.calls.map(([arg]) => arg && arg.properties && arg.properties.plan).filter(Boolean);
+    expect(plans.length).toBeGreaterThan(0);
+    expect(plans).toContain('starter');
+    expect(plans).not.toContain('pro');
+  });
+
   test('falls back to legacy license billing when V2 site billing reconciliation fails', async () => {
     const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
     const supabase = createSupabaseMock({

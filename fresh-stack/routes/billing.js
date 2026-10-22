@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
-const logger = require('../lib/logger');
+// Stripe errors can echo customer emails: mask them in every billing log line.
+const logger = require('../lib/logger').withEmailRedaction();
 const {
   resolveBillingCountry,
   resolveBillingCountryWithSource,
@@ -1385,7 +1386,10 @@ async function loadCheckoutLineItemContext(stripeClient, session, priceIds) {
   const embeddedItems = Array.isArray(session?.line_items?.data) ? session.line_items.data : null;
   if (embeddedItems?.length) {
     const embeddedContext = getPriceContextFromLineItem(embeddedItems[0], priceIds);
-    return mergeCommercialContext(embeddedContext, metadataContext, { source: 'session.line_items' });
+    return {
+      ...mergeCommercialContext(embeddedContext, metadataContext, { source: 'session.line_items' }),
+      pricePlan: embeddedContext.plan || null
+    };
   }
 
   if (!stripeClient || !session?.id) {
@@ -1405,7 +1409,10 @@ async function loadCheckoutLineItemContext(stripeClient, session, priceIds) {
     const lineItems = await stripeClient.checkout.sessions.listLineItems(session.id, { limit: 1 });
     const firstLineItem = Array.isArray(lineItems?.data) ? lineItems.data[0] : null;
     const resolvedContext = getPriceContextFromLineItem(firstLineItem, priceIds);
-    return mergeCommercialContext(resolvedContext, metadataContext, { source: 'stripe.list_line_items' });
+    return {
+      ...mergeCommercialContext(resolvedContext, metadataContext, { source: 'stripe.list_line_items' }),
+      pricePlan: resolvedContext.plan || null
+    };
   } catch (error) {
     logger.warn('[billing] webhook line item lookup failed', {
       sessionId: session.id,
@@ -1611,10 +1618,14 @@ async function buildCheckoutSucceededPayload({ supabase, stripeClient, session, 
     stripeSubscriptionId
   });
   const licenseKey = identity.licenseKey;
+  // For subscriptions the purchased recurring price decides the plan: a Starter
+  // price is Starter even when session metadata or the account's legacy plan
+  // says 'pro'. One-time payments keep the explicit metadata plan.
   const plan = resolveCommercialPlan({
     metadata,
     context,
-    accountPlan: identity.account?.plan || null
+    accountPlan: identity.account?.plan || null,
+    preferPricePlan: session.mode === 'subscription'
   });
   const currentPlan = resolveCurrentPlan({
     metadata,
@@ -1905,17 +1916,85 @@ async function buildSubscriptionStatusPayload({ supabase, subscription, priceIds
   };
 }
 
+/**
+ * Another still-active paid subscription for the same site or Stripe customer,
+ * other than the one being canceled. Used so canceling or deleting an old
+ * subscription never drops a paying site/account back to free.
+ */
+async function findOtherActivePaidSubscription(supabase, { account, site, stripeSubscriptionId }) {
+  const lookups = [
+    ['site_id', site?.id || null],
+    ['stripe_customer_id', account?.stripe_customer_id || null]
+  ].filter(([, value]) => Boolean(value));
+  const seen = new Set();
+  for (const [column, value] of lookups) {
+    let rows = [];
+    try {
+      const { data, error } = await supabase
+        .from('site_subscriptions')
+        .select(SITE_SUBSCRIPTION_SELECT)
+        .eq(column, value)
+        .in('status', ACTIVE_BILLING_STATUSES);
+      if (error) {
+        logger.warn('[billing] other active subscription lookup failed', { column, error: error.message });
+        continue;
+      }
+      rows = Array.isArray(data) ? data : (data ? [data] : []);
+    } catch (error) {
+      logger.warn('[billing] other active subscription lookup failed', { column, error: error.message });
+      continue;
+    }
+    for (const row of rows) {
+      if (!row || seen.has(row.id)) continue;
+      seen.add(row.id);
+      const plan = normalizePlanValue(row.plan_id);
+      if (
+        row.stripe_subscription_id
+        && row.stripe_subscription_id !== stripeSubscriptionId
+        && ACTIVE_BILLING_STATUSES.includes(String(row.status || '').toLowerCase())
+        && plan
+        && !['free', 'credits', 'trial'].includes(plan)
+      ) {
+        return { ...row, plan_id: plan };
+      }
+    }
+  }
+  return null;
+}
+
 async function syncCanceledSubscriptionPointers(supabase, { account, site, stripeSubscriptionId }) {
   const updates = {};
+  const otherActive = await findOtherActivePaidSubscription(supabase, { account, site, stripeSubscriptionId });
+  if (otherActive) {
+    updates.other_active_subscription = {
+      stripe_subscription_id: otherActive.stripe_subscription_id,
+      plan_id: otherActive.plan_id,
+      site_id: otherActive.site_id || null
+    };
+    logger.info('[billing] canceled subscription has an active replacement; keeping paid entitlement', {
+      account_id: account?.id || null,
+      site_id: site?.id || null,
+      canceled_subscription_id: stripeSubscriptionId || null,
+      active_subscription_id: otherActive.stripe_subscription_id,
+      active_plan_id: otherActive.plan_id
+    });
+  }
 
   if (account?.id && account.stripe_subscription_id === stripeSubscriptionId) {
-    const { error } = await supabase
-      .from('licenses')
-      .update({
+    // Repoint to the subscription that is still paying instead of dropping to free.
+    const licensePayload = otherActive
+      ? {
+        plan: otherActive.plan_id,
+        stripe_subscription_id: otherActive.stripe_subscription_id
+      }
+      : {
         plan: 'free',
         billing_cycle: 'monthly',
         stripe_subscription_id: null
-      })
+      };
+    const { error } = await supabase
+      .from('licenses')
+      .update(licensePayload)
       .eq('id', account.id)
       .select(ACCOUNT_SELECT)
       .single();
@@ -1923,11 +2002,17 @@ async function syncCanceledSubscriptionPointers(supabase, { account, site, strip
     updates.license = {
       attempted: true,
       success: !error,
-      error: error?.message || null
+      error: error?.message || null,
+      repointed: Boolean(otherActive)
     };
   }
 
-  if (site?.id) {
+  // The legacy sites.quota_limit only falls back to the free allowance when no
+  // other paid subscription still covers this site.
+  const siteStillPaid = Boolean(otherActive && (!otherActive.site_id || otherActive.site_id === site?.id));
+  if (site?.id && siteStillPaid) {
+    updates.site = { attempted: false, skipped: 'other_active_subscription' };
+  } else if (site?.id) {
     const { error } = await supabase
       .from('sites')
       .update({
@@ -3083,6 +3168,14 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       priceId = gbpPriceId;
       logContext.priceId = priceId;
     }
+    // The currency we report is the one the chosen Price charges in. The
+    // country-derived currency only picks between twins, so a GBP price on a
+    // request whose country resolved to US must not be echoed as 'usd'.
+    const chargeCurrency = isUsdPriceId(priceIds, priceId) ? 'usd' : 'gbp';
+    logContext.currency = chargeCurrency;
+    if (chargeCurrency !== billingCurrency) {
+      logContext.countryCurrency = billingCurrency;
+    }
     const selectedPlan = plans.find((plan) => plan.priceId === priceId)
       || buildPlansList(catalogPriceIds, { currency: billingCurrency }).find((plan) => plan.priceId === priceId)
       || null;
@@ -3304,7 +3397,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         session_id: session.id,
         checkout_url: session.url,
         reused,
-        currency: billingCurrency
+        currency: normalizeCurrency(session.currency) || chargeCurrency
       };
       if (currencyFallback) {
         responseBody.currency_fallback = { requested_price_id: currencyFallback.from, price_id: currencyFallback.to, currency: 'gbp' };

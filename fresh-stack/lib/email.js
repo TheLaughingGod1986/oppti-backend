@@ -1,12 +1,29 @@
 const { Resend } = require('resend');
 const logger = require('./logger');
+const { redactEmailsInString } = require('./redact');
+
+const PASSWORD_RESET_SUBJECT = 'Reset your OpptiAI password';
 
 let resend = null;
 
 // Initialize Resend client if API key is available
 const apiKey = process.env.RESEND_API_KEY;
-const DEFAULT_CONTACT_EMAIL = 'benoats86@gmail.com';
-const fromEmail = process.env.RESEND_FROM_EMAIL || 'noreply@alttext.ai';
+const DEFAULT_CONTACT_EMAIL = 'support@oppti.dev';
+// Sender. EMAIL_FROM (documented in README) wins, then the legacy
+// RESEND_FROM_EMAIL. The default stays noreply@alttext.ai until oppti.dev is
+// verified as a sending domain in Resend (SPF + DKIM); switch by setting
+// EMAIL_FROM=noreply@oppti.dev on Render after verification.
+const LEGACY_FROM_EMAIL = 'noreply@alttext.ai';
+const fromEmail = firstNonEmpty(process.env.EMAIL_FROM, process.env.RESEND_FROM_EMAIL) || LEGACY_FROM_EMAIL;
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
 
 function configuredEmails(...values) {
   const emails = [];
@@ -30,9 +47,10 @@ function firstConfiguredEmail(...values) {
   return configuredEmails(...values)[0] || null;
 }
 
+// The requested (allowlisted) recipient comes first, then any configured
+// support inboxes; support@oppti.dev is used only when nothing else is set.
 function getContactRecipientEmails(to) {
   const recipients = configuredEmails(
-    DEFAULT_CONTACT_EMAIL,
     to,
     process.env.RESEND_CONTACT_EMAIL,
     process.env.CONTACT_SUPPORT_EMAIL,
@@ -40,7 +58,7 @@ function getContactRecipientEmails(to) {
     process.env.CONTACT_EMAIL
   );
 
-  return recipients;
+  return recipients.length ? recipients : [DEFAULT_CONTACT_EMAIL];
 }
 
 function getContactRecipientEmail(to) {
@@ -59,13 +77,15 @@ if (apiKey) {
 }
 
 /**
- * Send password reset email
- * @param {string} to - Recipient email address
+ * Send password reset email.
+ * The link must be built by the caller from the fixed server-side reset base
+ * (lib/passwordReset.js), never from request input. Recipient addresses are
+ * masked in logs.
+ * @param {string} to - Recipient email address (the account email on file)
  * @param {string} resetLink - Password reset link
- * @param {string} siteName - Site name (optional)
  * @returns {Promise<{success: boolean, messageId?: string, error?: string}>}
  */
-async function sendPasswordResetEmail(to, resetLink, siteName = 'AltText AI') {
+async function sendPasswordResetEmail(to, resetLink) {
   if (!resend) {
     return {
       success: false,
@@ -73,48 +93,51 @@ async function sendPasswordResetEmail(to, resetLink, siteName = 'AltText AI') {
     };
   }
 
+  const brand = 'OpptiAI';
+  const safeLink = escapeHtml(resetLink);
+
   try {
     const { data, error } = await resend.emails.send({
       from: fromEmail,
       to: [to],
-      subject: 'Reset Your Password - AltText AI',
+      subject: PASSWORD_RESET_SUBJECT,
       html: `
         <!DOCTYPE html>
         <html>
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Reset Your Password</title>
+          <title>Reset your ${brand} password</title>
         </head>
         <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
           <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
-            <h1 style="color: white; margin: 0; font-size: 24px;">Reset Your Password</h1>
+            <h1 style="color: white; margin: 0; font-size: 24px;">Reset your password</h1>
           </div>
           <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px;">
             <p style="margin-top: 0;">Hello,</p>
-            <p>We received a request to reset your password for your ${siteName} account.</p>
-            <p>Click the button below to reset your password:</p>
+            <p>We received a request to reset the password for your ${brand} account.</p>
+            <p>Click the button below to choose a new password:</p>
             <div style="text-align: center; margin: 30px 0;">
-              <a href="${resetLink}" style="display: inline-block; background: #667eea; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: 600;">Reset Password</a>
+              <a href="${safeLink}" style="display: inline-block; background: #667eea; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: 600;">Reset password</a>
             </div>
             <p style="font-size: 14px; color: #666;">Or copy and paste this link into your browser:</p>
-            <p style="font-size: 12px; color: #999; word-break: break-all; background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ddd;">${resetLink}</p>
+            <p style="font-size: 12px; color: #999; word-break: break-all; background: #fff; padding: 10px; border-radius: 4px; border: 1px solid #ddd;">${safeLink}</p>
             <p style="font-size: 14px; color: #666; margin-top: 30px;">This link will expire in 1 hour.</p>
             <p style="font-size: 14px; color: #666;">If you didn't request a password reset, you can safely ignore this email.</p>
             <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
-            <p style="font-size: 12px; color: #999; margin: 0;">This is an automated message from ${siteName}. Please do not reply to this email.</p>
+            <p style="font-size: 12px; color: #999; margin: 0;">This is an automated message from ${brand}. Please do not reply to this email.</p>
           </div>
         </body>
         </html>
       `,
       text: `
-Reset Your Password - AltText AI
+Reset your ${brand} password
 
 Hello,
 
-We received a request to reset your password for your ${siteName} account.
+We received a request to reset the password for your ${brand} account.
 
-Click the link below to reset your password:
+Click the link below to choose a new password:
 ${resetLink}
 
 This link will expire in 1 hour.
@@ -122,14 +145,14 @@ This link will expire in 1 hour.
 If you didn't request a password reset, you can safely ignore this email.
 
 ---
-This is an automated message from ${siteName}. Please do not reply to this email.
+This is an automated message from ${brand}. Please do not reply to this email.
       `.trim()
     });
 
     if (error) {
-      logger.error('[Email] Failed to send password reset email', { 
-        to, 
-        error: error.message 
+      logger.error('[Email] Failed to send password reset email', {
+        to: redactEmailsInString(String(to || '')),
+        error: redactEmailsInString(String(error.message || ''))
       });
       return {
         success: false,
@@ -137,9 +160,9 @@ This is an automated message from ${siteName}. Please do not reply to this email
       };
     }
 
-    logger.info('[Email] Password reset email sent', { 
-      to, 
-      messageId: data?.id 
+    logger.info('[Email] Password reset email sent', {
+      to: redactEmailsInString(String(to || '')),
+      messageId: data?.id
     });
 
     return {
@@ -147,13 +170,13 @@ This is an automated message from ${siteName}. Please do not reply to this email
       messageId: data?.id
     };
   } catch (error) {
-    logger.error('[Email] Error sending password reset email', { 
-      to, 
-      error: error.message 
+    logger.error('[Email] Error sending password reset email', {
+      to: redactEmailsInString(String(to || '')),
+      error: redactEmailsInString(String(error?.message || ''))
     });
     return {
       success: false,
-      error: error.message
+      error: error?.message
     };
   }
 }
@@ -205,12 +228,12 @@ async function sendContactEmail({
     metadataHtml = `
       <div style="background: #f5f5f5; padding: 15px; border-radius: 4px; margin-top: 20px; font-size: 12px; color: #666;">
         <strong>System Information:</strong><br>
-        ${wpVersion ? `WordPress Version: ${wpVersion}<br>` : ''}
-        ${pluginVersion ? `Plugin Version: ${pluginVersion}<br>` : ''}
-        ${siteUrl ? `Site URL: ${siteUrl}<br>` : ''}
-        ${siteHash ? `Site Hash: ${siteHash.substring(0, 8)}...<br>` : ''}
-        ${licenseKey ? `License Key: ${licenseKey.substring(0, 8)}...<br>` : ''}
-        ${userId ? `User ID: ${userId}<br>` : ''}
+        ${wpVersion ? `WordPress Version: ${escapeHtml(wpVersion)}<br>` : ''}
+        ${pluginVersion ? `Plugin Version: ${escapeHtml(pluginVersion)}<br>` : ''}
+        ${siteUrl ? `Site URL: ${escapeHtml(siteUrl)}<br>` : ''}
+        ${siteHash ? `Site Hash: ${escapeHtml(String(siteHash).substring(0, 8))}...<br>` : ''}
+        ${licenseKey ? `License Key: ${escapeHtml(String(licenseKey).substring(0, 8))}...<br>` : ''}
+        ${userId ? `User ID: ${escapeHtml(userId)}<br>` : ''}
       </div>
     `;
   }
@@ -249,22 +272,22 @@ async function sendContactEmail({
             <h1 style="color: white; margin: 0; font-size: 24px;">Contact Form Submission</h1>
           </div>
           <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px;">
-            <p style="margin-top: 0;"><strong>From:</strong> ${name} &lt;${email}&gt;</p>
-            <p><strong>Subject:</strong> ${subject}</p>
+            <p style="margin-top: 0;"><strong>From:</strong> ${escapeHtml(name)} &lt;${escapeHtml(email)}&gt;</p>
+            <p><strong>Subject:</strong> ${escapeHtml(subject)}</p>
             <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
             <div style="background: white; padding: 20px; border-radius: 4px; border-left: 4px solid #667eea;">
-              <p style="margin: 0; white-space: pre-wrap;">${message.replace(/\n/g, '<br>')}</p>
+              <p style="margin: 0; white-space: pre-wrap;">${escapeHtml(message).replace(/\n/g, '<br>')}</p>
             </div>
             ${metadataHtml}
             ${diagnosticHtml}
             <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
-            <p style="font-size: 12px; color: #999; margin: 0;">This is an automated message from the AltText AI contact form. You can reply directly to this email to respond to ${name}.</p>
+            <p style="font-size: 12px; color: #999; margin: 0;">This is an automated message from the OpptiAI contact form. You can reply directly to this email to respond to ${escapeHtml(name)}.</p>
           </div>
         </body>
         </html>
       `,
       text: `
-Contact Form Submission - AltText AI
+Contact Form Submission - OpptiAI
 
 From: ${name} <${email}>
 Subject: ${subject}
@@ -276,7 +299,7 @@ ${wpVersion || pluginVersion || siteUrl || siteHash || licenseKey || userId ? `\
 ${diagnosticText ? `\nAttached diagnostics:\n${diagnosticText}\n` : ''}
 
 ---
-This is an automated message from the AltText AI contact form. You can reply directly to this email to respond to ${name}.
+This is an automated message from the OpptiAI contact form. You can reply directly to this email to respond to ${name}.
       `.trim()
     });
 
@@ -510,6 +533,7 @@ Ben
 }
 
 module.exports = {
+  PASSWORD_RESET_SUBJECT,
   sendPasswordResetEmail,
   sendContactEmail,
   sendImageSeoAuditEmail,

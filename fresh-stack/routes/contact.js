@@ -136,7 +136,7 @@ function createContactRouter({ redis }) {
         process.env.CONTACT_SUPPORT_EMAIL,
         process.env.SUPPORT_EMAIL,
         process.env.CONTACT_EMAIL,
-        'benoats86@gmail.com'
+        'support@oppti.dev'
       ].filter(Boolean).flatMap((value) => String(value).split(',').map((item) => item.trim()).filter(Boolean));
       const requestedRecipient = support_recipient && allowedRecipients.includes(support_recipient)
         ? support_recipient

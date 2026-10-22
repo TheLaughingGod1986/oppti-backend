@@ -91,6 +91,24 @@ const logger = {
     .reverse(),
   clearRecentEntries: () => {
     recentEntries.length = 0;
+  },
+  /**
+   * A logger whose arguments have every email address masked (j***@example.com)
+   * before they are written or kept in the recent-entries buffer. Calls go
+   * through this logger's methods at call time, so jest spies on it still fire.
+   */
+  withEmailRedaction: () => {
+    // eslint-disable-next-line global-require
+    const { redactEmails } = require('./redact');
+    const wrap = (level) => (...args) => logger[level](...args.map((arg) => redactEmails(arg)));
+    return {
+      info: wrap('info'),
+      warn: wrap('warn'),
+      error: wrap('error'),
+      debug: wrap('debug'),
+      getRecentEntries: (...a) => logger.getRecentEntries(...a),
+      clearRecentEntries: () => logger.clearRecentEntries()
+    };
   }
 };
 

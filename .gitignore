@@ -47,3 +47,6 @@ lcov.info
 *.lcov
 
 .env.bak
+
+# Playwright CLI page snapshots (can capture signed-in dashboards)
+.playwright-cli/

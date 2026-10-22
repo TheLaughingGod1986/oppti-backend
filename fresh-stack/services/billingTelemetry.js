@@ -3,7 +3,8 @@
  * Emits verified Stripe-webhook events only — never frontend assumptions.
  */
 
-const logger = require('../lib/logger');
+// Stripe errors can echo customer emails: mask them in every billing log line.
+const logger = require('../lib/logger').withEmailRedaction();
 const { captureServerEvent, identifyServerUser, aliasServerUser } = require('../lib/posthog');
 
 const TELEMETRY_VERSION = '1';
