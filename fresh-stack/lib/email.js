@@ -5,8 +5,22 @@ let resend = null;
 
 // Initialize Resend client if API key is available
 const apiKey = process.env.RESEND_API_KEY;
-const DEFAULT_CONTACT_EMAIL = 'benoats86@gmail.com';
-const fromEmail = process.env.RESEND_FROM_EMAIL || 'noreply@alttext.ai';
+const DEFAULT_CONTACT_EMAIL = 'support@oppti.dev';
+// Sender. EMAIL_FROM (documented in README) wins, then the legacy
+// RESEND_FROM_EMAIL. The default stays noreply@alttext.ai until oppti.dev is
+// verified as a sending domain in Resend (SPF + DKIM); switch by setting
+// EMAIL_FROM=noreply@oppti.dev on Render after verification.
+const LEGACY_FROM_EMAIL = 'noreply@alttext.ai';
+const fromEmail = firstNonEmpty(process.env.EMAIL_FROM, process.env.RESEND_FROM_EMAIL) || LEGACY_FROM_EMAIL;
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
 
 function configuredEmails(...values) {
   const emails = [];
@@ -30,9 +44,10 @@ function firstConfiguredEmail(...values) {
   return configuredEmails(...values)[0] || null;
 }
 
+// The requested (allowlisted) recipient comes first, then any configured
+// support inboxes; support@oppti.dev is used only when nothing else is set.
 function getContactRecipientEmails(to) {
   const recipients = configuredEmails(
-    DEFAULT_CONTACT_EMAIL,
     to,
     process.env.RESEND_CONTACT_EMAIL,
     process.env.CONTACT_SUPPORT_EMAIL,
@@ -40,7 +55,7 @@ function getContactRecipientEmails(to) {
     process.env.CONTACT_EMAIL
   );
 
-  return recipients;
+  return recipients.length ? recipients : [DEFAULT_CONTACT_EMAIL];
 }
 
 function getContactRecipientEmail(to) {
