@@ -47,7 +47,7 @@ test('a non-allowlisted requested recipient is ignored', async () => {
 });
 
 test('the old personal gmail is no longer an allowlisted recipient', async () => {
-  const res = await post({ support_recipient: 'someone@gmail.com' });
+  const res = await post({ support_recipient: 'old-personal-inbox@qa.oppti.dev' });
   expect(res.status).toBe(200);
   expect(emailService.getContactRecipientEmail).toHaveBeenCalledWith(undefined);
 });
