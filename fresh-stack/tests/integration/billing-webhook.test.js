@@ -1308,7 +1308,7 @@ describe('POST /billing/webhook', () => {
       checkoutSessionId: null,
       invoiceId: 'in_123',
       paymentLinkId: null,
-      stripeEventId: 'evt_invoice_paid'
+      stripeEventId: 'invoice_paid:in_123' // Loops idempotency is per invoice
     });
     expect(trackPlanUpgraded).toHaveBeenCalledWith({
       email: 'subscriber@example.com',
@@ -1317,7 +1317,7 @@ describe('POST /billing/webhook', () => {
       billingPeriod: 'monthly',
       amount: 14.99,
       currency: 'usd',
-      stripeEventId: 'evt_invoice_paid'
+      stripeEventId: 'invoice_paid:in_123'
     });
   });
 
@@ -1383,7 +1383,7 @@ describe('POST /billing/webhook', () => {
       amount: 12.99,
       currency: 'gbp',
       invoiceId: 'in_paid_alias',
-      stripeEventId: 'evt_invoice_paid_alias'
+      stripeEventId: 'invoice_paid:in_paid_alias'
     }));
   });
 
