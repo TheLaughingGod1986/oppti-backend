@@ -359,21 +359,21 @@ describe('V2 anonymous site trials', () => {
     const periodEnd = new Date(Date.now() + 25 * 24 * 60 * 60 * 1000).toISOString();
     const supabase = createV2TrialSupabaseMock({
       licenses: [{
-        id: '68d299e9-44d0-4e54-90aa-c6a4053a47cf',
-        email: 'nellamarievtonder@gmail.com',
-        license_key: 'eb1f132a-5bfa-446f-8f72-057b90791260',
+        id: '00000000-0000-4000-8000-0000000000a1',
+        email: 'paid-owner@example.com',
+        license_key: '00000000-0000-4000-8000-00000000c0de',
         plan: 'pro',
         status: 'active',
         billing_cycle: 'monthly'
       }],
       sites: [{
-        id: '7b4d51fc-4cbb-4618-b1e6-227da13cb1c8',
-        license_key: 'eb1f132a-5bfa-446f-8f72-057b90791260',
-        site_hash: '7d7f750946e8c3e0f0228e1d737bb26c',
-        wp_install_uuid: '7d7f750946e8c3e0f0228e1d737bb26c',
-        site_url: 'https://edprevent.com',
-        normalized_site_url: 'https://edprevent.com',
-        canonical_domain: 'edprevent.com',
+        id: '00000000-0000-4000-8000-0000000051e1',
+        license_key: '00000000-0000-4000-8000-00000000c0de',
+        site_hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1',
+        wp_install_uuid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1',
+        site_url: 'https://paid-site.example.com',
+        normalized_site_url: 'https://paid-site.example.com',
+        canonical_domain: 'paid-site.example.com',
         site_fingerprint: 'fingerprint-paid',
         status: 'active',
         created_at: new Date().toISOString(),
@@ -381,10 +381,10 @@ describe('V2 anonymous site trials', () => {
       }],
       siteSubscriptions: [{
         id: 'site_sub_paid',
-        site_id: '7b4d51fc-4cbb-4618-b1e6-227da13cb1c8',
+        site_id: '00000000-0000-4000-8000-0000000051e1',
         plan_id: 'pro',
-        stripe_customer_id: 'cus_Ud914UHz3btRTe',
-        stripe_subscription_id: 'sub_1TdsjCJI9Rm418cMw7IcorZg',
+        stripe_customer_id: 'cus_test_paidowner',
+        stripe_subscription_id: 'sub_test_paidowner',
         status: 'active',
         billing_interval: 'month',
         current_period_start: periodStart,
@@ -392,7 +392,7 @@ describe('V2 anonymous site trials', () => {
       }],
       siteQuotas: [{
         id: 'site_quota_paid',
-        site_id: '7b4d51fc-4cbb-4618-b1e6-227da13cb1c8',
+        site_id: '00000000-0000-4000-8000-0000000051e1',
         quota_period_start: periodStart,
         quota_period_end: periodEnd,
         monthly_included_credits: 1000,
@@ -404,33 +404,33 @@ describe('V2 anonymous site trials', () => {
     });
 
     const status = await getQuotaStatus(supabase, {
-      licenseKey: 'eb1f132a-5bfa-446f-8f72-057b90791260',
+      licenseKey: '00000000-0000-4000-8000-00000000c0de',
       account: {
-        id: '68d299e9-44d0-4e54-90aa-c6a4053a47cf',
-        license_key: 'eb1f132a-5bfa-446f-8f72-057b90791260',
+        id: '00000000-0000-4000-8000-0000000000a1',
+        license_key: '00000000-0000-4000-8000-00000000c0de',
         plan: 'pro',
         status: 'active'
       },
-      siteHash: '4134bd05c315081e3de298c31cff8ae0',
-      installUuid: '4134bd05c315081e3de298c31cff8ae0',
-      siteUrl: 'https://edprevent.com',
+      siteHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2',
+      installUuid: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2',
+      siteUrl: 'https://paid-site.example.com',
       siteFingerprint: 'fingerprint-request',
       quotaMode: 'site',
       requestId: 'req-paid-domain-fallback'
     });
 
     expect(status.error).toBeNull();
-    expect(status.site.id).toBe('7b4d51fc-4cbb-4618-b1e6-227da13cb1c8');
+    expect(status.site.id).toBe('00000000-0000-4000-8000-0000000051e1');
     expect(status.plan_type).toBe('pro');
     expect(status.total_limit).toBe(1000);
     expect(status.credits_remaining).toBe(954);
     expect(status.subscription).toEqual(expect.objectContaining({
-      stripe_subscription_id: 'sub_1TdsjCJI9Rm418cMw7IcorZg'
+      stripe_subscription_id: 'sub_test_paidowner'
     }));
     expect(logger.info).toHaveBeenCalledWith(
       '[siteQuota] Existing site reused',
       expect.objectContaining({
-        site_id: '7b4d51fc-4cbb-4618-b1e6-227da13cb1c8',
+        site_id: '00000000-0000-4000-8000-0000000051e1',
         matched_by: 'canonical_domain+license_key'
       })
     );
