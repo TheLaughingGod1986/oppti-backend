@@ -354,8 +354,9 @@ describe('V2 anonymous site trials', () => {
   });
 
   test('paid license resolves by canonical domain when site hash changes', async () => {
-    const periodStart = '2026-06-01T00:00:00.000Z';
-    const periodEnd = '2026-07-01T00:00:00.000Z';
+    // Relative period: an active row whose period ended > 3 days ago no longer grants paid.
+    const periodStart = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const periodEnd = new Date(Date.now() + 25 * 24 * 60 * 60 * 1000).toISOString();
     const supabase = createV2TrialSupabaseMock({
       licenses: [{
         id: '68d299e9-44d0-4e54-90aa-c6a4053a47cf',

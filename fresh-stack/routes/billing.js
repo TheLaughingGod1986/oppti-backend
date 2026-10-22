@@ -88,6 +88,23 @@ function resolveInvoiceSubscriptionId(invoice) {
     || null;
 }
 
+// Stripe API >= 2025-03-31 (basil) moved current_period_start/end from the
+// subscription to each subscription item. Prefer the top-level value (older API
+// versions, and the 2022-11-15 pinned client), then fall back to the first item.
+function resolveSubscriptionPeriod(subscription) {
+  const firstItem = Array.isArray(subscription?.items?.data) ? subscription.items.data[0] : null;
+  return {
+    start: subscription?.current_period_start || firstItem?.current_period_start || null,
+    end: subscription?.current_period_end || firstItem?.current_period_end || null
+  };
+}
+
+function toIsoFromUnix(seconds) {
+  return typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0
+    ? new Date(seconds * 1000).toISOString()
+    : null;
+}
+
 function resolvePlanFromPriceId(priceIds = {}, priceId) {
   if (!priceId) return null;
   const match = Object.entries(priceIds).find(([, configuredPriceId]) => configuredPriceId === priceId);
@@ -506,7 +523,13 @@ function inferPaymentRecovered(invoice) {
   return false;
 }
 
-function resolveCommercialPlan({ metadata, context, accountPlan }) {
+function resolveCommercialPlan({ metadata, context, accountPlan, preferPricePlan = false }) {
+  // Subscription metadata is written once at checkout, so after a portal
+  // upgrade/downgrade its `plan` is stale. For subscription-backed events the
+  // configured price mapping is the source of truth when it resolves.
+  if (preferPricePlan && context?.pricePlan) {
+    return normalizePlanValue(context.pricePlan);
+  }
   return normalizePlanValue(
     extractMetadataValue(metadata, ['plan', 'plan_type', 'planType'])
     || context.plan
@@ -537,9 +560,14 @@ function getPriceContextFromLineItem(lineItem, priceIds) {
   const priceId = normalizeStripeId(lineItem?.price)
     || normalizeStripeId(lineItem?.price?.id)
     || normalizeStripeId(pricingDetails?.price);
-  const rawProduct = lineItem?.price?.product || pricingDetails?.product;
+  const expandedPricingPrice = pricingDetails?.price && typeof pricingDetails.price === 'object'
+    ? pricingDetails.price
+    : null;
+  const rawProduct = lineItem?.price?.product || pricingDetails?.product || expandedPricingPrice?.product;
   const productId = normalizeStripeId(rawProduct);
-  const recurringInterval = lineItem?.price?.recurring?.interval || null;
+  const recurringInterval = lineItem?.price?.recurring?.interval
+    || expandedPricingPrice?.recurring?.interval
+    || null;
 
   return {
     priceId,
@@ -554,6 +582,33 @@ function getPriceContextFromSubscription(subscription, priceIds) {
     ? subscription.items.data[0]
     : null;
   return getPriceContextFromLineItem(firstItem, priceIds);
+}
+
+function isProrationLine(line) {
+  return line?.proration === true
+    || line?.parent?.subscription_item_details?.proration === true;
+}
+
+function getLineAmount(line) {
+  return typeof line?.amount === 'number' ? line.amount : null;
+}
+
+// Pick the invoice line that reflects what the customer now pays for. On an
+// upgrade/proration invoice the first line is usually the negative
+// "Unused time on <old plan>" credit, which must not decide the plan.
+function selectPrimaryInvoiceLine(lines, preferredPriceId = null) {
+  if (!Array.isArray(lines) || !lines.length) return null;
+  const amountOf = (line) => getLineAmount(line) ?? 0;
+  if (preferredPriceId) {
+    const match = lines.find((line) => (
+      getPriceContextFromLineItem(line, {}).priceId === preferredPriceId && amountOf(line) >= 0
+    ));
+    if (match) return match;
+  }
+  return lines.find((line) => !isProrationLine(line) && amountOf(line) > 0)
+    || lines.find((line) => amountOf(line) > 0)
+    || lines.find((line) => !isProrationLine(line) && amountOf(line) >= 0)
+    || lines[0];
 }
 
 function mergeCommercialContext(...contexts) {
@@ -1360,7 +1415,7 @@ async function loadCheckoutLineItemContext(stripeClient, session, priceIds) {
   }
 }
 
-async function loadInvoiceLineContext(stripeClient, invoice, priceIds, metadataOverride) {
+async function loadInvoiceLineContext(stripeClient, invoice, priceIds, metadataOverride, subscriptionSnapshot = null) {
   const metadata = metadataOverride || invoice?.metadata || {};
   const metadataContext = {
     priceId: extractMetadataValue(metadata, ['price_id', 'priceId']),
@@ -1370,14 +1425,37 @@ async function loadInvoiceLineContext(stripeClient, invoice, priceIds, metadataO
     source: 'metadata'
   };
 
+  const subscriptionContext = subscriptionSnapshot?.priceId
+    ? {
+      priceId: subscriptionSnapshot.priceId,
+      productId: subscriptionSnapshot.productId,
+      recurringInterval: subscriptionSnapshot.recurringInterval,
+      plan: resolvePlanFromPriceId(priceIds, subscriptionSnapshot.priceId)
+    }
+    : null;
+  const preferredPriceId = subscriptionSnapshot?.priceId || null;
+  const withPricePlan = (merged, lineContext) => ({
+    ...merged,
+    pricePlan: subscriptionContext?.plan || lineContext?.plan || null
+  });
+
   const embeddedItems = Array.isArray(invoice?.lines?.data) ? invoice.lines.data : null;
   if (embeddedItems?.length) {
-    const embeddedContext = getPriceContextFromLineItem(embeddedItems[0], priceIds);
-    return mergeCommercialContext(embeddedContext, metadataContext, { source: 'invoice.lines' });
+    const embeddedContext = getPriceContextFromLineItem(
+      selectPrimaryInvoiceLine(embeddedItems, preferredPriceId),
+      priceIds
+    );
+    const ordered = subscriptionContext?.plan
+      ? [subscriptionContext, embeddedContext]
+      : [embeddedContext, subscriptionContext];
+    return withPricePlan(
+      mergeCommercialContext(...ordered, metadataContext, { source: 'invoice.lines' }),
+      embeddedContext
+    );
   }
 
   if (!stripeClient || !invoice?.id) {
-    return mergeCommercialContext(metadataContext);
+    return withPricePlan(mergeCommercialContext(subscriptionContext, metadataContext), null);
   }
 
   if (!isStripeModeCompatible(Boolean(invoice.livemode))) {
@@ -1393,15 +1471,50 @@ async function loadInvoiceLineContext(stripeClient, invoice, priceIds, metadataO
     const expandedInvoice = await stripeClient.invoices.retrieve(invoice.id, {
       expand: ['lines.data.price.product']
     });
-    const firstLineItem = Array.isArray(expandedInvoice?.lines?.data) ? expandedInvoice.lines.data[0] : null;
-    const resolvedContext = getPriceContextFromLineItem(firstLineItem, priceIds);
-    return mergeCommercialContext(resolvedContext, metadataContext, { source: 'stripe.retrieve_invoice' });
+    const primaryLineItem = selectPrimaryInvoiceLine(expandedInvoice?.lines?.data, preferredPriceId);
+    const resolvedContext = getPriceContextFromLineItem(primaryLineItem, priceIds);
+    const ordered = subscriptionContext?.plan
+      ? [subscriptionContext, resolvedContext]
+      : [resolvedContext, subscriptionContext];
+    return withPricePlan(
+      mergeCommercialContext(...ordered, metadataContext, { source: 'stripe.retrieve_invoice' }),
+      resolvedContext
+    );
   } catch (error) {
     logger.warn('[billing] webhook invoice enrichment lookup failed', {
       invoiceId: invoice.id,
       error: error.message
     });
     return mergeCommercialContext(metadataContext, { source: 'lookup_failed' });
+  }
+}
+
+async function loadSubscriptionSnapshot(stripeClient, stripeSubscriptionId, livemode) {
+  if (!stripeClient?.subscriptions?.retrieve || !stripeSubscriptionId) {
+    return null;
+  }
+
+  if (!isStripeModeCompatible(Boolean(livemode))) {
+    return null;
+  }
+
+  try {
+    const subscription = await stripeClient.subscriptions.retrieve(stripeSubscriptionId);
+    if (!subscription) return null;
+    const firstItem = Array.isArray(subscription.items?.data) ? subscription.items.data[0] : null;
+    const priceContext = getPriceContextFromLineItem(firstItem, {});
+    return {
+      metadata: mergeStripeMetadata(subscription.metadata),
+      priceId: priceContext.priceId,
+      productId: priceContext.productId,
+      recurringInterval: priceContext.recurringInterval
+    };
+  } catch (error) {
+    logger.warn('[billing] subscription snapshot lookup failed', {
+      stripeSubscriptionId,
+      error: error.message
+    });
+    return null;
   }
 }
 
@@ -1461,7 +1574,7 @@ async function loadCustomerMetadata(stripeClient, stripeCustomerId, livemode) {
   }
 }
 
-async function resolveInvoiceMetadata(stripeClient, invoice) {
+async function resolveInvoiceMetadata(stripeClient, invoice, { subscriptionSnapshot } = {}) {
   const stripeSubscriptionId = resolveInvoiceSubscriptionId(invoice);
   const stripeCustomerId = normalizeStripeId(invoice?.customer);
   const invoiceMetadata = mergeStripeMetadata(
@@ -1469,11 +1582,9 @@ async function resolveInvoiceMetadata(stripeClient, invoice) {
     invoice?.parent?.subscription_details?.metadata,
     invoice?.subscription_details?.metadata
   );
-  const subscriptionMetadata = await loadSubscriptionMetadata(
-    stripeClient,
-    stripeSubscriptionId,
-    invoice?.livemode
-  );
+  const subscriptionMetadata = subscriptionSnapshot
+    ? subscriptionSnapshot.metadata
+    : await loadSubscriptionMetadata(stripeClient, stripeSubscriptionId, invoice?.livemode);
   const customerMetadata = await loadCustomerMetadata(
     stripeClient,
     stripeCustomerId,
@@ -1605,9 +1716,10 @@ async function buildInvoiceSucceededPayload({
   priceIds,
   stripeEventType = 'invoice.payment_succeeded'
 }) {
-  const metadata = await resolveInvoiceMetadata(stripeClient, invoice);
-  const stripeCustomerId = normalizeStripeId(invoice.customer);
   const stripeSubscriptionId = resolveInvoiceSubscriptionId(invoice);
+  const subscriptionSnapshot = await loadSubscriptionSnapshot(stripeClient, stripeSubscriptionId, invoice.livemode);
+  const metadata = await resolveInvoiceMetadata(stripeClient, invoice, { subscriptionSnapshot });
+  const stripeCustomerId = normalizeStripeId(invoice.customer);
   const identity = await resolveIdentityContext({
     supabase,
     metadata,
@@ -1615,12 +1727,13 @@ async function buildInvoiceSucceededPayload({
     stripeCustomerId,
     stripeSubscriptionId
   });
-  const context = await loadInvoiceLineContext(stripeClient, invoice, priceIds, metadata);
+  const context = await loadInvoiceLineContext(stripeClient, invoice, priceIds, metadata, subscriptionSnapshot);
   const licenseKey = identity.licenseKey;
   const plan = resolveCommercialPlan({
     metadata,
     context,
-    accountPlan: identity.account?.plan || null
+    accountPlan: identity.account?.plan || null,
+    preferPricePlan: Boolean(stripeSubscriptionId)
   });
   const currentPlan = resolveCurrentPlan({
     metadata,
@@ -1731,10 +1844,12 @@ async function buildSubscriptionStatusPayload({ supabase, subscription, priceIds
     stripeSubscriptionId
   });
   const context = getPriceContextFromSubscription(subscription, priceIds);
+  const subscriptionPeriod = resolveSubscriptionPeriod(subscription);
   const plan = resolveCommercialPlan({
     metadata,
-    context,
-    accountPlan: identity.account?.plan || null
+    context: { ...context, pricePlan: context.plan },
+    accountPlan: identity.account?.plan || null,
+    preferPricePlan: true
   });
   const billingPeriod = inferBillingPeriod({
     paymentMode: null,
@@ -1781,12 +1896,8 @@ async function buildSubscriptionStatusPayload({ supabase, subscription, priceIds
     subscription: {
       status: subscription?.status || null,
       cancel_at_period_end: Boolean(subscription?.cancel_at_period_end),
-      current_period_start: subscription?.current_period_start
-        ? new Date(subscription.current_period_start * 1000).toISOString()
-        : null,
-      current_period_end: subscription?.current_period_end
-        ? new Date(subscription.current_period_end * 1000).toISOString()
-        : null,
+      current_period_start: toIsoFromUnix(subscriptionPeriod.start),
+      current_period_end: toIsoFromUnix(subscriptionPeriod.end),
       canceled_at: subscription?.canceled_at
         ? new Date(subscription.canceled_at * 1000).toISOString()
         : null
@@ -1840,10 +1951,15 @@ async function updateSiteSubscriptionStatus(supabase, stripeSubscriptionId, even
   const inactive = INACTIVE_BILLING_STATUSES.includes(status);
   const updatePayload = {
     status,
-    cancel_at_period_end: Boolean(subscription?.cancel_at_period_end),
-    current_period_start: subscription?.current_period_start || null,
-    current_period_end: subscription?.current_period_end || null
+    cancel_at_period_end: Boolean(subscription?.cancel_at_period_end)
   };
+  // Never blank a stored billing period when the event carries none.
+  if (subscription?.current_period_start) {
+    updatePayload.current_period_start = subscription.current_period_start;
+  }
+  if (subscription?.current_period_end) {
+    updatePayload.current_period_end = subscription.current_period_end;
+  }
 
   if (eventProperties?.plan) {
     updatePayload.plan_id = eventProperties.plan;
@@ -1993,6 +2109,7 @@ function normalizeBillingInterval(billingPeriod) {
 async function reconcileSiteEntitlement({
   supabase,
   stripeEventId,
+  idempotencyKey = null,
   account,
   site,
   eventProperties,
@@ -2022,7 +2139,7 @@ async function reconcileSiteEntitlement({
 
   const reconciliation = await reconcileBillingEntitlement(supabase, {
     siteId: site.id,
-    stripeEventId,
+    stripeEventId: idempotencyKey || stripeEventId,
     planId: eventProperties.plan,
     purchaseType: eventProperties.purchase_type,
     billingInterval: normalizeBillingInterval(eventProperties.billing_period),
@@ -2501,12 +2618,16 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               priceIds,
               stripeEventType: event.type
             });
-            const firstLinePeriod = Array.isArray(invoice.lines?.data) && invoice.lines.data[0]?.period
-              ? invoice.lines.data[0].period
-              : null;
+            // invoice.paid and invoice.payment_succeeded describe the same payment with
+            // different event ids. Key side effects on the invoice so a pack is credited
+            // once and Loops sends once even if the endpoint subscribes to both.
+            const invoiceIdempotencyKey = invoice.id ? `invoice_paid:${invoice.id}` : event.id;
+            const primaryLine = selectPrimaryInvoiceLine(invoice.lines?.data, payload.eventProperties.price_id);
+            const firstLinePeriod = primaryLine?.period || null;
             const entitlementTrace = await reconcileSiteEntitlement({
               supabase,
               stripeEventId: event.id,
+              idempotencyKey: invoiceIdempotencyKey,
               account: payload.account,
               site: payload.site,
               eventProperties: payload.eventProperties,
@@ -2535,11 +2656,11 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               metadata: invoiceMetadata
             });
             await emitLoopsPaymentSucceeded({
-              stripeEventId: event.id,
+              stripeEventId: invoiceIdempotencyKey,
               eventProperties: payload.eventProperties
             });
             await emitLoopsPurchaseSucceeded({
-              stripeEventId: event.id,
+              stripeEventId: invoiceIdempotencyKey,
               eventProperties: payload.eventProperties
             });
           }
