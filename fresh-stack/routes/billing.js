@@ -42,6 +42,11 @@ const {
 } = require('../services/siteQuota');
 const { getBillingPlansJson, getBillingPlansJsonLive, buildPlansList } = require('../services/billingPlansCatalog');
 const { getLimits } = require('../services/planLimits');
+const {
+  BILLING_FALLBACK_URLS,
+  loadAccountSiteHosts,
+  resolveBillingRedirect
+} = require('../services/redirectAllowlist');
 
 const ACCOUNT_SELECT = 'id, email, license_key, stripe_customer_id, stripe_subscription_id, plan, billing_cycle';
 const SITE_SELECT = 'id, site_hash, license_key, site_url, site_name, status';
@@ -251,6 +256,21 @@ function siteOwnedByAccount(site, account) {
   if (!site || !account) return false;
   if (account.license_key && site.license_key === account.license_key) return true;
   return Boolean(account.id && site.owner_user_id === account.id);
+}
+
+function hasCallerUrl(value) {
+  return value !== undefined && value !== null && value !== '';
+}
+
+// The X-Site-Key site counts as registered when it belongs to the caller's
+// account (or there is no account and the site key is the purchaser).
+function siteBelongsToAccount(site, account) {
+  if (!site) return false;
+  if (!account) return true;
+  return Boolean(
+    (account.license_key && site.license_key === account.license_key)
+    || (account.id && site.owner_user_id === account.id)
+  );
 }
 
 function getCheckoutRateLimit(selectedPlanId) {
@@ -3301,6 +3321,21 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
 
     logContext.siteId = siteRecord?.id || null;
 
+    // Stripe redirect allowlist (log-only unless BILLING_REDIRECT_ALLOWLIST_ENFORCE).
+    const registeredHosts = hasCallerUrl(successUrl) || hasCallerUrl(cancelUrl)
+      ? await loadAccountSiteHosts(supabase, account, {
+          extraSites: siteBelongsToAccount(siteRecord, account) ? [siteRecord] : []
+        })
+      : [];
+    const allowedRedirect = (field, url, fallbackUrl, route) => resolveBillingRedirect({
+      url,
+      field,
+      fallbackUrl,
+      registeredHosts,
+      logger,
+      context: { route, account_id: account?.id || null, site_id: siteRecord?.id || null }
+    });
+
     const stripeClient = getStripe();
     if (!stripeClient) {
       return reply(501, { error: 'Stripe not configured', code: 'STRIPE_NOT_CONFIGURED' }, {
@@ -3358,9 +3393,14 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
             }, { outcome: 'rejected', error_code: 'ACTIVE_SUBSCRIPTION_EXISTS', mode });
           }
 
+          const portalReturnUrl = hasCallerUrl(cancelUrl)
+            ? allowedRedirect('cancelUrl', cancelUrl, BILLING_FALLBACK_URLS.portalReturn, 'checkout_portal')
+            : hasCallerUrl(successUrl)
+              ? allowedRedirect('successUrl', successUrl, BILLING_FALLBACK_URLS.portalReturn, 'checkout_portal')
+              : null;
           const portalSession = await stripeClient.billingPortal.sessions.create({
             customer: existingCustomerId,
-            return_url: cancelUrl || successUrl || `${process.env.FRONTEND_URL || 'https://oppti.dev'}/billing`
+            return_url: portalReturnUrl || `${process.env.FRONTEND_URL || 'https://oppti.dev'}/billing`
           });
           logger.info('[billing] active subscription checkout redirected to portal', {
             account_id: account?.id || null,
@@ -3456,8 +3496,10 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       const checkoutPayload = {
         mode,
         line_items: [{ price: priceId, quantity: 1 }],
-        success_url: successUrl || `${process.env.FRONTEND_URL || 'https://oppti.dev'}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: cancelUrl || `${process.env.FRONTEND_URL || 'https://oppti.dev'}/billing/cancel`,
+        success_url: allowedRedirect('successUrl', successUrl, BILLING_FALLBACK_URLS.success, 'checkout')
+          || `${process.env.FRONTEND_URL || 'https://oppti.dev'}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: allowedRedirect('cancelUrl', cancelUrl, BILLING_FALLBACK_URLS.cancel, 'checkout')
+          || `${process.env.FRONTEND_URL || 'https://oppti.dev'}/billing/cancel`,
         client_reference_id: account?.id ? String(account.id) : undefined,
         metadata
       };
@@ -3693,9 +3735,18 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
     }
 
     try {
+      const portalHosts = hasCallerUrl(returnUrl) ? await loadAccountSiteHosts(supabase, account) : [];
+      const allowedReturnUrl = resolveBillingRedirect({
+        url: returnUrl,
+        field: 'returnUrl',
+        fallbackUrl: BILLING_FALLBACK_URLS.portalReturn,
+        registeredHosts: portalHosts,
+        logger,
+        context: { route: 'portal', account_id: account?.id || null }
+      });
       const session = await stripeClient.billingPortal.sessions.create({
         customer: resolvedCustomerId,
-        return_url: returnUrl || `${process.env.FRONTEND_URL || 'https://oppti.dev'}/billing`
+        return_url: allowedReturnUrl || `${process.env.FRONTEND_URL || 'https://oppti.dev'}/billing`
       });
       res.json({
         success: true,
