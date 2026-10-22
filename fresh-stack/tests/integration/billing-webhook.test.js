@@ -1972,6 +1972,40 @@ describe('POST /billing/webhook', () => {
     expect(supabase.updates.filter((u) => u.table === 'sites')).toEqual([]);
   });
 
+  test('a Starter checkout stays starter even when session metadata or the account says pro', async () => {
+    const stripeClient = {
+      checkout: { sessions: { listLineItems: jest.fn().mockResolvedValue({ data: [{ price: { id: 'price_starter', product: 'prod_starter', recurring: { interval: 'month' } } }] }) } }
+    };
+    const supabase = createSupabaseMock({
+      accounts: [{ id: 'account_starter_meta', email: 'starter-meta@example.com', license_key: 'lic_starter_meta', plan: 'pro' }]
+    });
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_starter_meta',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: 'cs_test_starter_meta',
+          mode: 'subscription',
+          payment_status: 'paid',
+          amount_total: 499,
+          currency: 'gbp',
+          customer: 'cus_starter_meta',
+          customer_details: { email: 'starter-meta@example.com' },
+          subscription: 'sub_starter_meta',
+          livemode: false,
+          metadata: { account_id: 'account_starter_meta', license_key: 'lic_starter_meta', plan: 'pro' }
+        }
+      }
+    });
+
+    const res = await sendWebhook(createApp({ supabase, stripeClient }), 'evt_starter_meta');
+
+    expect(res.status).toBe(200);
+    const plans = captureServerEvent.mock.calls.map(([arg]) => arg && arg.properties && arg.properties.plan).filter(Boolean);
+    expect(plans.length).toBeGreaterThan(0);
+    expect(plans).toContain('starter');
+    expect(plans).not.toContain('pro');
+  });
 
   test('falls back to legacy license billing when V2 site billing reconciliation fails', async () => {
     const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});

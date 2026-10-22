@@ -1386,7 +1386,10 @@ async function loadCheckoutLineItemContext(stripeClient, session, priceIds) {
   const embeddedItems = Array.isArray(session?.line_items?.data) ? session.line_items.data : null;
   if (embeddedItems?.length) {
     const embeddedContext = getPriceContextFromLineItem(embeddedItems[0], priceIds);
-    return mergeCommercialContext(embeddedContext, metadataContext, { source: 'session.line_items' });
+    return {
+      ...mergeCommercialContext(embeddedContext, metadataContext, { source: 'session.line_items' }),
+      pricePlan: embeddedContext.plan || null
+    };
   }
 
   if (!stripeClient || !session?.id) {
@@ -1406,7 +1409,10 @@ async function loadCheckoutLineItemContext(stripeClient, session, priceIds) {
     const lineItems = await stripeClient.checkout.sessions.listLineItems(session.id, { limit: 1 });
     const firstLineItem = Array.isArray(lineItems?.data) ? lineItems.data[0] : null;
     const resolvedContext = getPriceContextFromLineItem(firstLineItem, priceIds);
-    return mergeCommercialContext(resolvedContext, metadataContext, { source: 'stripe.list_line_items' });
+    return {
+      ...mergeCommercialContext(resolvedContext, metadataContext, { source: 'stripe.list_line_items' }),
+      pricePlan: resolvedContext.plan || null
+    };
   } catch (error) {
     logger.warn('[billing] webhook line item lookup failed', {
       sessionId: session.id,
@@ -1612,10 +1618,14 @@ async function buildCheckoutSucceededPayload({ supabase, stripeClient, session, 
     stripeSubscriptionId
   });
   const licenseKey = identity.licenseKey;
+  // For subscriptions the purchased recurring price decides the plan: a Starter
+  // price is Starter even when session metadata or the account's legacy plan
+  // says 'pro'. One-time payments keep the explicit metadata plan.
   const plan = resolveCommercialPlan({
     metadata,
     context,
-    accountPlan: identity.account?.plan || null
+    accountPlan: identity.account?.plan || null,
+    preferPricePlan: session.mode === 'subscription'
   });
   const currentPlan = resolveCurrentPlan({
     metadata,
