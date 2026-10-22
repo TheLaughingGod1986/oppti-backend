@@ -568,17 +568,26 @@ const FORGOT_PASSWORD_RESPONSE = Object.freeze({
   message: 'If an account exists with this email, you will receive password reset instructions',
 });
 
-function tokensMatch(stored, provided) {
-  if (typeof stored !== 'string' || typeof provided !== 'string' || !stored || !provided) {
+// Reset tokens are stored as sha256 hex digests, never in plain text. The
+// emailed link carries the raw token; the database only ever sees its hash.
+function hashResetToken(token) {
+  return crypto.createHash('sha256').update(String(token), 'utf8').digest('hex');
+}
+
+// Constant-time compare of the stored digest with the digest of the provided
+// token. Both sides are fixed-length hex, so lengths only differ for a
+// malformed stored value, which never matches.
+function tokensMatch(storedHash, providedToken) {
+  if (typeof storedHash !== 'string' || typeof providedToken !== 'string' || !storedHash || !providedToken) {
     return false;
   }
-  const a = Buffer.from(stored);
-  const b = Buffer.from(provided);
+  const a = Buffer.from(storedHash);
+  const b = Buffer.from(hashResetToken(providedToken));
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// Store a fresh token and email the link to the account's address on file.
-// Runs after the response is sent; failures are logged (email masked) only.
+// Store a fresh token (hashed) and email the link to the account's address on
+// file. Runs after the response is sent; failures are logged (email masked) only.
 async function issuePasswordReset({ supabase, account, email }) {
   const resetToken = crypto.randomUUID();
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -586,7 +595,7 @@ async function issuePasswordReset({ supabase, account, email }) {
   const { error: updateError } = await supabase
     .from('licenses')
     .update({
-      password_reset_token: resetToken,
+      password_reset_token: hashResetToken(resetToken),
       password_reset_expires: expiresAt
     })
     .eq('id', account.id);
@@ -1432,7 +1441,7 @@ function createAuthRouter({ supabase }) {
       let lookup = supabase
         .from('licenses')
         .select('id, email, password_reset_token, password_reset_expires');
-      lookup = email ? lookup.eq('email', email) : lookup.eq('password_reset_token', token);
+      lookup = email ? lookup.eq('email', email) : lookup.eq('password_reset_token', hashResetToken(token));
       const { data: user, error: userError } = await lookup.maybeSingle();
 
       if (userError || !user || !tokensMatch(user.password_reset_token, token)) {
@@ -1507,4 +1516,4 @@ function createAuthRouter({ supabase }) {
   return router;
 }
 
-module.exports = { createAuthRouter };
+module.exports = { createAuthRouter, hashResetToken };

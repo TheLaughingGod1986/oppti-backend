@@ -63,6 +63,11 @@ RESEND_FROM_EMAIL=noreply@yourdomain.com  # Legacy support, use EMAIL_FROM
 RESEND_CONTACT_EMAIL=support@oppti.dev  # Optional: contact-form inbox (default support@oppti.dev)
 RESEND_AUDIENCE_ID=aud_xxx  # Optional: For subscriber management
 PASSWORD_RESET_BASE_URL=https://oppti.dev  # Optional: base of the emailed reset link (<base>/reset-password?token=...). https only; unset or invalid = https://oppti.dev. Never taken from the request.
+
+# Safety flags (all default off = log-only)
+BILLING_REDIRECT_ALLOWLIST_ENFORCE=  # on: a Stripe successUrl/cancelUrl/returnUrl whose host is not a registered site host (www/bare and subdomains match) or oppti.dev is replaced by https://oppti.dev/billing/success, /billing/cancel or /account. Off: used as sent, warning logged (host only).
+TITLES_AUTOPILOT_FREE_BLOCK_ENFORCE=  # on: Titles generate/jobs with X-Request-Source: beepbeep_titles_autopilot from a Free account get 403 AUTOPILOT_REQUIRES_PAID_PLAN. Off: allowed, warning logged.
+TRUST_PROXY_HOPS=1  # Express trust proxy hop count for Render (client IP from the right of X-Forwarded-For). 0 disables.
 ```
 
 ## Documentation

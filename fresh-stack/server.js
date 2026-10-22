@@ -46,6 +46,7 @@ const { scheduleGenerationReservationRecovery } = require('./services/generation
 const rateLimitMiddleware = require('./middleware/rateLimit');
 const { authMiddleware } = require('./middleware/auth');
 const requestId = require('./middleware/requestId');
+const { createProxyHopObserver, resolveTrustProxyHops } = require('./lib/trustProxy');
 const errorHandler = require('./middleware/errorHandler');
 const { getStripe } = require('./lib/stripe');
 
@@ -114,6 +115,9 @@ function createApp({
   altTextResultCache = new Map()
 } = {}) {
   const app = express();
+  // Render: client IP from X-Forwarded-For, counting only our proxy hops.
+  const trustProxyHops = resolveTrustProxyHops();
+  app.set('trust proxy', trustProxyHops);
   const redis = redisClient;
   const allowedOrigins = config.allowedOrigins;
   const priceIds = config.stripePrices;
@@ -133,6 +137,7 @@ function createApp({
   app.use(compression());
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(requestId());
+  app.use(createProxyHopObserver({ logger, hops: trustProxyHops }));
 
   // Stripe webhook must run before the global JSON parser so signature verification
   // receives the raw request body from Stripe.
