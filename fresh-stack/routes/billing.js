@@ -12,6 +12,7 @@ const {
   findGbpEquivalentPriceId
 } = require('../lib/billingCurrency');
 const { verifyWebhookSignature } = require('../lib/stripe');
+const emailService = require('../lib/email');
 const { captureServerEvent, identifyServerUser } = require('../lib/posthog');
 const {
   emitCanonicalBillingEvents,
@@ -68,6 +69,7 @@ const SUPPRESSED_PAYMENT_FAILURE_CODES = new Set([
 ]);
 const STRIPE_METADATA_MAX_LENGTH = 500;
 const CHECKOUT_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const CHECKOUT_LINK_EMAIL_LIMIT = 3;
 const checkoutRateBuckets = new Map();
 
 function normalizeStripeId(value) {
@@ -3204,6 +3206,126 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         error_message: error?.message
       });
     }
+  });
+
+  /**
+   * POST /billing/checkout/email-link
+   * Emails the link to the caller's own open Checkout Session to the email on
+   * file for the authenticated account. Never accepts a recipient address; the
+   * session must belong to the account (client_reference_id / metadata.account_id).
+   */
+  router.post('/checkout/email-link', async (req, res) => {
+    const account = req.license || req.user || null;
+    const sessionId = typeof req.body?.session_id === 'string' ? req.body.session_id.trim()
+      : (typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : '');
+    const logBase = { account_id: account?.id || null, session_id: sessionId || null };
+    const reply = (status, body, outcome, errorCode = null) => {
+      const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
+      logger[level]('[billing] checkout_link_email', { ...logBase, status, outcome, error_code: errorCode });
+      return res.status(status).json(body);
+    };
+
+    if (requiredToken) {
+      const token = req.header('Authorization')?.replace(/^Bearer\s+/i, '') || req.header('X-API-Key');
+      if (token !== requiredToken) {
+        return reply(401, { error: 'Unauthorized', code: 'UNAUTHORIZED' }, 'unauthorized', 'UNAUTHORIZED');
+      }
+    }
+    const accountEmail = normalizeEmail(account?.email);
+    if (!account?.id || !accountEmail) {
+      return reply(401, {
+        error: 'AUTH_REQUIRED',
+        code: 'AUTH_REQUIRED',
+        message: 'Please sign in to your account to email yourself the payment link.'
+      }, 'rejected', 'AUTH_REQUIRED');
+    }
+    if (req.body && (req.body.to || req.body.email || req.body.recipient)) {
+      return reply(400, {
+        error: 'RECIPIENT_NOT_ALLOWED',
+        code: 'RECIPIENT_NOT_ALLOWED',
+        message: 'The link can only be sent to the email address on your account.'
+      }, 'rejected', 'RECIPIENT_NOT_ALLOWED');
+    }
+    if (!/^cs_(live|test)_[A-Za-z0-9]+$/.test(sessionId)) {
+      return reply(400, {
+        error: 'INVALID_SESSION_ID',
+        code: 'INVALID_SESSION_ID',
+        message: 'This checkout link is not valid. Please start checkout again.'
+      }, 'rejected', 'INVALID_SESSION_ID');
+    }
+
+    const now = Date.now();
+    pruneCheckoutRateBuckets(now);
+    const bucketKey = ['checkout-email', account.id].join(':');
+    const hits = checkoutRateBuckets.get(bucketKey) || [];
+    if (hits.length >= CHECKOUT_LINK_EMAIL_LIMIT) {
+      return reply(429, {
+        error: 'CHECKOUT_LINK_EMAIL_RATE_LIMITED',
+        code: 'CHECKOUT_LINK_EMAIL_RATE_LIMITED',
+        message: 'We have already emailed this link a few times. Please check your inbox (and spam folder).',
+        retry_after: Math.ceil(CHECKOUT_RATE_LIMIT_WINDOW_MS / 1000)
+      }, 'rate_limited', 'CHECKOUT_LINK_EMAIL_RATE_LIMITED');
+    }
+
+    const stripeClient = getStripe();
+    if (!stripeClient?.checkout?.sessions?.retrieve) {
+      return reply(501, { error: 'Stripe not configured', code: 'STRIPE_NOT_CONFIGURED' }, 'error', 'STRIPE_NOT_CONFIGURED');
+    }
+    if (!emailService.isAvailable()) {
+      return reply(503, {
+        error: 'EMAIL_UNAVAILABLE',
+        code: 'EMAIL_UNAVAILABLE',
+        message: 'Email is unavailable right now. Please copy the link instead.'
+      }, 'error', 'EMAIL_UNAVAILABLE');
+    }
+
+    let session;
+    try {
+      session = await stripeClient.checkout.sessions.retrieve(sessionId);
+    } catch (error) {
+      return reply(404, {
+        error: 'SESSION_NOT_FOUND',
+        code: 'SESSION_NOT_FOUND',
+        message: 'This checkout link has expired. Please start checkout again.'
+      }, 'rejected', 'SESSION_NOT_FOUND');
+    }
+    const ownerId = session?.client_reference_id || session?.metadata?.account_id || null;
+    if (!session || String(ownerId) !== String(account.id)) {
+      return reply(403, {
+        error: 'SESSION_NOT_OWNED',
+        code: 'SESSION_NOT_OWNED',
+        message: 'This checkout link belongs to a different account.'
+      }, 'rejected', 'SESSION_NOT_OWNED');
+    }
+    if (session.status !== 'open' || !session.url) {
+      return reply(410, {
+        error: 'SESSION_NOT_OPEN',
+        code: 'SESSION_NOT_OPEN',
+        message: session.status === 'complete'
+          ? 'This checkout is already complete.'
+          : 'This checkout link has expired. Please start checkout again.'
+      }, 'rejected', 'SESSION_NOT_OPEN');
+    }
+
+    hits.push(now);
+    checkoutRateBuckets.set(bucketKey, hits);
+    const planKey = normalizePlanValue(session.metadata?.plan || null);
+    const planLabel = planKey === 'pro' ? 'the Growth plan'
+      : planKey === 'starter' ? 'the Starter plan'
+        : planKey === 'agency' ? 'the Agency plan'
+          : planKey === 'credits' ? 'your credit pack' : 'your plan';
+    const result = await emailService.sendCheckoutLinkEmail({ to: accountEmail, checkoutUrl: session.url, planLabel });
+    if (!result.success) {
+      return reply(502, {
+        error: 'EMAIL_SEND_FAILED',
+        code: 'EMAIL_SEND_FAILED',
+        message: 'We could not send the email. Please copy the link instead.'
+      }, 'error', 'EMAIL_SEND_FAILED');
+    }
+    return reply(200, {
+      success: true,
+      sent_to: accountEmail.replace(/^(.{2}).*(@.*)$/, '$1***$2')
+    }, 'sent');
   });
 
   router.post('/portal', async (req, res) => {

@@ -332,6 +332,49 @@ function escapeHtml(value) {
 }
 
 /**
+ * Email a customer the link to their own open Stripe Checkout Session.
+ * Callers must pass the account's email on file only (never a user-supplied address).
+ */
+async function sendCheckoutLinkEmail({ to, checkoutUrl, planLabel = 'your plan', productName = 'OpptiAI' }) {
+  if (!resend) {
+    return { success: false, error: 'Email service not configured (RESEND_API_KEY not set)' };
+  }
+  const safeUrl = escapeHtml(checkoutUrl);
+  const safePlan = escapeHtml(planLabel);
+  const safeProduct = escapeHtml(productName);
+  try {
+    const { data, error } = await resend.emails.send({
+      from: fromEmail,
+      to: [to],
+      subject: `Your ${productName} checkout link`,
+      html: `
+        <!DOCTYPE html>
+        <html><head><meta charset="utf-8"><title>Your checkout link</title></head>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <p>Hello,</p>
+          <p>You asked us to email the secure Stripe payment link for ${safePlan} on ${safeProduct}.</p>
+          <p style="text-align: center; margin: 30px 0;">
+            <a href="${safeUrl}" style="display: inline-block; background: #0f766e; color: #fff; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-weight: 600;">Continue to payment</a>
+          </p>
+          <p style="font-size: 13px; color: #666;">Or paste this link into your browser:</p>
+          <p style="font-size: 12px; color: #999; word-break: break-all;">${safeUrl}</p>
+          <p style="font-size: 13px; color: #666;">The link expires 24 hours after it was created. If you didn't request it, you can ignore this email; nothing is charged until you complete payment.</p>
+        </body></html>
+      `,
+      text: `You asked us to email the secure Stripe payment link for ${planLabel} on ${productName}.\n\nContinue to payment: ${checkoutUrl}\n\nThe link expires 24 hours after it was created. Nothing is charged until you complete payment.`
+    });
+    if (error) {
+      logger.error('[Email] Failed to send checkout link email', { error: error.message });
+      return { success: false, error: error.message || 'Failed to send email' };
+    }
+    return { success: true, messageId: data?.id };
+  } catch (error) {
+    logger.error('[Email] Exception sending checkout link email', { error: error.message });
+    return { success: false, error: error.message };
+  }
+}
+
+/**
  * Send the free image SEO audit PDF report.
  */
 async function sendImageSeoAuditEmail({
@@ -470,6 +513,7 @@ module.exports = {
   sendPasswordResetEmail,
   sendContactEmail,
   sendImageSeoAuditEmail,
+  sendCheckoutLinkEmail,
   getContactRecipientEmail,
   getContactRecipientEmails,
   isAvailable: () => !!resend
