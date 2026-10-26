@@ -76,6 +76,7 @@ function createSupabaseMock({
 
   const supabase = {
     updates,
+    accounts: accountRows,
     siteSubscriptions: siteSubscriptionRows,
     from(table) {
       if (table === 'licenses') {
@@ -126,6 +127,13 @@ function createSupabaseMock({
                         };
                       })
                     };
+                  },
+                  // Awaited without .select() (syncLegacySitePointers).
+                  then(resolve, reject) {
+                    updates.push({ table, column, value, payload });
+                    const existing = findAccount(column, value);
+                    if (existing) Object.assign(existing, payload);
+                    return Promise.resolve({ data: null, error: null }).then(resolve, reject);
                   }
                 };
               }
@@ -1116,6 +1124,180 @@ describe('POST /billing/webhook', () => {
     }));
     const accountUpdates = supabase.updates.filter((u) => u.table === 'licenses');
     expect(accountUpdates.every((u) => u.value !== 'account_typed_email' && u.value !== 'lic_typed_email')).toBe(true);
+  });
+
+  test('a guest checkout that created a new Stripe customer keeps the licence customer and is still credited', async () => {
+    const supabase = createSupabaseMock({
+      accounts: [
+        { id: 'account_has_customer', email: 'owner2@qa.oppti.dev', license_key: 'lic_has_customer', plan: 'free', stripe_customer_id: 'cus_existingWXYZ1111' }
+      ],
+      sites: [{ id: 'site_has_customer', site_hash: 'site_hash_has_customer', license_key: 'lic_has_customer' }]
+    });
+    const stripeClient = {
+      checkout: { sessions: { listLineItems: jest.fn().mockResolvedValue({ data: [{ price: { id: 'price_credits', product: 'prod_credits' } }] }) } }
+    };
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_checkout_existing_customer',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: 'cs_test_existing_customer',
+          mode: 'payment',
+          payment_status: 'paid',
+          amount_total: 999,
+          currency: 'gbp',
+          customer: 'cus_newguestQRST2222',
+          customer_details: { email: 'owner2@qa.oppti.dev' },
+          client_reference_id: 'account_has_customer',
+          livemode: false,
+          metadata: {
+            account_id: 'account_has_customer',
+            license_key: 'lic_has_customer',
+            site_id: 'site_has_customer',
+            site_hash: 'site_hash_has_customer',
+            plan: 'credits'
+          }
+        }
+      }
+    });
+    const warn = jest.spyOn(logger, 'warn');
+
+    try {
+      const res = await sendWebhook(createApp({ supabase, stripeClient }), 'evt_checkout_existing_customer');
+
+      expect(res.status).toBe(200);
+      expect(captureServerEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: 'payment_succeeded',
+        distinctId: 'account_has_customer',
+        properties: expect.objectContaining({ account_id: 'account_has_customer', site_id: 'site_has_customer' })
+      }));
+      const customerWrites = supabase.updates.filter((u) => u.table === 'licenses' && u.payload && 'stripe_customer_id' in u.payload);
+      expect(customerWrites.every((u) => u.payload.stripe_customer_id === 'cus_existingWXYZ1111')).toBe(true);
+      const mismatch = warn.mock.calls.find(([message]) => message === '[billing] customer_mismatch');
+      expect(mismatch).toBeDefined();
+      expect(mismatch[1]).toEqual(expect.objectContaining({
+        account_id: 'account_has_customer',
+        kept_customer: 'cus_***1111',
+        incoming_customer: 'cus_***2222'
+      }));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  describe('licence Stripe ids are fill-only on the site billing path', () => {
+    const OLD = 'cus_existingOLDX1111';
+    const NEW = 'cus_guestcheckNEW2222';
+    const stripeClient = {
+      checkout: { sessions: { listLineItems: jest.fn().mockResolvedValue({ data: [{ price: { id: 'price_pro', product: 'prod_pro', recurring: { interval: 'month' } } }] }) } },
+      subscriptions: { retrieve: jest.fn().mockResolvedValue({}) }
+    };
+
+    function mockGuestCheckout({ eventId, mode, accountId = 'account_fill_only', licenseKey = 'lic_fill_only' }) {
+      verifyWebhookSignature.mockReturnValue({
+        id: eventId,
+        type: 'checkout.session.completed',
+        data: {
+          object: {
+            id: `cs_test_${eventId}`,
+            mode,
+            payment_status: 'paid',
+            amount_total: 2900,
+            currency: 'gbp',
+            customer: NEW,
+            customer_details: { email: 'typed-buyer@qa.oppti.dev' },
+            client_reference_id: accountId,
+            subscription: mode === 'subscription' ? 'sub_guestcheckNEW3333' : null,
+            livemode: false,
+            metadata: {
+              account_id: accountId,
+              license_key: licenseKey,
+              site_id: 'site_fill_only',
+              site_hash: 'site_hash_fill_only',
+              plan: mode === 'subscription' ? 'pro' : 'credits',
+              price_id: mode === 'subscription' ? 'price_pro' : 'price_credits'
+            }
+          }
+        }
+      });
+    }
+
+    function seed(account) {
+      return createSupabaseMock({
+        enableBillingRpc: true,
+        accounts: [{ id: 'account_fill_only', email: 'owner3@qa.oppti.dev', license_key: 'lic_fill_only', ...account }],
+        sites: [{ id: 'site_fill_only', site_hash: 'site_hash_fill_only', license_key: 'lic_fill_only' }]
+      });
+    }
+
+    const customerWritesOf = (supabase, id) => supabase.updates
+      .filter((u) => u.table === 'licenses' && u.payload && u.payload.stripe_customer_id === id);
+
+    test.each(['subscription', 'payment'])('guest %s checkout keeps the existing customer', async (mode) => {
+      const supabase = seed({ plan: 'free', stripe_customer_id: OLD, stripe_subscription_id: 'sub_existingOLDX4444' });
+      mockGuestCheckout({ eventId: `evt_fill_only_${mode}`, mode });
+
+      const res = await sendWebhook(createApp({ supabase, stripeClient }), `evt_fill_only_${mode}`);
+
+      expect(res.status).toBe(200);
+      expect(supabase.rpc).toHaveBeenCalledWith('bbai_apply_site_billing_event', expect.anything());
+      expect(supabase.accounts[0].stripe_customer_id).toBe(OLD);
+      expect(supabase.accounts[0].stripe_subscription_id).toBe('sub_existingOLDX4444');
+      expect(customerWritesOf(supabase, NEW)).toEqual([]);
+    });
+
+    test('a replayed guest checkout still keeps the existing customer', async () => {
+      const supabase = seed({ plan: 'free', stripe_customer_id: OLD });
+      const app = createApp({ supabase, stripeClient });
+      mockGuestCheckout({ eventId: 'evt_fill_only_replay', mode: 'subscription' });
+
+      expect((await sendWebhook(app, 'evt_fill_only_replay')).status).toBe(200);
+      expect((await sendWebhook(app, 'evt_fill_only_replay')).status).toBe(200);
+
+      expect(supabase.accounts[0].stripe_customer_id).toBe(OLD);
+      expect(customerWritesOf(supabase, NEW)).toEqual([]);
+    });
+
+    test.each(['invoice.payment_succeeded', 'invoice.paid'])('a %s renewal on the new customer keeps the existing ids, also on replay', async (type) => {
+      const supabase = seed({ plan: 'pro', stripe_customer_id: OLD, stripe_subscription_id: 'sub_existingOLDX4444' });
+      const eventId = `evt_fill_only_${type.replace('.', '_')}`;
+      verifyWebhookSignature.mockReturnValue({
+        id: eventId,
+        type,
+        data: {
+          object: {
+            id: `in_${eventId}`,
+            amount_paid: 2900,
+            currency: 'gbp',
+            customer: NEW,
+            subscription: 'sub_guestcheckNEW3333',
+            billing_reason: 'subscription_cycle',
+            livemode: false,
+            metadata: { license_key: 'lic_fill_only', site_id: 'site_fill_only', site_hash: 'site_hash_fill_only' },
+            lines: { data: [{ price: { id: 'price_pro', product: 'prod_pro', recurring: { interval: 'month' } } }] }
+          }
+        }
+      });
+      const app = createApp({ supabase, stripeClient });
+
+      expect((await sendWebhook(app, eventId)).status).toBe(200);
+      expect((await sendWebhook(app, eventId)).status).toBe(200);
+
+      expect(supabase.rpc).toHaveBeenCalledWith('bbai_apply_site_billing_event', expect.anything());
+      expect(supabase.accounts[0].stripe_customer_id).toBe(OLD);
+      expect(supabase.accounts[0].stripe_subscription_id).toBe('sub_existingOLDX4444');
+      expect(customerWritesOf(supabase, NEW)).toEqual([]);
+    });
+
+    test('an empty customer is filled', async () => {
+      const supabase = seed({ plan: 'free', stripe_customer_id: null, stripe_subscription_id: null });
+      mockGuestCheckout({ eventId: 'evt_fill_only_empty', mode: 'subscription' });
+
+      expect((await sendWebhook(createApp({ supabase, stripeClient }), 'evt_fill_only_empty')).status).toBe(200);
+
+      expect(supabase.accounts[0].stripe_customer_id).toBe(NEW);
+      expect(supabase.accounts[0].stripe_subscription_id).toBe('sub_guestcheckNEW3333');
+    });
   });
 
   test('enriches checkout.session.completed with attribution metadata when present', async () => {

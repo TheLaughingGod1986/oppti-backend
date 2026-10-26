@@ -1171,11 +1171,11 @@ async function persistStripeMappings(supabase, account, { stripeCustomerId, stri
     && account.stripe_customer_id
     && account.stripe_customer_id !== stripeCustomerId
   ) {
-    logger.warn('[billing] stripe customer mapping conflict', {
-      accountId: account.id,
-      existingStripeCustomerId: account.stripe_customer_id,
-      incomingStripeCustomerId: stripeCustomerId
-    });
+    logger.warn('[billing] customer_mismatch', redactStripeIds({
+      account_id: account.id,
+      kept_customer: account.stripe_customer_id,
+      incoming_customer: stripeCustomerId
+    }));
   }
 
   if (stripeSubscriptionId && !account.stripe_subscription_id) {

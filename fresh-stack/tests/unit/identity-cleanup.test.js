@@ -194,3 +194,55 @@ describe('syncLegacySitePointers', () => {
     expect(captured.sites).toBeUndefined();
   });
 });
+
+describe('syncLegacySitePointers stripe customer on the licence', () => {
+  const logger = require('../../lib/logger');
+  const site = { id: 'site-uuid-3', site_hash: 'hash-3', license_key: 'lic-key-abc', owner_user_id: LICENSE_ID };
+
+  beforeEach(() => {
+    logger.warn.mockClear();
+  });
+
+  test('keeps an existing customer when a guest checkout created a new one', async () => {
+    const { supabase, captured } = createSyncMock();
+
+    await syncLegacySitePointers(supabase, {
+      site,
+      account: { id: LICENSE_ID, license_key: 'lic-key-abc', stripe_customer_id: 'cus_existingAAAA1111', stripe_subscription_id: 'sub_existingFFFF6666' },
+      subscription: { stripe_customer_id: 'cus_newguestBBBB2222', stripe_subscription_id: 'sub_newguestCCCC3333', billing_interval: 'month', status: 'active' },
+      planId: 'pro'
+    });
+
+    expect(captured.licenses.stripe_customer_id).toBe('cus_existingAAAA1111');
+    expect(captured.licenses.stripe_subscription_id).toBe('sub_existingFFFF6666');
+    expect(captured.licenses.plan).toBe('pro');
+    const subMismatch = logger.warn.mock.calls.find(([message]) => message === '[billing] subscription_mismatch');
+    expect(subMismatch[1]).toEqual(expect.objectContaining({
+      kept_subscription: 'sub_***6666',
+      incoming_subscription: 'sub_***3333'
+    }));
+    const mismatch = logger.warn.mock.calls.find(([message]) => message === '[billing] customer_mismatch');
+    expect(mismatch).toBeDefined();
+    expect(mismatch[1]).toEqual(expect.objectContaining({
+      kept_customer: 'cus_***1111',
+      incoming_customer: 'cus_***2222'
+    }));
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('existingAAAA');
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('newguestBBBB');
+  });
+
+  test('fills an empty customer and subscription from the subscription', async () => {
+    const { supabase, captured } = createSyncMock();
+
+    await syncLegacySitePointers(supabase, {
+      site,
+      account: { id: LICENSE_ID, license_key: 'lic-key-abc', stripe_customer_id: null },
+      subscription: { stripe_customer_id: 'cus_firstDDDD4444', stripe_subscription_id: 'sub_firstEEEE5555', billing_interval: 'month', status: 'active' },
+      planId: 'pro'
+    });
+
+    expect(captured.licenses.stripe_customer_id).toBe('cus_firstDDDD4444');
+    expect(captured.licenses.stripe_subscription_id).toBe('sub_firstEEEE5555');
+    expect(logger.warn.mock.calls.find(([message]) => message === '[billing] customer_mismatch')).toBeUndefined();
+  });
+});
