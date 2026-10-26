@@ -332,3 +332,46 @@ describe('account dashboard usage aggregation', () => {
     expect(stats.find((row) => row.plugin_name === 'OpptiAI Titles')?.credits_used).toBe(2);
   });
 });
+
+describe('account dashboard usage excludes trial rows', () => {
+  function trialAwareUsageBuilder(rows) {
+    let filtered = rows;
+    const builder = {
+      select: jest.fn(() => builder),
+      or: jest.fn((filter) => {
+        if (filter === 'is_trial.is.null,is_trial.eq.false') {
+          filtered = filtered.filter((row) => row.is_trial === null || row.is_trial === undefined || row.is_trial === false);
+        }
+        return builder;
+      }),
+      eq: jest.fn(() => builder),
+      gte: jest.fn(() => builder),
+      lt: jest.fn(() => builder),
+      then: (resolve, reject) => Promise.resolve({ data: filtered, error: null }).then(resolve, reject)
+    };
+    return builder;
+  }
+
+  test('guest trial rows on an owned site_hash do not count toward account usage', async () => {
+    const usageRows = [
+      { id: 'paid-1', feature_type: 'alt_text', credits_used: 1, site_hash: 'site-a', license_id: 'acct-1', is_trial: false },
+      { id: 'legacy-1', feature_type: 'alt_text', credits_used: 1, site_hash: 'site-a', license_key: 'lic-1', is_trial: null },
+      { id: 'guest-1', feature_type: 'alt_text', credits_used: 1, site_hash: 'site-a', license_id: null, license_key: null, is_trial: true },
+      { id: 'guest-2', feature_type: 'alt_text', credits_used: 1, site_hash: 'site-a', license_id: null, license_key: null, is_trial: true }
+    ];
+    const usage = trialAwareUsageBuilder(usageRows);
+    siteService.getSites.mockResolvedValue({ data: [{ id: 's1', site_hash: 'site-a', license_key: 'lic-1', status: 'active' }], error: null });
+    const supabase = {
+      from: jest.fn((table) => (table === 'usage_logs' ? usage : createThenable({ data: [], error: null })))
+    };
+    const service = createAccountDashboardService({ supabase, getStripe: jest.fn() });
+
+    const dashboard = await service.getDashboard({
+      user: { id: 'acct-1', license_key: 'lic-1', plan: 'free', status: 'active', billing_day_of_month: 1 }
+    });
+
+    expect(usage.or).toHaveBeenCalledWith('is_trial.is.null,is_trial.eq.false');
+    expect(dashboard.usage.credits_used).toBe(2);
+    expect(dashboard.usage.images_optimized).toBe(2);
+  });
+});

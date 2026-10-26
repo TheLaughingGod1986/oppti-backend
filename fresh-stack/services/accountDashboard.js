@@ -167,6 +167,7 @@ function createAccountDashboardService({ supabase, getStripe }) {
       .from('usage_logs')
       .select('id, feature_type, credits_used, site_hash, license_key, license_id')
       .or(filters.join(','))
+      .or('is_trial.is.null,is_trial.eq.false')
       .gte('created_at', periodStart.toISOString())
       .lt('created_at', periodEnd.toISOString());
 
