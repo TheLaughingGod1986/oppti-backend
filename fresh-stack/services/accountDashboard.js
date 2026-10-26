@@ -1,4 +1,5 @@
 const { getSites, deactivateSite } = require('./site');
+const { redactStripeIdsInString } = require('../lib/redact');
 const { getQuotaStatus, computePeriodStart } = require('./quota');
 const { getLimits } = require('./planLimits');
 const { recordPluginConnection } = require('./pluginConnections');
@@ -47,18 +48,28 @@ function formatPlanName(planId) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+const maskStripeId = (value) => (typeof value === 'string' ? redactStripeIdsInString(value) : value ?? null);
+
+// Sites whose billing belongs to the account: on its licence or owned by it.
+// Membership alone does not count.
+function isSiteOwnedByAccount(site, account) {
+  if (!site || !account) return false;
+  if (account.license_key && site.license_key === account.license_key) return true;
+  return Boolean(account.id && site.owner_user_id === account.id);
+}
+
 function mapSubscription(subscription) {
   const interval = subscription.billing_interval || subscription.billing_cycle || null;
   const planId = subscription.plan_id || subscription.plan || 'free';
   const mapped = {
-    id: subscription.id || subscription.stripe_subscription_id || `plan-${planId}`,
+    id: maskStripeId(subscription.id || subscription.stripe_subscription_id || `plan-${planId}`),
     plan_name: formatPlanName(planId),
     interval: interval === 'monthly' ? 'month' : interval === 'yearly' ? 'year' : interval,
     status: subscription.status || 'active',
     current_period_start: subscription.current_period_start || subscription.created_at || null,
     current_period_end: subscription.current_period_end || subscription.expires_at || null,
     cancel_at_period_end: Boolean(subscription.cancel_at_period_end),
-    stripe_subscription_id: subscription.stripe_subscription_id || null
+    stripe_subscription_id: maskStripeId(subscription.stripe_subscription_id || null)
   };
 
   if (Number.isFinite(Number(subscription.price))) {
@@ -205,7 +216,10 @@ function createAccountDashboardService({ supabase, getStripe }) {
   }
 
   async function listSubscriptions(account, sites) {
-    const siteIds = sites.map((site) => site.id).filter(Boolean);
+    const siteIds = sites
+      .filter((site) => isSiteOwnedByAccount(site, account))
+      .map((site) => site.id)
+      .filter(Boolean);
     let subscriptions = [];
 
     if (siteIds.length > 0) {

@@ -2,6 +2,7 @@ const express = require('express');
 // Account/billing errors can carry Stripe messages that echo the customer email.
 const logger = require('../lib/logger').withEmailRedaction();
 const { createAccountDashboardService } = require('../services/accountDashboard');
+const { sendSignInRequired } = require('../lib/signInRequired');
 
 function createAccountDashboardRouter({ supabase, getStripe, service } = {}) {
   const router = express.Router();
@@ -46,8 +47,17 @@ function createAccountDashboardRouter({ supabase, getStripe, service } = {}) {
     };
   }
 
-  router.get('/dashboard', accountRoute('dashboard', async (req) => accountService.getDashboard(req)));
-  router.get('/me/subscriptions', accountRoute('me.subscriptions', async (req) => ({
+  // Billing views need a signed-in account (JWT) or the account's own licence
+  // key; site headers alone are not enough.
+  function requireAccountCredential(req, res, next) {
+    if (!['jwt', 'license'].includes(req.authMethod) || (!req.user && !req.license)) {
+      return sendSignInRequired(res);
+    }
+    return next();
+  }
+
+  router.get('/dashboard', requireAccountCredential, accountRoute('dashboard', async (req) => accountService.getDashboard(req)));
+  router.get('/me/subscriptions', requireAccountCredential, accountRoute('me.subscriptions', async (req) => ({
     ok: true,
     subscriptions: await accountService.getSubscriptions(req)
   })));
@@ -66,7 +76,7 @@ function createAccountDashboardRouter({ supabase, getStripe, service } = {}) {
     ok: true,
     licenses: await accountService.getLicenses(req)
   })));
-  router.get('/me/invoices', accountRoute('me.invoices', async (req) => ({
+  router.get('/me/invoices', requireAccountCredential, accountRoute('me.invoices', async (req) => ({
     ok: true,
     invoices: await accountService.getInvoices(req)
   })));

@@ -1,7 +1,15 @@
 const express = require('express');
 const crypto = require('crypto');
 // Stripe errors can echo customer emails: mask them in every billing log line.
-const logger = require('../lib/logger').withEmailRedaction();
+const { redactStripeIds, redactStripeIdsInString } = require('../lib/redact');
+const { SIGN_IN_REQUIRED_BODY, sendSignInRequired } = require('../lib/signInRequired');
+
+// Billing logs: emails masked (withEmailRedaction), then Stripe ids masked.
+const logger = (() => {
+  const base = require('../lib/logger').withEmailRedaction();
+  const wrap = (level) => (...args) => base[level](...args.map((arg) => redactStripeIds(arg)));
+  return { ...base, info: wrap('info'), warn: wrap('warn'), error: wrap('error'), debug: wrap('debug') };
+})();
 const {
   resolveBillingCountry,
   resolveBillingCountryWithSource,
@@ -198,6 +206,51 @@ function getClientIp(req) {
     || req.headers['x-forwarded-for']?.split(',')[0]?.trim()
     || req.connection?.remoteAddress
     || 'unknown-ip';
+}
+
+// True when a Stripe customer id is the account's own: on the account row, or
+// on a site subscription for a site on the account's licence or owned by the
+// account. Site membership does not count. Any lookup failure counts as not owned.
+async function isCustomerOwnedByAccount(supabase, account, customerId) {
+  if (!account || typeof customerId !== 'string' || !customerId) return false;
+  if (account.stripe_customer_id && account.stripe_customer_id === customerId) return true;
+  if (!supabase) return false;
+  try {
+    const { data: subscriptions } = await supabase
+      .from('site_subscriptions')
+      .select('site_id')
+      .eq('stripe_customer_id', customerId);
+    const siteIds = [...new Set((subscriptions || []).map((row) => row?.site_id).filter(Boolean))];
+    if (siteIds.length === 0) return false;
+    const { data: sites } = await supabase
+      .from('sites')
+      .select('id, license_key, owner_user_id')
+      .in('id', siteIds);
+    return (sites || []).some((site) => siteOwnedByAccount(site, account));
+  } catch (_error) {
+    return false;
+  }
+}
+
+// Billing account data needs a signed-in account (JWT) or a licence key the
+// caller sent and that matched a licence exactly. Site headers (site key,
+// hash, URL, fingerprint) identify a site, not who may manage its billing.
+const ACCOUNT_AUTH_METHODS = new Set(['jwt', 'license']);
+function hasAccountCredential(req) {
+  const account = req.user || req.license || null;
+  return Boolean(account && (account.id || account.license_key) && ACCOUNT_AUTH_METHODS.has(req.authMethod));
+}
+
+const authRequired = sendSignInRequired;
+
+const maskStripeId = (value) => (typeof value === 'string' ? redactStripeIdsInString(value) : value ?? null);
+
+// A site is the caller's when it is on the caller's licence or the caller
+// owns it. Site membership does not count for billing.
+function siteOwnedByAccount(site, account) {
+  if (!site || !account) return false;
+  if (account.license_key && site.license_key === account.license_key) return true;
+  return Boolean(account.id && site.owner_user_id === account.id);
 }
 
 function getCheckoutRateLimit(selectedPlanId) {
@@ -3067,6 +3120,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
   }
 
   router.get('/info', async (req, res) => {
+    if (!hasAccountCredential(req)) return authRequired(res);
     const license = req.license;
     if (!license) {
       return res.status(401).json({ success: false, error: 'Authentication required', data: { error: 'Authentication required' } });
@@ -3095,7 +3149,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         stripe_subscription_id: billing.subscriptionId || null
       });
 
-      return res.json({ success: true, data: { billing } });
+      return res.json({ success: true, data: { billing: redactStripeIds(billing) } });
     } catch (err) {
       logger.error('[billing] info error', err.message);
       return res.status(500).json({ success: false, error: 'Failed to fetch billing info', data: { error: err.message } });
@@ -3180,19 +3234,50 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       || buildPlansList(catalogPriceIds, { currency: billingCurrency }).find((plan) => plan.priceId === priceId)
       || null;
 
-    let siteRecord = null;
-    if (supabase && siteKey) {
+    // Without an account credential, any checkout for a licence that already
+    // has a subscription gets the sign-in reply: before site resolution (no
+    // writes) and before any Stripe call.
+    if (supabase && account && !hasAccountCredential(req)) {
+      let existing;
       try {
-        const resolved = await resolveCanonicalSite(supabase, buildSiteIdentity({
-          siteHash: siteKey,
-          installUuid: siteKey,
-          siteUrl: req.header('X-Site-URL') || null,
-          siteFingerprint: req.header('X-Site-Fingerprint') || null
-        }), {
-          createIfMissing: true,
+        existing = await selectBillingSiteSubscriptionForLicense(supabase, account);
+      } catch (error) {
+        return reply(500, {
+          error: 'Failed to create checkout session',
+          code: 'CHECKOUT_SESSION_FAILED',
+          message: 'Stripe could not start checkout right now. Please try again in a minute.'
+        }, { outcome: 'error', error_code: 'SUBSCRIPTION_LOOKUP_FAILED', error_message: error?.message });
+      }
+      if (existing.subscription) {
+        return reply(401, SIGN_IN_REQUIRED_BODY, { outcome: 'rejected', error_code: 'SIGN_IN_REQUIRED' });
+      }
+    }
+
+    let siteRecord = null;
+    let metadataSiteKey = siteKey;
+    if (supabase && siteKey) {
+      const siteIdentity = buildSiteIdentity({
+        siteHash: siteKey,
+        installUuid: siteKey,
+        siteUrl: req.header('X-Site-URL') || null,
+        siteFingerprint: req.header('X-Site-Fingerprint') || null
+      });
+      try {
+        // Look the site up without attaching the caller, and only run the full
+        // resolve (create, membership, owner healing) for a new site or one the
+        // caller's account owns.
+        const probe = await resolveCanonicalSite(supabase, siteIdentity, {
+          createIfMissing: false,
           legacyLicenseKey: account?.license_key || null,
-          account
+          account: null
         });
+        const resolved = !probe.site || !account || siteOwnedByAccount(probe.site, account)
+          ? await resolveCanonicalSite(supabase, siteIdentity, {
+            createIfMissing: true,
+            legacyLicenseKey: account?.license_key || null,
+            account
+          })
+          : probe;
         siteRecord = resolved.site || null;
       } catch (error) {
         logger.warn('[billing] checkout site lookup failed', {
@@ -3203,6 +3288,14 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
 
       if (!siteRecord) {
         siteRecord = await findSiteByHash(supabase, siteKey);
+      }
+      if (siteRecord && account && !siteOwnedByAccount(siteRecord, account)) {
+        logger.warn('[billing] checkout site not owned', {
+          account_id: account.id || null,
+          site_hash: maskSecret(siteKey)
+        });
+        siteRecord = null;
+        metadataSiteKey = null;
       }
     }
 
@@ -3281,8 +3374,8 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
             success: true,
             url: portalSession.url,
             portal: true,
-            customerId: existingCustomerId,
-            subscriptionId: existingSubscription.stripe_subscription_id || null
+            customerId: maskStripeId(existingCustomerId),
+            subscriptionId: maskStripeId(existingSubscription.stripe_subscription_id || null)
           }, { outcome: 'portal_redirect', mode });
         }
       }
@@ -3317,22 +3410,26 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         currentPlan,
         metadataPurchaseType: null
       });
+      // Identity metadata comes from the signed-in account and the X-Site-Key
+      // site. Body identity fields are only used when there is no account
+      // (server-to-server calls with the API token).
+      const bodyIdentity = account ? {} : requestedAttribution;
       const checkoutMetadata = {
-        account_id: sanitizeStripeMetadataValue(account?.id) || requestedAttribution.accountId,
+        account_id: sanitizeStripeMetadataValue(account?.id) || bodyIdentity.accountId,
         license_key: sanitizeStripeMetadataValue(account?.license_key)
           || sanitizeStripeMetadataValue(siteRecord?.license_key)
-          || requestedAttribution.licenseKey,
-        site_id: sanitizeStripeMetadataValue(siteRecord?.id) || requestedAttribution.siteId,
+          || bodyIdentity.licenseKey,
+        site_id: sanitizeStripeMetadataValue(siteRecord?.id) || bodyIdentity.siteId,
         site_hash: sanitizeStripeMetadataValue(siteRecord?.site_hash)
-          || sanitizeStripeMetadataValue(siteKey)
-          || requestedAttribution.siteHash,
+          || sanitizeStripeMetadataValue(metadataSiteKey)
+          || bodyIdentity.siteHash,
         site_install_id: sanitizeStripeMetadataValue(siteRecord?.site_hash)
-          || sanitizeStripeMetadataValue(siteKey)
-          || requestedAttribution.siteInstallId,
+          || sanitizeStripeMetadataValue(metadataSiteKey)
+          || bodyIdentity.siteInstallId,
         user_id: sanitizeStripeMetadataValue(req.user?.id)
-          || requestedAttribution.userId
-          || sanitizeStripeMetadataValue(account?.id),
-        email: sanitizeStripeMetadataValue(account?.email, { lowercase: true }) || requestedAttribution.email,
+          || sanitizeStripeMetadataValue(account?.id)
+          || bodyIdentity.userId,
+        email: sanitizeStripeMetadataValue(account?.email, { lowercase: true }) || bodyIdentity.email,
         plan: selectedPlanId || undefined,
         current_plan: currentPlan || undefined,
         billing_interval: resolveCheckoutBillingInterval(planForCheckout, selectedPlanId),
@@ -3536,26 +3633,29 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         message: 'We could not send the email. Please copy the link instead.'
       }, 'error', 'EMAIL_SEND_FAILED');
     }
-    return reply(200, {
-      success: true,
-      sent_to: accountEmail.replace(/^(.{2}).*(@.*)$/, '$1***$2')
-    }, 'sent');
+    // Only a signed-in account or licence holder sees which address was used.
+    return reply(200, hasAccountCredential(req)
+      ? { success: true, sent_to: accountEmail.replace(/^(.{2}).*(@.*)$/, '$1***$2') }
+      : { success: true }, 'sent');
   });
 
   router.post('/portal', async (req, res) => {
+    if (!hasAccountCredential(req)) return authRequired(res);
     if (!requireBillingAuth(req, res)) return;
-    const { returnUrl, customerId } = req.body || {};
+    const { returnUrl } = req.body || {};
+    const requestedCustomerId = typeof req.body?.customerId === 'string' ? req.body.customerId.trim() : '';
     const account = req.license || req.user || null;
     const stripeClient = getStripe();
     if (!stripeClient) {
       return res.status(501).json({ error: 'Stripe not configured' });
     }
 
-    let resolvedCustomerId = customerId || account?.stripe_customer_id || null;
-    let resolvedSubscriptionId = account?.stripe_subscription_id || null;
-    let resolutionSource = customerId ? 'request' : account?.stripe_customer_id ? 'account' : 'unresolved';
+    // The customer always comes from the caller's own account.
+    let resolvedCustomerId = account.stripe_customer_id || null;
+    let resolvedSubscriptionId = account.stripe_subscription_id || null;
+    let resolutionSource = resolvedCustomerId ? 'account' : 'unresolved';
 
-    if (!resolvedCustomerId && supabase && account) {
+    if (!resolvedCustomerId && supabase) {
       const resolved = await selectBillingSiteSubscriptionForLicense(supabase, account);
       if (resolved.subscription?.stripe_customer_id) {
         resolvedCustomerId = resolved.subscription.stripe_customer_id;
@@ -3564,10 +3664,26 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       }
     }
 
+    if (requestedCustomerId && requestedCustomerId !== resolvedCustomerId) {
+      const owned = await isCustomerOwnedByAccount(supabase, account, requestedCustomerId);
+      if (!owned) {
+        logger.warn('[billing] portal customer mismatch', {
+          account_id: account.id || null,
+          licenseKeyPrefix: maskSecret(account.license_key || null)
+        });
+        return res.status(403).json({
+          error: 'This billing account does not belong to you.',
+          code: 'CUSTOMER_NOT_OWNED'
+        });
+      }
+      resolvedCustomerId = requestedCustomerId;
+      resolutionSource = 'request_owned';
+    }
+
     if (!resolvedCustomerId) {
       logger.warn('[billing] portal customer unresolved', {
-        account_id: account?.id || null,
-        licenseKeyPrefix: maskSecret(account?.license_key || null),
+        account_id: account.id || null,
+        licenseKeyPrefix: maskSecret(account.license_key || null),
         source: resolutionSource
       });
       return res.status(409).json({
@@ -3584,8 +3700,8 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       res.json({
         success: true,
         url: session.url,
-        customerId: resolvedCustomerId,
-        subscriptionId: resolvedSubscriptionId,
+        customerId: maskStripeId(resolvedCustomerId),
+        subscriptionId: maskStripeId(resolvedSubscriptionId),
         source: resolutionSource
       });
     } catch (error) {
@@ -3595,28 +3711,46 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
   });
 
   router.get('/subscription', async (req, res) => {
+    if (!hasAccountCredential(req)) return authRequired(res);
     if (!requireBillingAuth(req, res)) return;
     const siteKey = req.header('X-Site-Key');
     const freePlan = { plan: 'free', status: 'free', billingCycle: null, nextBillingDate: null, subscriptionId: null, cancelAtPeriodEnd: false };
+    const account = req.user || req.license || null;
     try {
       if (!supabase) return res.json({ success: true, data: freePlan });
 
-      const resolved = await resolveCanonicalSite(supabase, buildSiteIdentity({
+      const licenseKey = req.license?.license_key || account.license_key || null;
+      const siteIdentity = buildSiteIdentity({
         siteHash: siteKey,
         installUuid: siteKey,
         siteUrl: req.header('X-Site-URL') || null,
         siteFingerprint: req.header('X-Site-Fingerprint') || null
-      }), {
-        createIfMissing: true,
-        legacyLicenseKey: req.license?.license_key || null,
-        account: req.user || req.license || null,
-        requestId: req.id || null
       });
+      const resolveOptions = {
+        legacyLicenseKey: licenseKey,
+        requestId: req.id || null
+      };
 
-      if (resolved.error) {
+      // Look the site up first without attaching the caller to it, then run the
+      // full resolve (membership and owner healing) only for the caller's own site.
+      const probe = await resolveCanonicalSite(supabase, siteIdentity, {
+        ...resolveOptions,
+        createIfMissing: false,
+        account: null
+      });
+      let resolved = probe;
+      if (!probe.site || siteOwnedByAccount(probe.site, account)) {
+        resolved = await resolveCanonicalSite(supabase, siteIdentity, {
+          ...resolveOptions,
+          createIfMissing: true,
+          account
+        });
+      }
+
+      if (resolved.error && resolved.error !== 'SITE_NOT_FOUND') {
         logger.error('[site] billing_subscription_site_healing_failed', {
           request_id: req.id || null,
-          account_id: req.user?.id || req.license?.id || null,
+          account_id: account.id || null,
           site_hash: siteKey || null,
           site_url: req.header('X-Site-URL') || null,
           error: resolved.error,
@@ -3629,6 +3763,15 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         ? await findSiteByHash(supabase, siteKey)
         : null;
       const effectiveSite = resolved.site || fallbackSite;
+
+      if (effectiveSite && !siteOwnedByAccount(effectiveSite, account)) {
+        logger.warn('[billing] subscription_site_not_held', {
+          request_id: req.id || null,
+          account_id: account.id || null,
+          site_hash: maskSecret(siteKey || null)
+        });
+        return res.json({ success: true, data: await planFromLicense(licenseKey, null) || freePlan });
+      }
 
       if (!effectiveSite) return res.json({ success: true, data: freePlan });
 
@@ -3647,41 +3790,47 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
             status: siteSubscription.status || 'active',
             billingCycle: siteSubscription.billing_interval || 'month',
             nextBillingDate: siteSubscription.current_period_end || null,
-            subscriptionId: siteSubscription.stripe_subscription_id || null,
+            subscriptionId: maskStripeId(siteSubscription.stripe_subscription_id || null),
             cancelAtPeriodEnd: siteSubscription.cancel_at_period_end || false
           }
         });
       }
 
-      const { data: license } = await supabase
-        .from('licenses')
-        .select('plan, status, billing_cycle, stripe_subscription_id')
-        .eq('license_key', effectiveSite.license_key)
-        .maybeSingle();
-
-      logger.info('[billing] subscription_source_resolved', {
-        source: 'licenses',
-        site_id: effectiveSite.id,
-        site_hash: effectiveSite.site_hash || null,
-        stripe_subscription_id: license?.stripe_subscription_id || null
-      });
-
-      res.json({
-        success: true,
-        data: {
-          plan: license?.plan || 'free',
-          status: license?.status || 'active',
-          billingCycle: license?.billing_cycle || 'month',
-          nextBillingDate: null,
-          subscriptionId: license?.stripe_subscription_id || null,
-          cancelAtPeriodEnd: false
-        }
-      });
+      res.json({ success: true, data: await planFromLicense(effectiveSite.license_key, effectiveSite) });
     } catch (error) {
       logger.error('[billing] subscription fetch error', error.message);
       res.status(500).json({ error: 'Failed to fetch subscription' });
     }
   });
+
+  async function planFromLicense(licenseKey, site) {
+    const { data: license } = licenseKey
+      ? await supabase
+        .from('licenses')
+        .select('plan, status, billing_cycle, stripe_subscription_id')
+        .eq('license_key', licenseKey)
+        .maybeSingle()
+      : { data: null };
+
+    if (site) {
+      logger.info('[billing] subscription_source_resolved', {
+        source: 'licenses',
+        site_id: site.id,
+        site_hash: site.site_hash || null,
+        stripe_subscription_id: license?.stripe_subscription_id || null
+      });
+    }
+    if (!license && !site) return null;
+
+    return {
+      plan: license?.plan || 'free',
+      status: license?.status || 'active',
+      billingCycle: license?.billing_cycle || 'month',
+      nextBillingDate: null,
+      subscriptionId: maskStripeId(license?.stripe_subscription_id || null),
+      cancelAtPeriodEnd: false
+    };
+  }
 
   return router;
 }
