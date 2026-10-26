@@ -3,7 +3,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { z } = require('zod');
 const crypto = require('crypto');
-const logger = require('../lib/logger');
+// Every auth log line has its email addresses masked (j***@example.com).
+const logger = require('../lib/logger').withEmailRedaction();
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { sendPasswordResetEmail, isAvailable: isEmailAvailable } = require('../lib/email');
 const { buildPasswordResetLink } = require('../lib/passwordReset');
@@ -561,7 +562,7 @@ async function recordProductEmailsOptOut({ supabase, user, body, requestId }) {
   return optOut === true;
 }
 
-const resetLogger = logger.withEmailRedaction();
+const resetLogger = logger;
 
 // One body for every valid forgot-password request: never the link or token.
 const FORGOT_PASSWORD_RESPONSE = Object.freeze({

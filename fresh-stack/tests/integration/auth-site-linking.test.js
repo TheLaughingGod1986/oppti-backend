@@ -1102,3 +1102,30 @@ describe('register links the site\'s earlier guest-trial rows', () => {
     expect(supabase._guest.updates).toHaveLength(0);
   });
 });
+
+describe('auth log lines mask email addresses', () => {
+  const EMAIL = 'masking-check@qa.oppti.dev';
+  const loggedText = (spies) => JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
+
+  test('register, duplicate register and login never log the full email', async () => {
+    const logger = require('../../lib/logger');
+    const spies = ['info', 'warn', 'error', 'debug'].map((level) => jest.spyOn(logger, level));
+    try {
+      const app = createApp(createSupabaseMock());
+      const credentials = { email: EMAIL, password: 'Password123!' };
+      expect((await request(app).post('/auth/register').send(credentials)).body.success).toBe(true);
+      expect((await request(app).post('/auth/register').send(credentials)).body.code).toBe('USER_EXISTS');
+      expect((await request(app).post('/auth/login').send(credentials)).body.success).toBe(true);
+
+      expect(loggedText(spies)).not.toContain(EMAIL);
+      const success = spies[0].mock.calls.find(([message]) => message === '[Auth] Register successful');
+      expect(success[1].email).toBe('m***@qa.oppti.dev');
+      const exists = spies[0].mock.calls.find(([message]) => message === '[Auth] Register rejected: user exists');
+      expect(exists[1].email).toBe('m***@qa.oppti.dev');
+      const login = spies[0].mock.calls.find(([message]) => message === '[Auth] Login successful');
+      expect(login[1].email).toBe('m***@qa.oppti.dev');
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
+  });
+});
