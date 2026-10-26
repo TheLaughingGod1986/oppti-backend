@@ -18,6 +18,7 @@ function createChainableMock(resolveData = null, resolveError = null) {
     ilike: () => chainable,
     is: () => chainable,
     in: () => chainable,
+    or: () => chainable,
     order: () => chainable,
     limit: () => chainable,
     single: () => Promise.resolve({ data: resolveData, error: resolveError }),
@@ -58,5 +59,31 @@ describe('GET /usage/sites', () => {
     const res = await request(app).get('/usage/sites').set('X-License-Key', 'key');
     expect(res.status).toBe(200);
     expect(res.body.plan_type).toBe('agency');
+  });
+});
+
+describe('GET /usage/sites excludes trial rows', () => {
+  test('per-site totals for an agency licence only count non-trial usage', async () => {
+    const calls = [];
+    const usageChain = {
+      select() { return usageChain; },
+      gte() { return usageChain; },
+      lt() { return usageChain; },
+      or(filter) { calls.push(filter); return usageChain; },
+      eq() { return usageChain; },
+      then: (resolve) => resolve({ data: [], error: null })
+    };
+    const supabase = {
+      from: (table) => (table === 'usage_logs'
+        ? usageChain
+        : createChainableMock({ id: 'lic-1', license_key: 'key', plan: 'agency', status: 'active' }))
+    };
+    const app = express();
+    app.use('/usage', createUsageRouter({ supabase }));
+
+    const res = await request(app).get('/usage/sites').set('X-License-Key', 'key');
+
+    expect(res.status).toBe(200);
+    expect(calls).toContain('is_trial.is.null,is_trial.eq.false');
   });
 });

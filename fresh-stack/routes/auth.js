@@ -24,6 +24,7 @@ const { trackAccountCreated, trackPluginConnected, isLoopsSkippedEmail } = requi
 const { PLUGIN_IDS } = require('../../src/services/pluginIdentity');
 const { recordPluginConnection } = require('../services/pluginConnections');
 const { recordSignupAttribution } = require('../services/auditorAttribution');
+const { linkGuestTrialRowsOnSignup } = require('../services/guestTrialLink');
 const { normalizeSignupSource } = require('../lib/signupSource');
 const { normalizeProductEmailsOptOut, isProductEmailsOptedOut } = require('../lib/productEmailOptOut');
 const { identifyServerUser } = require('../lib/posthog');
@@ -902,6 +903,14 @@ function createAuthRouter({ supabase }) {
           requestId: req.id || null,
           connectionSource: 'register',
           anonymousContext
+        });
+        await linkGuestTrialRowsOnSignup({
+          supabase,
+          account: user,
+          site: siteLink.site,
+          sharedSite: siteLink.sharedSite,
+          connectionSource: 'register',
+          requestId: req.id || null
         });
       }
 

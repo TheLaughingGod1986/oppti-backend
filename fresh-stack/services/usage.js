@@ -380,7 +380,8 @@ async function getSiteUsage(supabase, { licenseKey, periodStart, periodEnd }) {
     .from('usage_logs')
     .select('site_hash, credits_used, created_at')
     .gte('created_at', periodStart.toISOString())
-    .lt('created_at', periodEnd.toISOString());
+    .lt('created_at', periodEnd.toISOString())
+    .or('is_trial.is.null,is_trial.eq.false');
 
   if (licenseId) query.eq('license_id', licenseId);
 
