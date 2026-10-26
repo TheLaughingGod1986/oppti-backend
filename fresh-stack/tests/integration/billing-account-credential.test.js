@@ -581,3 +581,94 @@ describe('refused calls count in the rate limiter', () => {
     expect(own.status).toBe(200);
   });
 });
+
+describe('unrecognised site credentials on billing paths', () => {
+  const checkoutRateBuckets = { clear: () => rateBuckets().clear() };
+  const unknownSites = [
+    { 'X-Site-Hash': 'hash-zzzzzzzzzzzzzzzz', 'X-Site-Key': 'hash-zzzzzzzzzzzzzzzz', 'X-Site-URL': 'https://zulu-unregistered.example', 'X-Site-Fingerprint': 'fp-qa' },
+    { 'X-Site-Key': 'made-up-key-only' },
+    { 'X-Site-Key': 'hash-zzzzzzzzzzzzzzzz', Authorization: 'Bearer not-a-real-token' }
+  ];
+  const payingSite = { 'X-Site-Hash': 'hash-bbbbbbbbbbbbbbbb', 'X-Site-Key': 'hash-bbbbbbbbbbbbbbbb', 'X-Site-URL': `https://${B_DOMAIN}`, 'X-Site-Fingerprint': 'fp-qa' };
+  const freeSite = { 'X-Site-Hash': 'hash-nnnnnnnnnnnnnnnn', 'X-Site-Key': 'hash-nnnnnnnnnnnnnnnn', 'X-Site-URL': 'https://november.example', 'X-Site-Fingerprint': 'fp-qa' };
+  const READS = [
+    (app, h) => send(request(app).get('/billing/info'), h),
+    (app, h) => send(request(app).get('/billing/subscription'), h),
+    (app, h) => send(request(app).post('/billing/portal'), h).send({}),
+    (app, h) => send(request(app).get('/me/invoices'), h),
+    (app, h) => send(request(app).get('/me/subscriptions'), h),
+    (app, h) => send(request(app).get('/dashboard'), h),
+    (app, h) => send(request(app).get('/billing/subscription/'), h)
+  ];
+  beforeEach(() => checkoutRateBuckets.clear());
+  afterEach(() => {
+    process.env.CHECKOUT_RATE_LIMIT_PER_15_MIN = '1000';
+    checkoutRateBuckets.clear();
+  });
+
+  test('reads and portal: unknown, free and paying sites all get the same 401 bytes', async () => {
+    const { app } = buildApp();
+    const bodies = new Set();
+    for (const headers of [...unknownSites, freeSite, payingSite]) {
+      for (const call of READS) {
+        const res = await call(app, headers);
+        expect(res.status).toBe(401);
+        bodies.add(res.text);
+      }
+    }
+    expect([...bodies]).toEqual([SIGN_IN_REQUIRED_TEXT]);
+  });
+
+  test('checkout: an unknown site gets the same 401 as a paying site, and the same limit', async () => {
+    process.env.CHECKOUT_RATE_LIMIT_PER_15_MIN = '2';
+    const { app, stripe } = buildApp();
+    const run = async (headers) => {
+      const out = [];
+      for (let i = 0; i < 3; i += 1) {
+        const res = await send(request(app).post('/billing/checkout'), headers).send({ priceId: 'price_pro' });
+        out.push([res.status, res.text]);
+      }
+      return out;
+    };
+    const unknown = await run(unknownSites[0]);
+    const paying = await run(payingSite);
+    expect(unknown.map(([s]) => s)).toEqual([401, 401, 429]);
+    expect(paying.map(([s]) => s)).toEqual([401, 401, 429]);
+    expect(unknown.map(([, t]) => t)).toEqual(paying.map(([, t]) => t));
+    expect(unknown[0][1]).toBe(SIGN_IN_REQUIRED_TEXT);
+    expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+    const free = await send(request(app).post('/billing/checkout'), freeSite).send({ priceId: 'price_pro' });
+    expect(free.status).toBe(200);
+  });
+
+  test('checkout from an unknown site still validates the request first, like a known one', async () => {
+    const { app } = buildApp();
+    const unknown = await send(request(app).post('/billing/checkout'), unknownSites[0]).send({ priceId: 'price_nope' });
+    const paying = await send(request(app).post('/billing/checkout'), payingSite).send({ priceId: 'price_nope' });
+    expect(unknown.status).toBe(400);
+    expect(unknown.text).toBe(paying.text);
+  });
+
+  test('an X-License-Key that is not an issued key still gets the licence error (Titles routes it to reconnect)', async () => {
+    const { app } = buildApp();
+    for (const path of ['/billing/info', '/billing/checkout']) {
+      const res = await send(request(app)[path === '/billing/info' ? 'get' : 'post'](path), { 'X-Site-Key': 'hash-zzzzzzzzzzzzzzzz', 'X-License-Key': 'lic-not-issued-0000' }).send({ priceId: 'price_pro' });
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe('INVALID_LICENSE');
+    }
+  });
+
+  test('non-billing paths keep the existing licence error', async () => {
+    const { authMiddleware: auth } = require('../../middleware/auth');
+    const other = express();
+    other.use(express.json());
+    other.use(auth({ supabase: supabaseMock() }));
+    other.get('/api/usage', (_req, res) => res.json({ ok: true }));
+    other.get('/me/sites', (_req, res) => res.json({ ok: true }));
+    for (const path of ['/api/usage', '/me/sites']) {
+      const res = await send(request(other).get(path), unknownSites[0]);
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe('INVALID_LICENSE');
+    }
+  });
+});

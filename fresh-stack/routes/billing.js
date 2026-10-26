@@ -3242,10 +3242,11 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
     // Without an account credential, any checkout for a licence that already
     // has a subscription gets the sign-in reply: before site resolution (no
     // writes) and before any Stripe call.
-    if (supabase && account && !hasAccountCredential(req)) {
-      let existing;
+    const credentialRejected = req.billingCredentialRejected === true && !account;
+    if (credentialRejected || (supabase && account && !hasAccountCredential(req))) {
+      let existing = { subscription: credentialRejected ? true : null };
       try {
-        existing = await selectBillingSiteSubscriptionForLicense(supabase, account);
+        if (!credentialRejected) existing = await selectBillingSiteSubscriptionForLicense(supabase, account);
       } catch (error) {
         return reply(500, {
           error: 'Failed to create checkout session',
