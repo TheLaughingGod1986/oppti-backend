@@ -157,6 +157,7 @@ let spies;
 beforeAll(() => {
   process.env.CHECKOUT_CREDITS_RATE_LIMIT_PER_15_MIN = '1000';
   process.env.CHECKOUT_RATE_LIMIT_PER_15_MIN = '1000';
+  process.env.SIGN_IN_REFUSAL_RATE_LIMIT_PER_15_MIN = '100000';
 });
 beforeEach(() => {
   seed();
@@ -509,5 +510,74 @@ describe('checkout prefill', () => {
     expect(res.status).toBe(200);
     expect(res.text).toBe(JSON.stringify({ success: true }));
     expect(sendSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The shared request counters; a fresh Map stands in where the module is absent.
+function rateBuckets() {
+  try {
+    return require('../../lib/checkoutRateLimit').checkoutRateBuckets;
+  } catch (_error) {
+    return new Map();
+  }
+}
+
+describe('refused calls count in the rate limiter', () => {
+  const checkoutRateBuckets = { clear: () => rateBuckets().clear() };
+  const payingSite = { 'X-Site-Hash': 'hash-bbbbbbbbbbbbbbbb', 'X-Site-Key': 'hash-bbbbbbbbbbbbbbbb', 'X-Site-URL': `https://${B_DOMAIN}` };
+  const freeSite = { 'X-Site-Hash': 'hash-nnnnnnnnnnnnnnnn', 'X-Site-Key': 'hash-nnnnnnnnnnnnnnnn', 'X-Site-URL': 'https://november.example' };
+  beforeEach(() => checkoutRateBuckets.clear());
+  afterEach(() => {
+    process.env.CHECKOUT_RATE_LIMIT_PER_15_MIN = '1000';
+    process.env.SIGN_IN_REFUSAL_RATE_LIMIT_PER_15_MIN = '100000';
+    checkoutRateBuckets.clear();
+  });
+
+  test('a refused paying-site checkout hits the checkout limit after the same number of tries as a guest checkout', async () => {
+    process.env.CHECKOUT_RATE_LIMIT_PER_15_MIN = '3';
+    const { app, stripe } = buildApp();
+    const statuses = { paying: [], free: [] };
+    const limited = [];
+    for (let i = 0; i < 4; i += 1) {
+      const paying = await send(request(app).post('/billing/checkout'), payingSite).send({ priceId: 'price_pro' });
+      const free = await send(request(app).post('/billing/checkout'), freeSite).send({ priceId: 'price_pro' });
+      statuses.paying.push(paying.status);
+      statuses.free.push(free.status);
+      if (paying.status === 429) limited.push(paying.text);
+      if (free.status === 429) limited.push(free.text);
+    }
+    expect(statuses.paying).toEqual([401, 401, 401, 429]);
+    expect(statuses.free).toEqual([200, 200, 200, 429]);
+    expect(new Set(limited).size).toBe(1);
+    expect(JSON.parse(limited[0]).code).toBe('CHECKOUT_RATE_LIMIT_EXCEEDED');
+    expect(stripe.checkout.sessions.create).toHaveBeenCalledTimes(3);
+  });
+
+  test('refused reads and portal calls count per IP and then get one fixed 429 on every route', async () => {
+    process.env.SIGN_IN_REFUSAL_RATE_LIMIT_PER_15_MIN = '5';
+    const { app } = buildApp();
+    const routes = [
+      () => send(request(app).get('/billing/info'), payingSite),
+      () => send(request(app).get('/billing/subscription'), freeSite),
+      () => send(request(app).post('/billing/portal'), payingSite).send({}),
+      () => send(request(app).get('/me/invoices'), freeSite),
+      () => send(request(app).get('/dashboard'), payingSite),
+      () => send(request(app).get('/me/subscriptions'), freeSite),
+      () => send(request(app).get('/billing/info'), freeSite)
+    ];
+    const results = [];
+    for (const call of routes) results.push(await call());
+    expect(results.map((r) => r.status)).toEqual([401, 401, 401, 401, 401, 429, 429]);
+    expect(results[5].text).toBe(results[6].text);
+    expect(JSON.parse(results[5].text)).toEqual({ code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests. Please wait a few minutes and try again.' });
+    expect(results[5].headers['retry-after']).toBe('900');
+  });
+
+  test('signed-in callers are not counted and not limited by refusals', async () => {
+    process.env.SIGN_IN_REFUSAL_RATE_LIMIT_PER_15_MIN = '2';
+    const { app } = buildApp();
+    for (let i = 0; i < 3; i += 1) await send(request(app).get('/billing/info'), payingSite);
+    const own = await send(request(app).get('/billing/info'), { 'X-Site-Key': 'hash-aaaaaaaaaaaaaaaa', 'X-License-Key': A.license_key });
+    expect(own.status).toBe(200);
   });
 });

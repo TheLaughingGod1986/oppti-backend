@@ -3,6 +3,13 @@ const crypto = require('crypto');
 // Stripe errors can echo customer emails: mask them in every billing log line.
 const { redactStripeIds, redactStripeIdsInString } = require('../lib/redact');
 const { SIGN_IN_REQUIRED_BODY, sendSignInRequired } = require('../lib/signInRequired');
+const {
+  CHECKOUT_RATE_LIMIT_WINDOW_MS,
+  checkoutRateBuckets,
+  pruneCheckoutRateBuckets,
+  getClientIp,
+  recordHit
+} = require('../lib/checkoutRateLimit');
 
 // Billing logs: emails masked (withEmailRedaction), then Stripe ids masked.
 const logger = (() => {
@@ -82,9 +89,7 @@ const SUPPRESSED_PAYMENT_FAILURE_CODES = new Set([
   'stolen_card'
 ]);
 const STRIPE_METADATA_MAX_LENGTH = 500;
-const CHECKOUT_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const CHECKOUT_LINK_EMAIL_LIMIT = 3;
-const checkoutRateBuckets = new Map();
 
 function normalizeStripeId(value) {
   if (typeof value === 'string' && value) return value;
@@ -206,12 +211,6 @@ function maskSecret(value) {
   return stringValue.length <= 8 ? '[redacted]' : `${stringValue.slice(0, 8)}...`;
 }
 
-function getClientIp(req) {
-  return req.ip
-    || req.headers['x-forwarded-for']?.split(',')[0]?.trim()
-    || req.connection?.remoteAddress
-    || 'unknown-ip';
-}
 
 // True when a Stripe customer id is the account's own: on the account row, or
 // on a site subscription for a site on the account's licence or owned by the
@@ -283,21 +282,7 @@ function getCheckoutRateLimit(selectedPlanId) {
   return Number.isFinite(configured) && configured > 0 ? configured : defaultLimit;
 }
 
-function pruneCheckoutRateBuckets(now = Date.now()) {
-  for (const [key, hits] of checkoutRateBuckets.entries()) {
-    const recent = hits.filter((timestamp) => now - timestamp < CHECKOUT_RATE_LIMIT_WINDOW_MS);
-    if (recent.length) {
-      checkoutRateBuckets.set(key, recent);
-    } else {
-      checkoutRateBuckets.delete(key);
-    }
-  }
-}
-
 function checkCheckoutRateLimit(req, { siteKey, priceId, selectedPlanId }) {
-  const now = Date.now();
-  pruneCheckoutRateBuckets(now);
-
   const limit = getCheckoutRateLimit(selectedPlanId);
   const ip = getClientIp(req);
   const account = req.license || req.user || null;
@@ -310,15 +295,15 @@ function checkCheckoutRateLimit(req, { siteKey, priceId, selectedPlanId }) {
     accountKey,
     ip
   ].join(':');
-  const hits = checkoutRateBuckets.get(bucketKey) || [];
-  hits.push(now);
-  checkoutRateBuckets.set(bucketKey, hits);
+  return recordHit(bucketKey, limit);
+}
 
+function checkoutRateLimitedBody(checkoutRateLimit) {
   return {
-    allowed: hits.length <= limit,
-    count: hits.length,
-    limit,
-    retryAfterSeconds: Math.ceil(CHECKOUT_RATE_LIMIT_WINDOW_MS / 1000)
+    error: 'CHECKOUT_RATE_LIMIT_EXCEEDED',
+    code: 'CHECKOUT_RATE_LIMIT_EXCEEDED',
+    message: 'Too many checkout attempts. Please wait a few minutes before trying again.',
+    retry_after: checkoutRateLimit.retryAfterSeconds
   };
 }
 
@@ -3140,7 +3125,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
   }
 
   router.get('/info', async (req, res) => {
-    if (!hasAccountCredential(req)) return authRequired(res);
+    if (!hasAccountCredential(req)) return authRequired(req, res);
     const license = req.license;
     if (!license) {
       return res.status(401).json({ success: false, error: 'Authentication required', data: { error: 'Authentication required' } });
@@ -3269,6 +3254,18 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         }, { outcome: 'error', error_code: 'SUBSCRIPTION_LOOKUP_FAILED', error_message: error?.message });
       }
       if (existing.subscription) {
+        // Counted in the same checkout bucket a new session would use, so the
+        // limit is reached after the same number of attempts either way.
+        const checkoutRateLimit = checkCheckoutRateLimit(req, {
+          siteKey,
+          priceId,
+          selectedPlanId: normalizePlanValue(resolvePlanFromPriceId(priceIds, priceId) || selectedPlan?.id || null)
+        });
+        if (!checkoutRateLimit.allowed) {
+          return reply(429, checkoutRateLimitedBody(checkoutRateLimit), {
+            outcome: 'rate_limited', error_code: 'CHECKOUT_RATE_LIMIT_EXCEEDED'
+          });
+        }
         return reply(401, SIGN_IN_REQUIRED_BODY, { outcome: 'rejected', error_code: 'SIGN_IN_REQUIRED' });
       }
     }
@@ -3364,12 +3361,9 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
           count: checkoutRateLimit.count,
           limit: checkoutRateLimit.limit
         });
-        return reply(429, {
-          error: 'CHECKOUT_RATE_LIMIT_EXCEEDED',
-          code: 'CHECKOUT_RATE_LIMIT_EXCEEDED',
-          message: 'Too many checkout attempts. Please wait a few minutes before trying again.',
-          retry_after: checkoutRateLimit.retryAfterSeconds
-        }, { outcome: 'rate_limited', error_code: 'CHECKOUT_RATE_LIMIT_EXCEEDED', mode });
+        return reply(429, checkoutRateLimitedBody(checkoutRateLimit), {
+          outcome: 'rate_limited', error_code: 'CHECKOUT_RATE_LIMIT_EXCEEDED', mode
+        });
       }
       let existingSubscription = null;
       if (mode === 'subscription') {
@@ -3687,7 +3681,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
   });
 
   router.post('/portal', async (req, res) => {
-    if (!hasAccountCredential(req)) return authRequired(res);
+    if (!hasAccountCredential(req)) return authRequired(req, res);
     if (!requireBillingAuth(req, res)) return;
     const { returnUrl } = req.body || {};
     const requestedCustomerId = typeof req.body?.customerId === 'string' ? req.body.customerId.trim() : '';
@@ -3767,7 +3761,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
   });
 
   router.get('/subscription', async (req, res) => {
-    if (!hasAccountCredential(req)) return authRequired(res);
+    if (!hasAccountCredential(req)) return authRequired(req, res);
     if (!requireBillingAuth(req, res)) return;
     const siteKey = req.header('X-Site-Key');
     const freePlan = { plan: 'free', status: 'free', billingCycle: null, nextBillingDate: null, subscriptionId: null, cancelAtPeriodEnd: false };

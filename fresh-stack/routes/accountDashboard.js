@@ -51,7 +51,7 @@ function createAccountDashboardRouter({ supabase, getStripe, service } = {}) {
   // key; site headers alone are not enough.
   function requireAccountCredential(req, res, next) {
     if (!['jwt', 'license'].includes(req.authMethod) || (!req.user && !req.license)) {
-      return sendSignInRequired(res);
+      return sendSignInRequired(req, res);
     }
     return next();
   }
