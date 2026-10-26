@@ -3504,10 +3504,15 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         metadata
       };
 
-      if (account?.stripe_customer_id) {
-        checkoutPayload.customer = account.stripe_customer_id;
-      } else if (account?.email) {
-        checkoutPayload.customer_email = account.email;
+      // Prefill the Stripe customer or email only for a signed-in account or a
+      // matched licence key. Other callers enter their email on the Stripe page;
+      // the session metadata still links the purchase to the licence and site.
+      if (hasAccountCredential(req)) {
+        if (account?.stripe_customer_id) {
+          checkoutPayload.customer = account.stripe_customer_id;
+        } else if (account?.email) {
+          checkoutPayload.customer_email = account.email;
+        }
       }
 
       if (mode === 'subscription') {

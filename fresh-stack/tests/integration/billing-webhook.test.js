@@ -1066,6 +1066,58 @@ describe('POST /billing/webhook', () => {
     });
   });
 
+  test('a checkout started without a prefilled customer is still credited to the licence and site in its metadata', async () => {
+    const supabase = createSupabaseMock({
+      accounts: [
+        { id: 'account_guest_site', email: 'owner@qa.oppti.dev', license_key: 'lic_guest_site', plan: 'free' },
+        { id: 'account_typed_email', email: 'typed@qa.oppti.dev', license_key: 'lic_typed_email', plan: 'free' }
+      ],
+      sites: [{ id: 'site_guest', site_hash: 'site_hash_guest', license_key: 'lic_guest_site' }]
+    });
+    const stripeClient = {
+      checkout: { sessions: { listLineItems: jest.fn().mockResolvedValue({ data: [{ price: { id: 'price_credits', product: 'prod_credits' } }] }) } }
+    };
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_checkout_guest_site',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          id: 'cs_test_guest_site',
+          mode: 'payment',
+          payment_status: 'paid',
+          amount_total: 999,
+          currency: 'gbp',
+          customer: 'cus_new_guest_buyer',
+          customer_details: { email: 'typed@qa.oppti.dev' },
+          client_reference_id: 'account_guest_site',
+          livemode: false,
+          metadata: {
+            account_id: 'account_guest_site',
+            license_key: 'lic_guest_site',
+            site_id: 'site_guest',
+            site_hash: 'site_hash_guest',
+            plan: 'credits'
+          }
+        }
+      }
+    });
+
+    const res = await sendWebhook(createApp({ supabase, stripeClient }), 'evt_checkout_guest_site');
+
+    expect(res.status).toBe(200);
+    expect(captureServerEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'payment_succeeded',
+      distinctId: 'account_guest_site',
+      properties: expect.objectContaining({
+        account_id: 'account_guest_site',
+        license_key: 'lic_guest_site',
+        site_id: 'site_guest'
+      })
+    }));
+    const accountUpdates = supabase.updates.filter((u) => u.table === 'licenses');
+    expect(accountUpdates.every((u) => u.value !== 'account_typed_email' && u.value !== 'lic_typed_email')).toBe(true);
+  });
+
   test('enriches checkout.session.completed with attribution metadata when present', async () => {
     const supabase = createSupabaseMock({
       accounts: [

@@ -444,3 +444,70 @@ describe('responses and logs', () => {
     expect(text).not.toMatch(FULL_STRIPE_ID);
   });
 });
+
+describe('checkout prefill', () => {
+  const createParams = (stripe) => stripe.checkout.sessions.create.mock.calls.map((c) => c[0]);
+  const siteOnly = { 'X-Site-Hash': 'hash-nnnnnnnnnnnnnnnn', 'X-Site-Key': 'hash-nnnnnnnnnnnnnnnn', 'X-Site-URL': 'https://november.example', 'X-Site-Fingerprint': 'fp-qa' };
+
+  test.each([
+    ['subscription', 'price_pro'],
+    ['one-off credits', 'price_credits']
+  ])('site headers only (%s): no customer or customer_email, metadata still names the licence and site', async (_label, priceId) => {
+    tables.licenses.find((row) => row.id === N.id).stripe_customer_id = 'cus_NNNNNNNNNNNN3333';
+    const { app, stripe } = buildApp();
+    const res = await send(request(app).post('/billing/checkout'), siteOnly).send({ priceId });
+    expect(res.status).toBe(200);
+    const [params] = createParams(stripe);
+    expect(params).not.toHaveProperty('customer');
+    expect(params).not.toHaveProperty('customer_email');
+    expect(params.metadata).toMatchObject({ account_id: N.id, license_key: N.license_key, site_id: 'site-n', site_hash: 'hash-nnnnnnnnnnnnnnnn' });
+    expect(params.client_reference_id).toBe(N.id);
+  });
+
+  test('site headers only, licence without a Stripe customer: no customer_email', async () => {
+    const { app, stripe } = buildApp();
+    const res = await send(request(app).post('/billing/checkout'), siteOnly).send({ priceId: 'price_pro' });
+    expect(res.status).toBe(200);
+    const [params] = createParams(stripe);
+    expect(params).not.toHaveProperty('customer');
+    expect(params).not.toHaveProperty('customer_email');
+    expect(JSON.stringify(res.body)).not.toContain('@');
+  });
+
+  test('licence key: customer_email still prefilled for an account without a Stripe customer', async () => {
+    const { app, stripe } = buildApp();
+    const res = await send(request(app).post('/billing/checkout'), { ...siteOnly, 'X-License-Key': N.license_key }).send({ priceId: 'price_pro' });
+    expect(res.status).toBe(200);
+    expect(createParams(stripe)[0].customer_email).toBe(N.email);
+  });
+
+  test('licence key: existing Stripe customer still attached', async () => {
+    tables.licenses.find((row) => row.id === N.id).stripe_customer_id = 'cus_NNNNNNNNNNNN3333';
+    const { app, stripe } = buildApp();
+    const res = await send(request(app).post('/billing/checkout'), { ...siteOnly, 'X-License-Key': N.license_key }).send({ priceId: 'price_credits' });
+    expect(res.status).toBe(200);
+    expect(createParams(stripe)[0].customer).toBe('cus_NNNNNNNNNNNN3333');
+  });
+
+  test('JWT: customer_email still prefilled', async () => {
+    const { app, stripe } = buildApp();
+    const token = jwt.sign({ user_id: N.id, email: N.email }, process.env.JWT_SECRET);
+    const res = await send(request(app).post('/billing/checkout'), { ...siteOnly, Authorization: `Bearer ${token}` }).send({ priceId: 'price_pro' });
+    expect(res.status).toBe(200);
+    const [params] = createParams(stripe);
+    expect(params.customer_email || params.customer).toBeTruthy();
+  });
+
+  test('email-link for a site-only session still works and still replies with no address', async () => {
+    jest.spyOn(emailService, 'isAvailable').mockReturnValue(true);
+    const sendSpy = jest.spyOn(emailService, 'sendCheckoutLinkEmail').mockResolvedValue({ success: true });
+    const { app, stripe } = buildApp();
+    const created = await send(request(app).post('/billing/checkout'), siteOnly).send({ priceId: 'price_pro' });
+    const params = createParams(stripe)[0];
+    stripe.checkout.sessions.retrieve.mockResolvedValue({ id: created.body.sessionId, status: 'open', url: created.body.url, client_reference_id: params.client_reference_id, metadata: params.metadata });
+    const res = await send(request(app).post('/billing/checkout/email-link'), siteOnly).send({ session_id: created.body.sessionId });
+    expect(res.status).toBe(200);
+    expect(res.text).toBe(JSON.stringify({ success: true }));
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+  });
+});
