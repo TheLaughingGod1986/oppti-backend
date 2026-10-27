@@ -124,10 +124,9 @@ async function generateAltText({ image, context }) {
   }
   
   if (!isProdLogging) {
-    // Log API key shape only outside production, and never the full key.
+    // Report configuration presence without disclosing credential material.
     logger.debug('[OpenAI] Using API key', {
-      keyPrefix: apiKey.substring(0, 10) + '...',
-      keyLength: apiKey.length,
+      hasApiKey: true,
       model: preferredModel
     });
   }
@@ -270,7 +269,6 @@ async function generateAltText({ image, context }) {
         status: httpStatus,
         model: modelUsed,
         hasApiKey: !!apiKey,
-        apiKeyPrefix: apiKey ? apiKey.substring(0, 10) + '...' : 'missing',
         retryable: classified.retryable
       };
     logger.error('[OpenAI] Alt text generation failed', failMeta);

@@ -93,6 +93,29 @@ describe('generateAltText error normalization', () => {
     });
   });
 
+  test('provider diagnostics never include API key fragments', async () => {
+    const logger = require('../../lib/logger');
+    const debug = jest.spyOn(logger, 'debug').mockImplementation(() => {});
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => {});
+    const credential = 'sk-unique-fixture-credential-not-real';
+    const savedKey = process.env.ALTTEXT_OPENAI_API_KEY;
+    process.env.ALTTEXT_OPENAI_API_KEY = credential;
+    axios.post.mockRejectedValue(providerRejection(401, 'Incorrect API key provided'));
+    try {
+      await expect(generateAltText({ image: { base64: 'aGVsbG8=' }, context: {} }))
+        .rejects.toMatchObject({ errorCode: 'provider_auth_error' });
+      const diagnostics = JSON.stringify([...debug.mock.calls, ...error.mock.calls]);
+      expect(diagnostics).not.toContain(credential.slice(0, 10));
+      expect(diagnostics).not.toContain('keyPrefix');
+      expect(diagnostics).not.toContain('apiKeyPrefix');
+    } finally {
+      if (savedKey === undefined) delete process.env.ALTTEXT_OPENAI_API_KEY;
+      else process.env.ALTTEXT_OPENAI_API_KEY = savedKey;
+      debug.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   test('missing API key throws provider_auth_error without calling the provider', async () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.ALTTEXT_OPENAI_API_KEY;
