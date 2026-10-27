@@ -157,8 +157,30 @@ function authMiddleware({ supabase }) {
           }
         }
       } catch (err) {
-        logger.warn('[Auth] JWT validation failed', { error: err.message });
-        // Don't return error, fall through to other auth methods
+        // A stale bearer token is common when a plugin also supplies its
+        // independent licence/site/API credential. Let that credential
+        // authenticate normally, without flooding warning logs.
+        const isExpired = err && err.name === 'TokenExpiredError';
+        const hasFallback = Boolean(
+          licenseKey || apiKey || req.header('X-Site-Key')
+          || req.header('X-Site-Hash') || req.header('X-Site-Id')
+          || req.header('X-Site-URL') || req.header('X-Install-UUID')
+          || req.header('X-WP-Install-UUID') || body.site_id
+          || body.siteId || body.site_url || body.siteUrl
+        );
+        const context = {
+          reason: isExpired ? 'expired' : 'invalid',
+          fallback_present: hasFallback,
+          path: req.path,
+          method: req.method
+        };
+        if (isExpired && hasFallback) {
+          logger.debug('[Auth] Expired JWT; trying independent credentials', context);
+        } else {
+          logger.warn('[Auth] JWT validation failed', context);
+        }
+        // Never grant access here: the independent credential must still
+        // pass its own validation below.
       }
     }
 
