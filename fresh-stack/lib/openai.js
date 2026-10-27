@@ -196,7 +196,13 @@ async function generateAltText({ image, context }) {
     }
 
     const choice = response.data?.choices?.[0];
-    const altText = choice?.message?.content?.trim();
+    const content = choice?.message?.content;
+    const altText = typeof content === 'string' ? content.trim() : '';
+    if (!altText) {
+      const invalidResponse = new Error('Provider returned no generated alt text');
+      invalidResponse.code = 'PROVIDER_INVALID_RESPONSE';
+      throw invalidResponse;
+    }
     const latencyMs = Date.now() - tsStart;
     const usage = response.data?.usage || null;
 
@@ -234,23 +240,12 @@ async function generateAltText({ image, context }) {
           status: 'completed'
         });
       }
-    } else {
-      logger.error('[OpenAI] Empty alt text response', isProdLogging
-        ? {
-          model: modelUsed,
-          latencyMs,
-          status: response.data?.error?.code || response.status || 'empty_output'
-        }
-        : {
-          model: modelUsed,
-          responsePreview: JSON.stringify(response.data).substring(0, 200)
-        });
     }
 
     return {
-      altText: altText || fallbackAltText(context),
+      altText,
       usage: response.data?.usage || null,
-      meta: { usedFallback: !altText || modelUsed === fallbackModel, modelUsed }
+      meta: { usedFallback: modelUsed === fallbackModel, modelUsed }
     };
   } catch (error) {
     const message = error?.response?.data?.error?.message || error.message || 'OpenAI request failed';
@@ -295,11 +290,6 @@ async function generateAltText({ image, context }) {
     genError.isRetryable = classified.retryable;
     throw genError;
   }
-}
-
-function fallbackAltText(context = {}) {
-  const base = context.title || context.caption || context.pageTitle || 'Image';
-  return `${base}: concise descriptive alt text placeholder`;
 }
 
 function getReviewApiKey(service = 'alttext-ai') {

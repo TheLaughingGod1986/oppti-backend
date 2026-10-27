@@ -127,6 +127,8 @@ function authMiddleware({ supabase }) {
       path: req.path
     });
 
+    let jwtExpired = false;
+
     // JWT token auth (Bearer token)
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7);
@@ -161,13 +163,9 @@ function authMiddleware({ supabase }) {
         // independent licence/site/API credential. Let that credential
         // authenticate normally, without flooding warning logs.
         const isExpired = err && err.name === 'TokenExpiredError';
-        const hasFallback = Boolean(
-          licenseKey || apiKey || req.header('X-Site-Key')
-          || req.header('X-Site-Hash') || req.header('X-Site-Id')
-          || req.header('X-Site-URL') || req.header('X-Install-UUID')
-          || req.header('X-WP-Install-UUID') || body.site_id
-          || body.siteId || body.site_url || body.siteUrl
-        );
+        jwtExpired = isExpired;
+        // Public site URLs and identity hints are not proof of possession.
+        const hasFallback = Boolean(licenseKey || apiKey || req.header('X-Site-Key'));
         const context = {
           reason: isExpired ? 'expired' : 'invalid',
           fallback_present: hasFallback,
@@ -322,6 +320,15 @@ function authMiddleware({ supabase }) {
         return next();
       }
       return res.status(401).json({ error: 'INVALID_API_TOKEN', code: 'INVALID_API_TOKEN', message: 'Invalid or missing API token' });
+    }
+
+    // A stale bearer without valid independent credentials needs sign-in,
+    // not a misleading invalid-licence error or an anonymous trial downgrade.
+    if (jwtExpired) {
+      return res.status(401).json({
+        error: 'JWT_EXPIRED', code: 'JWT_EXPIRED', retryable: false,
+        message: 'Your session has expired. Please sign in again.'
+      });
     }
 
     // Allow unauthenticated only if no token configured

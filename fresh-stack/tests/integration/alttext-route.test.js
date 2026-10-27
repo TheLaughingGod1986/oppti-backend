@@ -221,6 +221,25 @@ describe('POST /api/alt-text', () => {
     expect(res.status).toBe(400);
   });
 
+  test.each(['provider_invalid_response', 'provider_timeout', 'provider_auth_error'])('failed generation releases reservation and never records a successful credit debit: %s', async errorCode => {
+    const failure = Object.assign(new Error('Provider failure'), { errorCode, code: 'UPSTREAM_GENERATION_ERROR', httpStatusForClient: 502, isRetryable: true });
+    generateAltText.mockRejectedValueOnce(failure);
+    const app = express();
+    app.use(express.json());
+    app.use('/api/alt-text', createAltTextRouter({
+      supabase: createSupabaseMock(), redis: null, resultCache: new Map(),
+      checkRateLimit: async () => true,
+      getSiteFromHeaders: async () => ({ quota: 50, used: 0, remaining: 50 })
+    }));
+    const res = await request(app).post('/api/alt-text').send({ image: { url: 'https://example.com/img.jpg', width: 1, height: 1 } });
+    expect(res.status).toBe(502);
+    expect(res.body.error_code).toBe(errorCode);
+    expect(quotaService.finalizeGenerationQuotaReservation).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ generationRequestId: 'generation_request_123', success: false }));
+    expect(quotaService.finalizeGenerationQuotaReservation).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ success: true }));
+    expect(usageService.recordUsage).not.toHaveBeenCalled();
+    expect(imageAltStateService.upsertGeneratedImageAltState).not.toHaveBeenCalled();
+  });
+
   test('returns alt text on success', async () => {
     const app = express();
     app.use(express.json());

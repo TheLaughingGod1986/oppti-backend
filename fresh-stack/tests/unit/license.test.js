@@ -55,3 +55,23 @@ describe('license service', () => {
     expect(sanitizeLicense(undefined)).toBeNull();
   });
 });
+
+describe('license lookup failures', () => {
+  const db = (data, error) => ({ from: () => ({ select: () => ({ eq: () => ({ single: async () => ({ data, error }) }) }) }) });
+  test('missing key remains an authentication error', async () => {
+    const result = await validateLicense(db(null, { code: 'PGRST116', details: 'The result contains 0 rows' }), 'missing-key');
+    expect(result.status).toBe(401);
+    expect(result.code).toBe('INVALID_LICENSE');
+  });
+  test.each([{ code: '08006' }, { code: 'PGRST116', details: 'The result contains 2 rows' }])('database failure fails closed without invalidating credential: %j', async error => {
+    const result = await validateLicense(db(null, error), 'valid-key');
+    expect(result.status).toBe(503);
+    expect(result.code).toBe('SERVICE_UNAVAILABLE');
+    expect(result.license).toBeUndefined();
+  });
+  test('network exception fails closed with retryable service status', async () => {
+    const result = await validateLicense({ from: () => { throw new Error('private connection detail'); } }, 'valid-key');
+    expect(result.status).toBe(503);
+    expect(result.message).not.toContain('private');
+  });
+});
