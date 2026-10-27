@@ -86,6 +86,12 @@ function createChainableMock() {
 function buildApp() {
   const app = express();
   app.use(express.json({ limit: '8mb' }));
+  app.use((req, res, next) => {
+    req.headers['x-telemetry-consent'] = req.headers['x-telemetry-consent'] || 'yes';
+    req.headers['x-telemetry-install-id'] = 'random_install_fixture_12345';
+    req.headers['x-environment'] = 'test';
+    next();
+  });
   app.use('/api/alt-text', createAltTextRouter({
     supabase: { from: () => createChainableMock() },
     redis: null,
