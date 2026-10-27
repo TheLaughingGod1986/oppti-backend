@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { z } = require('zod');
 const logger = require('../lib/logger');
 const { captureServerEvent } = require('../lib/posthog');
+const { pluginTelemetryContext } = require('../lib/pluginTelemetryContext');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const { validateImagePayload } = require('../lib/validation');
@@ -410,7 +411,8 @@ function createGenerationTelemetry({
     retryable = null,
     isTerminal = false
   } = {}) {
-    const distinctId = siteIdentityRef?.siteHash || null;
+    const context = pluginTelemetryContext(req, { pluginSlug: 'beepbeep-ai-alt-text-generator', product: 'alt_text', operationId: generationRunId });
+    const distinctId = context?.site_install_id;
     if (!distinctId) return;
     const siteUrl = siteIdentityRef?.siteUrl || req?.header?.('X-Site-URL') || null;
 
@@ -445,8 +447,12 @@ function createGenerationTelemetry({
         environment: requestTelemetry?.environment || process.env.NODE_ENV || null,
         request_source: requestTelemetry?.request_source || 'wordpress_plugin',
         is_terminal: isTerminal,
-        site_hash: distinctId
+        site_hash: siteIdentityRef?.siteHash || null,
+        ...context,
+        $insert_id: crypto.createHash('sha256').update([event, distinctId, generationRunId].join(':')).digest('hex')
       }
+    }).then(result => {
+      if (!result?.ok) logger.warn('[analytics] generation_event_delivery_unconfirmed', { event, request_id: req?.id || null, upstream_status: result?.status || null });
     }).catch((error) => {
       logger.warn('[analytics] generation_event_capture_failed', {
         event,
