@@ -412,4 +412,15 @@ describe('alt-text generation telemetry', () => {
       expect(JSON.stringify(event)).not.toContain('user-supplied secret context');
     }
   });
+  test('opting out suppresses analytics without blocking successful generation', async () => {
+    const res = await request(buildApp())
+      .post('/api/alt-text')
+      .set('X-Site-Key', 'site-hash-1')
+      .set('X-Telemetry-Consent', 'no')
+      .send({ image: { url: 'https://example.com/img.jpg', width: 1, height: 1 } });
+    await flushAsyncEvents();
+    expect(res.status).toBe(200);
+    expect(captureServerEvent).not.toHaveBeenCalled();
+  });
+
 });

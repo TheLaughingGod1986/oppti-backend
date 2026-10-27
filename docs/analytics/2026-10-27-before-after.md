@@ -26,3 +26,31 @@ No customer KPI has been promoted from U to a verified production value solely
 because of these changes. What is measurable now is actual delivered-row volume,
 legacy product attribution and property coverage. Staging, deployment, production
 read-back and external daily-report scheduler integration remain release gates.
+
+## Validation and release state
+
+Follow-up PRs: backend #50, website #40, Alt Text #71 (stacked on #64),
+Titles #44 (stacked on #39), Internal Linking #18 (stacked on #15). Existing
+backend #49 was inspected; it remains separate authentication work.
+
+Local verification: backend 827 tests / 96 suites; website 175 tests / 30 files,
+typecheck, lint (0 errors, 80 warnings), production build; Alt Text 217 PHPUnit
+tests / 701 assertions (4 deprecations) plus image-input, first-value and telemetry
+context regressions; Titles 147 JS tests / 19 suites, smoke/build and PHP consent,
+privacy, persistence and timing checks; Internal Linking JS lint/build, PHPCS and
+consent/link-persistence checks. The original dependent branches were fetched and
+merged into the follow-ups, preserving their concurrent fixes.
+
+GitHub CI passed for all five follow-ups before the final backend opt-out
+integration assertion was added; check the current head's CI before merging.
+Website preview d0d3534 is READY and authenticated GET /plugins/titles returned
+200. This confirms HTTP availability, not a complete browser analytics journey.
+
+An isolated WordPress staging setup was attempted with its own Compose project,
+volumes and port 8899. Its containers started, but the local Docker runtime then
+stopped responding to install/inspection commands. Plugin activation/telemetry
+staging did not complete; a stop was requested for this project's containers
+without touching unrelated services or deleting volumes. A direct PostHog query
+for new v2 ingestion after 09:10 UTC returned no rows. This is **not** evidence of
+zero customer actions and does not pass the staging/production delivery gate.
+No changes have been merged or deployed to production.
