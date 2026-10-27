@@ -8,7 +8,7 @@ const active = { id: 'account-1', license_key: 'valid-key', status: 'active', pl
 function database() {
   return { from: (table) => ({ select: () => ({ eq: (column, value) => ({
     single: async () => ({ data: table === 'licenses' && ['valid-key', 'account-1'].includes(value) ? active : null, error: null }),
-    maybeSingle: async () => ({ data: table === 'sites' && value === 'secret-site-key' ? { status: 'active', license_key: 'valid-key' } : null, error: null })
+    maybeSingle: async () => ({ data: table === 'sites' && ['secret-site-key', 'https://known-account.example'].includes(value) ? { status: 'active', license_key: 'valid-key' } : null, error: null })
   }) }) }) };
 }
 async function request(headers) {
@@ -63,4 +63,14 @@ test('valid JWT authenticates active account', async () => {
 test('expired bearer without fallback returns a terminal sign-in error, not invalid licence', async () => {
   const { res } = await request({ Authorization: `Bearer ${expired()}` });
   expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'JWT_EXPIRED', retryable: false }));
+});
+
+
+test.each([
+  { 'X-Site-URL': 'https://known-account.example' },
+  { 'X-Site-URL': 'https://known-account.example', 'X-Site-Key': 'guessed-site-key' }
+])('public site URL never authenticates an account or rescues guessed credentials: %j', async headers => {
+  const { next, res } = await request(headers);
+  expect(next).not.toHaveBeenCalled();
+  expect(res.status).toHaveBeenCalledWith(401);
 });

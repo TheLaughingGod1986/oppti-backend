@@ -237,7 +237,7 @@ function authMiddleware({ supabase }) {
       || body.siteFingerprint
       || body.fingerprint
       || null;
-    if ((siteKey || installUuid || siteFingerprint || siteUrl) && supabase) {
+    if ((siteKey || installUuid || siteFingerprint) && supabase) {
       try {
         const selectSite = async (column, value) => {
           if (!value) return null;
@@ -249,42 +249,14 @@ function authMiddleware({ supabase }) {
           return data ? { site: data, matchedBy: column } : null;
         };
 
-        const selectSiteByUrl = async (rawUrl) => {
-          if (!rawUrl || typeof rawUrl !== 'string') return null;
-          const trimmed = rawUrl.trim();
-          if (!trimmed) return null;
-
-          // Try exact match first (fast path).
-          const exact = await selectSite('site_url', trimmed);
-          if (exact) return exact;
-
-          // Fall back to hostname match (protocol/trailing slash differences).
-          let hostname = null;
-          try {
-            const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-            hostname = new URL(candidate).hostname;
-          } catch (_err) {
-            hostname = null;
-          }
-          if (!hostname) return null;
-
-          // Best-effort: match any active site row containing the hostname.
-          const { data } = await supabase
-            .from('sites')
-            .select('license_key, status, site_hash, wp_install_uuid, site_fingerprint, fingerprint')
-            .eq('status', 'active')
-            .ilike('site_url', `%${hostname}%`)
-            .order('last_seen_at', { ascending: false, nullsFirst: false })
-            .limit(1);
-          return Array.isArray(data) && data.length ? { site: data[0], matchedBy: 'site_url_hostname' } : null;
-        };
-
         // Try in order of strongest/most specific identifiers.
         const resolved = await selectSite('wp_install_uuid', installUuid)
           || await selectSite('site_hash', siteKey)
           || await selectSite('site_fingerprint', siteFingerprint)
-          || await selectSite('fingerprint', siteFingerprint)
-          || await selectSiteByUrl(siteUrl);
+          || await selectSite('fingerprint', siteFingerprint);
+
+        // A public URL can identify a site, but cannot prove account ownership.
+        // Never rescue an unknown credential by looking up its claimed URL.
 
         const site = resolved?.site || null;
         const matchedBy = resolved?.matchedBy || null;
