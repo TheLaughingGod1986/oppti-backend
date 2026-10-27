@@ -100,10 +100,10 @@ describe('generateAltText error normalization', () => {
     const credential = 'sk-unique-fixture-credential-not-real';
     const savedKey = process.env.ALTTEXT_OPENAI_API_KEY;
     process.env.ALTTEXT_OPENAI_API_KEY = credential;
-    axios.post.mockRejectedValue(providerRejection(401, 'Incorrect API key provided'));
+    axios.post.mockRejectedValue(providerRejection(401, `Incorrect API key provided: ${credential}`));
     try {
       await expect(generateAltText({ image: { base64: 'aGVsbG8=' }, context: {} }))
-        .rejects.toMatchObject({ errorCode: 'provider_auth_error' });
+        .rejects.toMatchObject({ errorCode: 'provider_auth_error', message: 'OpenAI authentication failed. Check the configured API key.' });
       const diagnostics = JSON.stringify([...debug.mock.calls, ...error.mock.calls]);
       expect(diagnostics).not.toContain(credential.slice(0, 10));
       expect(diagnostics).not.toContain('keyPrefix');

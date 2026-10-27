@@ -247,11 +247,14 @@ async function generateAltText({ image, context }) {
       meta: { usedFallback: modelUsed === fallbackModel, modelUsed }
     };
   } catch (error) {
-    const message = error?.response?.data?.error?.message || error.message || 'OpenAI request failed';
+    const rawMessage = error?.response?.data?.error?.message || error.message || 'OpenAI request failed';
     const providerErrorCode = error?.response?.data?.error?.code || error?.response?.status || 'UNKNOWN';
     const httpStatus = error?.response?.status || null;
     const classified = classifyProviderError(error);
     const isApiKeyError = classified.errorCode === 'provider_auth_error';
+    // Authentication responses may echo the rejected credential. Keep both
+    // diagnostics and the client-facing error free of provider key material.
+    const message = isApiKeyError ? 'OpenAI authentication failed. Check the configured API key.' : rawMessage;
 
     const failMeta = isProdLogging
       ? {
