@@ -2300,7 +2300,7 @@ async function finalizeSiteGeneration(supabase, {
     return { error: null };
   }
 
-  const { data, error } = await supabase.rpc('bbai_finalize_site_generation', {
+  const { data, error, status } = await supabase.rpc('bbai_finalize_site_generation', {
     p_generation_request_id: generationRequestId,
     p_success: Boolean(success),
     p_final_metadata: finalMetadata || {}
@@ -2312,7 +2312,7 @@ async function finalizeSiteGeneration(supabase, {
       success: Boolean(success),
       error: serializeSupabaseError(error)
     });
-    return { error };
+    return { error, status };
   }
 
   logger.info('[siteQuota] finalize generation rpc completed', {
@@ -2322,7 +2322,7 @@ async function finalizeSiteGeneration(supabase, {
     skipped_missing_schema: Boolean(error && isMissingSchemaError(error))
   });
 
-  return { data, error };
+  return { data, error, status };
 }
 
 async function reconcileBillingEntitlement(supabase, {

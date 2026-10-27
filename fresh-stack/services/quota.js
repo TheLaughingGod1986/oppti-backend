@@ -724,11 +724,32 @@ async function finalizeGenerationQuotaReservation(supabase, {
     return { error: null, skipped: true };
   }
 
-  const result = await finalizeSiteGeneration(supabase, {
-    generationRequestId,
-    success,
-    finalMetadata
-  });
+  // The RPC is idempotent. Retry transient delivery/database failures so a
+  // failed provider call does not strand a reservation after a brief outage.
+  let result;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      result = await finalizeSiteGeneration(supabase, {
+        generationRequestId, success, finalMetadata
+      });
+    } catch (error) {
+      result = { error };
+    }
+    const error = result.error;
+    if (!error) break;
+    const status = Number(result.status || error.status || 0);
+    const code = String(error.code || '');
+    const transient = status === 408 || status === 429 || status >= 500
+      || /^(08|53|57P0)/.test(code)
+      || ['57014', 'PGRST000', 'PGRST001', 'PGRST002', 'PGRST003', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT'].includes(code)
+      || /fetch failed|network|timed? out|timeout|ECONNRESET|ECONNREFUSED/i.test(error.message || '');
+    if (!transient || attempt === 3) break;
+    logger.warn('[Quota] Retrying generation finalization', {
+      generation_request_id: generationRequestId,
+      success: Boolean(success), attempt, code: code || null, status: status || null
+    });
+    await new Promise(resolve => setTimeout(resolve, attempt * 100));
+  }
 
   if (result.error) {
     logger.warn('[Quota] Generation finalization failed', {
