@@ -124,10 +124,9 @@ async function generateAltText({ image, context }) {
   }
   
   if (!isProdLogging) {
-    // Log API key shape only outside production, and never the full key.
+    // Report configuration presence without disclosing credential material.
     logger.debug('[OpenAI] Using API key', {
-      keyPrefix: apiKey.substring(0, 10) + '...',
-      keyLength: apiKey.length,
+      hasApiKey: true,
       model: preferredModel
     });
   }
@@ -196,7 +195,13 @@ async function generateAltText({ image, context }) {
     }
 
     const choice = response.data?.choices?.[0];
-    const altText = choice?.message?.content?.trim();
+    const content = choice?.message?.content;
+    const altText = typeof content === 'string' ? content.trim() : '';
+    if (!altText) {
+      const invalidResponse = new Error('Provider returned no generated alt text');
+      invalidResponse.code = 'PROVIDER_INVALID_RESPONSE';
+      throw invalidResponse;
+    }
     const latencyMs = Date.now() - tsStart;
     const usage = response.data?.usage || null;
 
@@ -234,30 +239,22 @@ async function generateAltText({ image, context }) {
           status: 'completed'
         });
       }
-    } else {
-      logger.error('[OpenAI] Empty alt text response', isProdLogging
-        ? {
-          model: modelUsed,
-          latencyMs,
-          status: response.data?.error?.code || response.status || 'empty_output'
-        }
-        : {
-          model: modelUsed,
-          responsePreview: JSON.stringify(response.data).substring(0, 200)
-        });
     }
 
     return {
-      altText: altText || fallbackAltText(context),
+      altText,
       usage: response.data?.usage || null,
-      meta: { usedFallback: !altText || modelUsed === fallbackModel, modelUsed }
+      meta: { usedFallback: modelUsed === fallbackModel, modelUsed }
     };
   } catch (error) {
-    const message = error?.response?.data?.error?.message || error.message || 'OpenAI request failed';
+    const rawMessage = error?.response?.data?.error?.message || error.message || 'OpenAI request failed';
     const providerErrorCode = error?.response?.data?.error?.code || error?.response?.status || 'UNKNOWN';
     const httpStatus = error?.response?.status || null;
     const classified = classifyProviderError(error);
     const isApiKeyError = classified.errorCode === 'provider_auth_error';
+    // Authentication responses may echo the rejected credential. Keep both
+    // diagnostics and the client-facing error free of provider key material.
+    const message = isApiKeyError ? 'OpenAI authentication failed. Check the configured API key.' : rawMessage;
 
     const failMeta = isProdLogging
       ? {
@@ -275,7 +272,6 @@ async function generateAltText({ image, context }) {
         status: httpStatus,
         model: modelUsed,
         hasApiKey: !!apiKey,
-        apiKeyPrefix: apiKey ? apiKey.substring(0, 10) + '...' : 'missing',
         retryable: classified.retryable
       };
     logger.error('[OpenAI] Alt text generation failed', failMeta);
@@ -295,11 +291,6 @@ async function generateAltText({ image, context }) {
     genError.isRetryable = classified.retryable;
     throw genError;
   }
-}
-
-function fallbackAltText(context = {}) {
-  const base = context.title || context.caption || context.pageTitle || 'Image';
-  return `${base}: concise descriptive alt text placeholder`;
 }
 
 function getReviewApiKey(service = 'alttext-ai') {

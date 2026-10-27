@@ -55,13 +55,24 @@ async function validateLicense(supabase, licenseKey) {
     return { error: 'SERVICE_UNAVAILABLE', code: 'SERVICE_UNAVAILABLE', status: 503, message: 'Database connection not available' };
   }
 
-  const { data: license, error } = await supabase
-    .from('licenses')
-    .select('*')
-    .eq('license_key', key)
-    .single();
-
-  if (error || !license) {
+  let result;
+  try {
+    // A lookup outage must not be reported as an invalid customer credential.
+    result = await supabase
+      .from('licenses')
+      .select('*')
+      .eq('license_key', key)
+      .single();
+  } catch (_error) {
+    return { error: 'SERVICE_UNAVAILABLE', code: 'SERVICE_UNAVAILABLE', status: 503, message: 'License validation temporarily unavailable' };
+  }
+  const { data: license, error } = result;
+  const missingRow = error?.code === 'PGRST116'
+    && /(?:contains|result.*) 0 rows/i.test(error.details || '');
+  if (error && !missingRow) {
+    return { error: 'SERVICE_UNAVAILABLE', code: 'SERVICE_UNAVAILABLE', status: 503, message: 'License validation temporarily unavailable' };
+  }
+  if (!license) {
     return { error: 'INVALID_LICENSE', code: 'INVALID_LICENSE', status: 401, message: 'License key not found' };
   }
 

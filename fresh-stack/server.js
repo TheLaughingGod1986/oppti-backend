@@ -42,6 +42,7 @@ const {
 } = require('./lib/billingCurrency');
 const { buildBillingHealth } = require('./services/billingHealth');
 const { scheduleCustomerHealthCron } = require('./services/customerHealthTelemetry');
+const { scheduleGenerationReservationRecovery } = require('./services/generationReservationRecovery');
 const rateLimitMiddleware = require('./middleware/rateLimit');
 const { authMiddleware } = require('./middleware/auth');
 const requestId = require('./middleware/requestId');
@@ -502,7 +503,8 @@ function startServer({
     logger.error('[init] Cannot start server: Supabase client is not initialized. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
     process.exit(1);
   }
-  return app.listen(port, host, async () => {
+  let stopReservationRecovery;
+  const server = app.listen(port, host, async () => {
     logger.info(`Fresh alt-text service running on http://${host}:${port}`);
     logRuntimeIdentityStartup({
       diagnosticsRouteEnabled: DIAGNOSTICS_ROUTE_ENABLED
@@ -510,6 +512,7 @@ function startServer({
     logSupabaseTargetStartup();
 
     if (supabaseClient) {
+      stopReservationRecovery = scheduleGenerationReservationRecovery(supabaseClient);
       try {
         const v2SchemaReport = await inspectV2Schema(supabaseClient);
         logV2SchemaStartupStatus(v2SchemaReport);
@@ -520,6 +523,8 @@ function startServer({
       scheduleCustomerHealthCron(supabaseClient);
     }
   });
+  server.once?.('close', () => stopReservationRecovery?.());
+  return server;
 }
 
 if (require.main === module) {

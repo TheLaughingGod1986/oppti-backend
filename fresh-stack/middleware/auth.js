@@ -127,6 +127,8 @@ function authMiddleware({ supabase }) {
       path: req.path
     });
 
+    let jwtExpired = false;
+
     // JWT token auth (Bearer token)
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7);
@@ -157,8 +159,26 @@ function authMiddleware({ supabase }) {
           }
         }
       } catch (err) {
-        logger.warn('[Auth] JWT validation failed', { error: err.message });
-        // Don't return error, fall through to other auth methods
+        // A stale bearer token is common when a plugin also supplies its
+        // independent licence/site/API credential. Let that credential
+        // authenticate normally, without flooding warning logs.
+        const isExpired = err && err.name === 'TokenExpiredError';
+        jwtExpired = isExpired;
+        // Public site URLs and identity hints are not proof of possession.
+        const hasFallback = Boolean(licenseKey || apiKey || req.header('X-Site-Key'));
+        const context = {
+          reason: isExpired ? 'expired' : 'invalid',
+          fallback_present: hasFallback,
+          path: req.path,
+          method: req.method
+        };
+        if (isExpired && hasFallback) {
+          logger.debug('[Auth] Expired JWT; trying independent credentials', context);
+        } else {
+          logger.warn('[Auth] JWT validation failed', context);
+        }
+        // Never grant access here: the independent credential must still
+        // pass its own validation below.
       }
     }
 
@@ -217,7 +237,7 @@ function authMiddleware({ supabase }) {
       || body.siteFingerprint
       || body.fingerprint
       || null;
-    if ((siteKey || installUuid || siteFingerprint || siteUrl) && supabase) {
+    if ((siteKey || installUuid || siteFingerprint) && supabase) {
       try {
         const selectSite = async (column, value) => {
           if (!value) return null;
@@ -229,42 +249,14 @@ function authMiddleware({ supabase }) {
           return data ? { site: data, matchedBy: column } : null;
         };
 
-        const selectSiteByUrl = async (rawUrl) => {
-          if (!rawUrl || typeof rawUrl !== 'string') return null;
-          const trimmed = rawUrl.trim();
-          if (!trimmed) return null;
-
-          // Try exact match first (fast path).
-          const exact = await selectSite('site_url', trimmed);
-          if (exact) return exact;
-
-          // Fall back to hostname match (protocol/trailing slash differences).
-          let hostname = null;
-          try {
-            const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-            hostname = new URL(candidate).hostname;
-          } catch (_err) {
-            hostname = null;
-          }
-          if (!hostname) return null;
-
-          // Best-effort: match any active site row containing the hostname.
-          const { data } = await supabase
-            .from('sites')
-            .select('license_key, status, site_hash, wp_install_uuid, site_fingerprint, fingerprint')
-            .eq('status', 'active')
-            .ilike('site_url', `%${hostname}%`)
-            .order('last_seen_at', { ascending: false, nullsFirst: false })
-            .limit(1);
-          return Array.isArray(data) && data.length ? { site: data[0], matchedBy: 'site_url_hostname' } : null;
-        };
-
         // Try in order of strongest/most specific identifiers.
         const resolved = await selectSite('wp_install_uuid', installUuid)
           || await selectSite('site_hash', siteKey)
           || await selectSite('site_fingerprint', siteFingerprint)
-          || await selectSite('fingerprint', siteFingerprint)
-          || await selectSiteByUrl(siteUrl);
+          || await selectSite('fingerprint', siteFingerprint);
+
+        // A public URL can identify a site, but cannot prove account ownership.
+        // Never rescue an unknown credential by looking up its claimed URL.
 
         const site = resolved?.site || null;
         const matchedBy = resolved?.matchedBy || null;
@@ -300,6 +292,15 @@ function authMiddleware({ supabase }) {
         return next();
       }
       return res.status(401).json({ error: 'INVALID_API_TOKEN', code: 'INVALID_API_TOKEN', message: 'Invalid or missing API token' });
+    }
+
+    // A stale bearer without valid independent credentials needs sign-in,
+    // not a misleading invalid-licence error or an anonymous trial downgrade.
+    if (jwtExpired) {
+      return res.status(401).json({
+        error: 'JWT_EXPIRED', code: 'JWT_EXPIRED', retryable: false,
+        message: 'Your session has expired. Please sign in again.'
+      });
     }
 
     // Allow unauthenticated only if no token configured

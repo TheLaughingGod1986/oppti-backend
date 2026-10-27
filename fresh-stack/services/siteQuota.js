@@ -2300,11 +2300,36 @@ async function finalizeSiteGeneration(supabase, {
     return { error: null };
   }
 
-  const { data, error } = await supabase.rpc('bbai_finalize_site_generation', {
+  // Shared by Alt Text, Titles and bulk workers. The RPC is idempotent,
+  // including when the response was lost after the transaction committed.
+  const payload = {
     p_generation_request_id: generationRequestId,
     p_success: Boolean(success),
     p_final_metadata: finalMetadata || {}
-  });
+  };
+  let result;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      result = await supabase.rpc('bbai_finalize_site_generation', payload);
+    } catch (error) {
+      result = { error };
+    }
+    const error = result.error;
+    if (!error) break;
+    const status = Number(result.status || error.status || 0);
+    const code = String(error.code || '');
+    const transient = status === 408 || status === 429 || status >= 500
+      || /^(08|53|57P0)/.test(code)
+      || ['57014', 'PGRST000', 'PGRST001', 'PGRST002', 'PGRST003', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT'].includes(code)
+      || /fetch failed|network|timed? out|timeout|ECONNRESET|ECONNREFUSED/i.test(error.message || '');
+    if (!transient || attempt === 3) break;
+    logger.warn('[siteQuota] Retrying generation finalization', {
+      generation_request_id: generationRequestId,
+      success: Boolean(success), attempt, code: code || null, status: status || null
+    });
+    await new Promise(resolve => setTimeout(resolve, attempt * 100));
+  }
+  const { data, error, status } = result;
 
   if (error && !isMissingSchemaError(error)) {
     logger.warn('[siteQuota] finalize generation failed', {
@@ -2312,7 +2337,7 @@ async function finalizeSiteGeneration(supabase, {
       success: Boolean(success),
       error: serializeSupabaseError(error)
     });
-    return { error };
+    return { error, status };
   }
 
   logger.info('[siteQuota] finalize generation rpc completed', {
@@ -2322,7 +2347,7 @@ async function finalizeSiteGeneration(supabase, {
     skipped_missing_schema: Boolean(error && isMissingSchemaError(error))
   });
 
-  return { data, error };
+  return { data, error, status };
 }
 
 async function reconcileBillingEntitlement(supabase, {

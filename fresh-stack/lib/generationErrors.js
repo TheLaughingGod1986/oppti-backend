@@ -44,6 +44,16 @@ function classifyProviderError(error) {
   const hasResponse = Boolean(error?.response);
   const isTimeout = error?.code === 'ECONNABORTED' || (!hasResponse && TIMEOUT_MESSAGE_PATTERN.test(message));
 
+  if (error?.code === 'PROVIDER_INVALID_RESPONSE') {
+    return {
+      errorCode: GENERATION_ERROR_CODES.PROVIDER_INVALID_RESPONSE,
+      legacyCode: 'UPSTREAM_GENERATION_ERROR',
+      httpStatus: 502,
+      retryable: true,
+      providerStatus
+    };
+  }
+
   if (error?.code === 'BACKEND_CONFIG_ERROR') {
     return {
       errorCode: GENERATION_ERROR_CODES.PROVIDER_AUTH_ERROR,

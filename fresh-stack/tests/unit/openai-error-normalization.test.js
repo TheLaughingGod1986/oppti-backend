@@ -15,6 +15,16 @@ describe('generateAltText error normalization', () => {
     process.env.OPENAI_API_KEY = 'sk-test-not-a-real-key';
   });
 
+  test.each([null, '', '   ', { unexpected: true }])('empty or malformed output never becomes billable placeholder text: %j', async content => {
+    axios.post.mockResolvedValue({ status: 200, data: { choices: [{ message: { content } }] } });
+    await expect(generateAltText({ image: { base64: 'aGVsbG8=' }, context: { filename: 'placeholder.jpg' } })).rejects.toMatchObject({
+      errorCode: 'provider_invalid_response',
+      httpStatusForClient: 502,
+      isRetryable: true
+    });
+    expect(axios.post).toHaveBeenCalledTimes(1);
+  });
+
   test('provider 400 for unsupported image throws terminal invalid_request and does not auto-retry', async () => {
     axios.post.mockRejectedValue(providerRejection(
       400,
@@ -83,6 +93,29 @@ describe('generateAltText error normalization', () => {
     });
   });
 
+  test('provider diagnostics never include API key fragments', async () => {
+    const logger = require('../../lib/logger');
+    const debug = jest.spyOn(logger, 'debug').mockImplementation(() => {});
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => {});
+    const credential = 'sk-unique-fixture-credential-not-real';
+    const savedKey = process.env.ALTTEXT_OPENAI_API_KEY;
+    process.env.ALTTEXT_OPENAI_API_KEY = credential;
+    axios.post.mockRejectedValue(providerRejection(401, `Incorrect API key provided: ${credential}`));
+    try {
+      await expect(generateAltText({ image: { base64: 'aGVsbG8=' }, context: {} }))
+        .rejects.toMatchObject({ errorCode: 'provider_auth_error', message: 'OpenAI authentication failed. Check the configured API key.' });
+      const diagnostics = JSON.stringify([...debug.mock.calls, ...error.mock.calls]);
+      expect(diagnostics).not.toContain(credential.slice(0, 10));
+      expect(diagnostics).not.toContain('keyPrefix');
+      expect(diagnostics).not.toContain('apiKeyPrefix');
+    } finally {
+      if (savedKey === undefined) delete process.env.ALTTEXT_OPENAI_API_KEY;
+      else process.env.ALTTEXT_OPENAI_API_KEY = savedKey;
+      debug.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   test('missing API key throws provider_auth_error without calling the provider', async () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.ALTTEXT_OPENAI_API_KEY;
@@ -94,11 +127,9 @@ describe('generateAltText error normalization', () => {
     expect(axios.post).not.toHaveBeenCalled();
   });
 
-  test('malformed provider response falls back to placeholder text (no throw)', async () => {
+  test('malformed provider response rejects instead of charging for placeholder text', async () => {
     axios.post.mockResolvedValue({ data: { choices: [] } });
 
-    const result = await generateAltText({ image: { base64: 'aGVsbG8=' }, context: { title: 'Sample' } });
-    expect(result.altText).toContain('Sample');
-    expect(result.meta.usedFallback).toBe(true);
+    await expect(generateAltText({ image: { base64: 'aGVsbG8=' }, context: { title: 'Sample' } })).rejects.toMatchObject({ errorCode: 'provider_invalid_response' });
   });
 });
