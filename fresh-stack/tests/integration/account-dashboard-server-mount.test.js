@@ -26,6 +26,7 @@ jest.mock('../../services/accountDashboard', () => ({
 }));
 
 jest.mock('../../lib/posthog', () => ({
+  stripSiteIdentifiers: jest.requireActual('../../lib/posthog').stripSiteIdentifiers,
   captureServerEvent: jest.fn().mockResolvedValue({ ok: true, status: 200 }),
   identifyServerUser: jest.fn(),
   aliasServerUser: jest.fn()
