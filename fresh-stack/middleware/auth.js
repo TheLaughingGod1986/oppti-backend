@@ -15,6 +15,13 @@ function supportsAnonymousTrialPath(path = '') {
     || path === '/api/optimizer/progress';
 }
 
+// Log label for the request path. Only fixed, known route names are logged;
+// anything else is 'other', because paths such as /billing/<email>/<key> can
+// carry an email address or licence key.
+function logPathLabel(path = '') {
+  return supportsAnonymousTrialPath(path) || path === '/api/jobs' ? path : 'other';
+}
+
 function isPublicJobPollRequest(req) {
   return req?.method === 'GET'
     && /^\/api\/(jobs|optimizer\/audit)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req?.path || '');
@@ -109,7 +116,7 @@ function authMiddleware({ supabase }) {
         has_license_key: !!licenseKey,
         has_api_key: !!apiKey,
         has_bearer: hasBearerAuth,
-        path: req.path,
+        path: logPathLabel(req.path),
         reason: !supportsAnonymousTrialPath(req.path) ? 'unsupported_path'
           : !trialSiteHash ? 'no_site_identity'
           : licenseKey ? 'has_license_key'
@@ -124,7 +131,7 @@ function authMiddleware({ supabase }) {
       'X-API-Key': apiKey ? 'present' : 'missing',
       'Authorization': authHeader ? 'present' : 'missing',
       'X-Anon-Id': anonymousContext.anonId ? 'present' : 'missing',
-      path: req.path
+      path: logPathLabel(req.path)
     });
 
     let jwtExpired = false;
@@ -169,7 +176,7 @@ function authMiddleware({ supabase }) {
         const context = {
           reason: isExpired ? 'expired' : 'invalid',
           fallback_present: hasFallback,
-          path: req.path,
+          path: logPathLabel(req.path),
           method: req.method
         };
         if (isExpired && hasFallback) {
@@ -270,7 +277,7 @@ function authMiddleware({ supabase }) {
               matchedBy,
               site_hash: site.site_hash || null,
               requestId: req.id || null,
-              path: req.path
+              path: logPathLabel(req.path)
             });
             return next();
           }
@@ -305,7 +312,7 @@ function authMiddleware({ supabase }) {
 
     // Allow unauthenticated only if no token configured
     logger.warn('[Auth] No license key or API token provided', {
-      path: req.path,
+      reason: 'missing_credentials',
       method: req.method,
       headers: req.headers ? Object.keys(req.headers).filter(h => h.toLowerCase().includes('license') || h.toLowerCase().includes('api') || h.toLowerCase().includes('auth') || h.toLowerCase().includes('site') || h.toLowerCase().includes('install')) : [],
       hasBodyLicenseKey: Boolean(body.license_key || body.licenseKey),

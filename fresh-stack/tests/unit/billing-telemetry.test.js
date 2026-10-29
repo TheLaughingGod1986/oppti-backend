@@ -249,6 +249,11 @@ describe('billing attribution sent to PostHog', () => {
     ['https://www.producthunt.com/posts/x', 'producthunt.com'],
     ['https://alternativeto.net/software/x/', 'alternativeto.net'],
     ['https://www.saashub.com/x', 'saashub.com'],
+    ['https://www.dev.to/x', 'dev.to'],
+    ['https://DEV.TO/', 'dev.to'],
+    ['https://producthunt.com/products/x', 'producthunt.com'],
+    ['https://www.alternativeto.net/', 'alternativeto.net'],
+    ['https://saashub.com/x-alternatives', 'saashub.com'],
     ['https://shop.customer-brand.co.uk/wp-admin/admin.php?page=bbai', 'wp_admin'],
     ['https://customer.example/blog/wp-admin/upload.php', 'wp_admin'],
     ['https://shop.customer-brand.co.uk/pricing', 'other'],
@@ -262,6 +267,32 @@ describe('billing attribution sent to PostHog', () => {
     [null, null]
   ])('referrer %s -> %s', (referrer, expected) => {
     expect(classifyReferrerHost(referrer)).toBe(expected);
+  });
+
+  test.each([
+    ['https://dev.to/oppti/post', 'dev.to'],
+    ['https://www.producthunt.com/products/oppti', 'producthunt.com'],
+    ['https://alternativeto.net/software/x/about/', 'alternativeto.net'],
+    ['https://www.saashub.com/oppti', 'saashub.com']
+  ])('directory referrer %s reaches PostHog as referrer_host %s, not other', async (referrer, expected) => {
+    await emitCanonicalBillingEvents({
+      stripeEventId: `evt_dir_${expected}`,
+      stripeEventType: 'checkout.session.completed',
+      distinctId: 'acct_dir',
+      eventProperties: {
+        plan: 'pro',
+        purchase_type: 'new_purchase',
+        payment_mode: 'subscription',
+        amount: 14.99,
+        account_id: 'acct_dir',
+        referrer,
+        utm_source: 'november',
+        utm_medium: 'directory'
+      }
+    });
+    const canonical = captureServerEvent.mock.calls.find(([a]) => a.event !== 'payment_succeeded')[0].properties;
+    expect(canonical.referrer_host).toBe(expected);
+    expect(canonical).not.toHaveProperty('referrer');
   });
 
   test('canonical billing events carry UTMs and referrer_host only: no referrer, landing or source page URLs', async () => {
