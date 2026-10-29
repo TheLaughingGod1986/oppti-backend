@@ -29,6 +29,39 @@ describe('PostHog site identifier stripping', () => {
     }).$set).toEqual({ plan: 'pro' });
   });
 
+  test('drops nested objects (meta.site_url) and arrays of objects; keeps flat values and scalar arrays', () => {
+    expect(stripSiteIdentifiers({
+      plan: 'pro',
+      count: 3,
+      ok: true,
+      none: null,
+      tags: ['a', 'b'],
+      meta: { site_url: 'https://shop.customer-brand.co.uk' },
+      rows: [{ email: 'qa-person@example.invalid' }],
+      $set: { plan: 'pro', profile: { email: 'qa-person@example.invalid' } }
+    })).toEqual({ plan: 'pro', count: 3, ok: true, none: null, tags: ['a', 'b'], $set: { plan: 'pro' } });
+  });
+
+  test('drops email, licence key, attribution URLs and free text anywhere; person name and address too', () => {
+    const cleaned = stripSiteIdentifiers({
+      email: 'qa-person@example.invalid',
+      license_key: 'QA-FAKE-LICENSE-KEY-0001',
+      referrer: 'https://shop.customer-brand.co.uk/wp-admin/',
+      landing_page: 'https://shop.customer-brand.co.uk/pricing',
+      source_page: 'https://shop.customer-brand.co.uk/wp-admin/upload.php',
+      plan: 'free',
+      $set: {
+        name: 'shop.customer-brand.co.uk',
+        email: 'qa-person@example.invalid',
+        address: '1 High Street',
+        signup_source_other: 'my agency told me',
+        signup_source: 'other'
+      },
+      $set_once: { license_key: 'QA-FAKE-LICENSE-KEY-0001', first_name: 'Jane' }
+    });
+    expect(cleaned).toEqual({ plan: 'free', $set: { signup_source: 'other' } });
+  });
+
   describe('outbound payloads', () => {
     const originalFetch = global.fetch;
     const originalEnv = { key: process.env.POSTHOG_API_KEY, host: process.env.POSTHOG_HOST };

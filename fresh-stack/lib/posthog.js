@@ -24,26 +24,56 @@ const SITE_IDENTIFIER_KEYS = [
   'image_url'
 ];
 
+// Personal data and full URLs are never sent either, whichever caller sets them.
+const PERSONAL_KEYS = [
+  'email',
+  'license_key',
+  'licenseKey',
+  'referrer',
+  'landing_page',
+  'source_page',
+  'signup_source_other'
+];
+// Person profiles additionally never get a name or address.
+const PERSON_ONLY_KEYS = ['name', 'first_name', 'last_name', 'full_name', 'address', 'phone'];
+const PERSON_KEYS = ['$set', '$set_once'];
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+// Values must be flat: scalars, null or arrays of scalars. Nested objects
+// (where unchecked keys such as meta.site_url could hide) are dropped.
+function isFlatValue(value) {
+  if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) return true;
+  return Array.isArray(value) && value.every((item) => item === null || ['string', 'number', 'boolean'].includes(typeof item));
+}
+
+function cleanFlat(object, blockedKeys) {
+  const cleaned = {};
+  for (const [key, value] of Object.entries(object)) {
+    if (blockedKeys.includes(key) || value === undefined || !isFlatValue(value)) continue;
+    cleaned[key] = value;
+  }
+  return cleaned;
+}
+
 function stripSiteIdentifiers(properties = {}) {
-  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+  if (!isPlainObject(properties)) {
     return properties;
   }
 
-  const cleaned = { ...properties };
-  for (const key of SITE_IDENTIFIER_KEYS) {
-    delete cleaned[key];
-  }
+  const blocked = [...SITE_IDENTIFIER_KEYS, ...PERSONAL_KEYS];
+  const cleaned = cleanFlat(
+    Object.fromEntries(Object.entries(properties).filter(([key]) => !PERSON_KEYS.includes(key))),
+    blocked
+  );
 
-  for (const personKey of ['$set', '$set_once']) {
-    if (cleaned[personKey] && typeof cleaned[personKey] === 'object') {
-      const person = { ...cleaned[personKey] };
-      for (const key of SITE_IDENTIFIER_KEYS) {
-        delete person[key];
-      }
+  for (const personKey of PERSON_KEYS) {
+    if (isPlainObject(properties[personKey])) {
+      const person = cleanFlat(properties[personKey], [...blocked, ...PERSON_ONLY_KEYS]);
       if (Object.keys(person).length) {
         cleaned[personKey] = person;
-      } else {
-        delete cleaned[personKey];
       }
     }
   }
