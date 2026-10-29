@@ -19,7 +19,10 @@ function getSignInRefusalLimit() {
 }
 
 function sendSignInRequired(req, res) {
-  const limit = recordHit(['sign-in-required', getClientIp(req)].join(':'), getSignInRefusalLimit());
+  const limit = recordHit(['sign-in-required', getClientIp(req)].join(':'), getSignInRefusalLimit(), {
+    limiter: 'sign-in-required',
+    req
+  });
   if (!limit.allowed) {
     res.set('Retry-After', String(limit.retryAfterSeconds));
     return res.status(429).json(SIGN_IN_RATE_LIMITED_BODY);

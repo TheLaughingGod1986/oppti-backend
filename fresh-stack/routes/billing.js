@@ -295,7 +295,7 @@ function checkCheckoutRateLimit(req, { siteKey, priceId, selectedPlanId }) {
     accountKey,
     ip
   ].join(':');
-  return recordHit(bucketKey, limit);
+  return recordHit(bucketKey, limit, { limiter: selectedPlanId === 'credits' ? 'checkout-credits' : 'checkout', req });
 }
 
 function checkoutRateLimitedBody(checkoutRateLimit) {

@@ -459,6 +459,7 @@ describe('POST /billing/checkout', () => {
       expect(res.status).toBe(200);
     }
 
+    const warnSpy = jest.spyOn(logger, 'warn');
     const limited = await request(app)
       .post('/billing/checkout')
       .set('X-Site-Key', 'site_hash_credits_limited')
@@ -471,6 +472,11 @@ describe('POST /billing/checkout', () => {
       retry_after: 900
     }));
     expect(stripeClient.checkout.sessions.create).toHaveBeenCalledTimes(3);
+    const blocked = warnSpy.mock.calls.filter(([message]) => message === '[rate-limit] blocked');
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0][1]).toEqual(expect.objectContaining({ limiter: 'checkout-credits', route: 'POST /billing/checkout', limit: 3 }));
+    expect(JSON.stringify(blocked[0])).not.toMatch(/203\.0\.113\.10|credits-limited@example\.com|lic_credits_limited|site_hash_credits_limited|account_credits_limited/);
+    warnSpy.mockRestore();
   });
 
   test('uses the Starter Stripe price and starter plan metadata', async () => {
