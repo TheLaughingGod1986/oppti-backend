@@ -927,3 +927,62 @@ describe('register signup_source ("How did you find us?")', () => {
     expect(row.signup_source_other.length).toBeLessThanOrEqual(200);
   });
 });
+
+describe('register product_emails_opt_out ("Don\'t send me product tips and plan emails")', () => {
+  const { trackAccountCreated } = require('../../../src/services/loops');
+  const originalKey = process.env.LOOPS_API_KEY;
+  const register = (app, extra = {}) => request(app)
+    .post('/auth/register')
+    .send({ email: `u${Math.random().toString(36).slice(2)}@example.com`, password: 'Password123!', ...extra });
+
+  beforeEach(() => {
+    process.env.LOOPS_API_KEY = 'test-key';
+    trackAccountCreated.mockClear();
+  });
+  afterAll(() => {
+    if (originalKey === undefined) delete process.env.LOOPS_API_KEY;
+    else process.env.LOOPS_API_KEY = originalKey;
+  });
+
+  test('ticked box is stored on the account and passed to Loops', async () => {
+    const supabase = createSupabaseMock();
+    const res = await register(createApp(supabase), { product_emails_opt_out: '1' });
+    expect(res.body.success).toBe(true);
+    expect(supabase._state.licenses[0].product_emails_opt_out).toBe(true);
+    expect(trackAccountCreated).toHaveBeenCalledWith(expect.objectContaining({ productEmailsOptOut: true }));
+  });
+
+  test('unticked box is stored as false and Loops is told not opted out', async () => {
+    const supabase = createSupabaseMock();
+    await register(createApp(supabase), { product_emails_opt_out: false });
+    expect(supabase._state.licenses[0].product_emails_opt_out).toBe(false);
+    expect(trackAccountCreated).toHaveBeenCalledWith(expect.objectContaining({ productEmailsOptOut: false }));
+  });
+
+  test('old plugin (field absent) stores nothing', async () => {
+    const supabase = createSupabaseMock();
+    const res = await register(createApp(supabase));
+    expect(res.body.success).toBe(true);
+    expect('product_emails_opt_out' in supabase._state.licenses[0]).toBe(false);
+    expect(trackAccountCreated).toHaveBeenCalledWith(expect.objectContaining({ productEmailsOptOut: false }));
+  });
+
+  test('sign-up succeeds and still honours the choice in Loops when the column does not exist yet', async () => {
+    const supabase = createSupabaseMock();
+    const realFrom = supabase.from.bind(supabase);
+    supabase.from = (table) => {
+      const api = realFrom(table);
+      if (table !== 'licenses') return api;
+      return { ...api, update(patch) {
+        if ('product_emails_opt_out' in patch) {
+          return { eq: () => Promise.resolve({ data: null, error: { code: '42703', message: 'column "product_emails_opt_out" does not exist' } }) };
+        }
+        return api.update(patch);
+      } };
+    };
+    const res = await register(createApp(supabase), { product_emails_opt_out: true });
+    expect(res.body.success).toBe(true);
+    expect(res.body.token).toBeTruthy();
+    expect(trackAccountCreated).toHaveBeenCalledWith(expect.objectContaining({ productEmailsOptOut: true }));
+  });
+});

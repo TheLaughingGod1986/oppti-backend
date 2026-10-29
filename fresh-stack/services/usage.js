@@ -1,10 +1,10 @@
 const { computePeriodStart } = require('./quota');
-const { getLimits } = require('./planLimits');
 const { trackGenerationMilestone, trackCreditsExhausted } = require('../../src/services/loops');
 const logger = require('../lib/logger');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { isInternalTelemetryHost } = require('../lib/siteIdentity');
 const { pluginIdFromFeatureType } = require('../../src/services/pluginIdentity');
+const { isProductEmailsOptedOut } = require('../lib/productEmailOptOut');
 
 /**
  * Check if a string is a valid UUID format
@@ -214,51 +214,16 @@ async function recordUsage(supabase, {
     });
 
     if (userEmail && licenseKey) {
-      (async () => {
-        try {
-          const { data: license } = await supabase
-            .from('licenses')
-            .select('plan, billing_day_of_month')
-            .eq('license_key', licenseKey)
-            .single();
-
-          if (license) {
-            const periodStart = computePeriodStart(license.billing_day_of_month || 1, new Date());
-            const { data: logs } = await supabase
-              .from('usage_logs')
-              .select('credits_used, feature_type')
-              .eq('license_key', licenseKey)
-              .gte('created_at', periodStart.toISOString());
-
-            const pluginId = pluginIdFromFeatureType(featureType);
-            const pluginLogs = (logs || []).filter((log) => pluginIdFromFeatureType(log.feature_type) === pluginId);
-            const generationsCount = pluginLogs.length;
-            const totalCreditsUsed = (logs || []).reduce((sum, l) => sum + (l.credits_used || 1), 0);
-            const creditsRemaining = Math.max(getLimits(license.plan).credits - totalCreditsUsed, 0);
-
-            await trackGenerationMilestone({
-              email: userEmail,
-              userId: validatedLicenseId,
-              pluginId,
-              pluginVersion,
-              generationsCount,
-              imagesUnprocessed: 0
-            });
-            if (creditsRemaining === 0) {
-              await trackCreditsExhausted({
-                email: userEmail,
-                userId: validatedLicenseId,
-                pluginId,
-                pluginVersion,
-                imagesUnprocessed: 0,
-                periodStart: periodStart.toISOString()
-              });
-            }
-          }
-        } catch (loopsErr) {
-          logger.debug('[Loops] generation tracking error', { error: loopsErr.message });
-        }
-      })();
+      trackLoopsAfterGeneration(supabase, {
+        licenseKey,
+        licenseId: validatedLicenseId,
+        siteHash,
+        userEmail,
+        pluginVersion,
+        featureType
+      }).catch((loopsErr) => {
+        logger.debug('[Loops] generation tracking error', { error: loopsErr.message });
+      });
     }
   }
 
@@ -439,6 +404,203 @@ async function getSiteUsage(supabase, { licenseKey, periodStart, periodEnd }) {
   return { sites: Object.values(map) };
 }
 
+const PAYWALL_BLOCKING_SUBSCRIPTION_STATUSES = ['active', 'trialing', 'past_due'];
+
+function toCreditCount(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Decide whether a site really hit the paywall. Fails closed: any lookup
+ * error, unknown site or missing quota row means "not eligible", so a paying
+ * customer is never sent credits_exhausted because of a data gap.
+ *
+ * Eligible only when:
+ *  - the site's current site_quotas row has remaining_credits +
+ *    purchased_credits_balance + bonus_credits_balance === 0, and
+ *  - the site has no site_subscriptions row in active/trialing/past_due, and
+ *  - the licence carries no legacy paid entitlement evidence, and
+ *  - no other site on the account (sites.license_key or site_memberships)
+ *    has an active/trialing/past_due site subscription. (public.subscriptions
+ *    is legacy: billing no longer writes it, so it is not read here.)
+ * Former payers (canceled, incomplete, unpaid) are not blocked.
+ */
+async function accountHasPayingSubscription(supabase, { licenseKey, licenseId, siteId }) {
+  const siteIds = new Set(siteId ? [siteId] : []);
+
+  if (licenseKey) {
+    const { data, error } = await supabase
+      .from('sites')
+      .select('id')
+      .eq('license_key', licenseKey);
+    if (error) return { error: 'account_sites_lookup_failed' };
+    for (const row of (Array.isArray(data) ? data : [])) if (row?.id) siteIds.add(row.id);
+  }
+
+  if (licenseId) {
+    const { data, error } = await supabase
+      .from('site_memberships')
+      .select('site_id')
+      .eq('user_id', licenseId);
+    if (error) return { error: 'account_memberships_lookup_failed' };
+    for (const row of (Array.isArray(data) ? data : [])) if (row?.site_id) siteIds.add(row.site_id);
+  }
+
+  if (siteIds.size > 0) {
+    const { data, error } = await supabase
+      .from('site_subscriptions')
+      .select('id, site_id, status, plan_id')
+      .in('site_id', Array.from(siteIds))
+      .in('status', PAYWALL_BLOCKING_SUBSCRIPTION_STATUSES)
+      .limit(1);
+    if (error) return { error: 'account_subscriptions_lookup_failed' };
+    if (Array.isArray(data) ? data.length > 0 : Boolean(data)) return { paying: true };
+  }
+
+  return { paying: false };
+}
+
+async function resolvePaywallEligibility(supabase, {
+  siteHash,
+  license,
+  licenseKey = null,
+  licenseId = null,
+  now = new Date()
+} = {}) {
+  if (!supabase || !siteHash) return { eligible: false, reason: 'no_site' };
+  const nowIso = now.toISOString();
+
+  const { data: sites, error: siteError } = await supabase
+    .from('sites')
+    .select('id')
+    .eq('site_hash', siteHash)
+    .limit(2);
+  if (siteError) return { eligible: false, reason: 'site_lookup_failed' };
+  const siteRows = Array.isArray(sites) ? sites : (sites ? [sites] : []);
+  if (siteRows.length !== 1 || !siteRows[0]?.id) {
+    return { eligible: false, reason: siteRows.length ? 'site_ambiguous' : 'site_not_found' };
+  }
+  const siteId = siteRows[0].id;
+
+  const { data: subs, error: subError } = await supabase
+    .from('site_subscriptions')
+    .select('id, status, plan_id')
+    .eq('site_id', siteId)
+    .in('status', PAYWALL_BLOCKING_SUBSCRIPTION_STATUSES)
+    .limit(1);
+  if (subError) return { eligible: false, reason: 'subscription_lookup_failed' };
+  if (Array.isArray(subs) ? subs.length > 0 : Boolean(subs)) {
+    return { eligible: false, reason: 'site_subscription' };
+  }
+
+  // Lazy require: siteQuota pulls in a large module graph.
+  const { hasLegacyPaidEntitlementEvidence } = require('./siteQuota');
+  if (hasLegacyPaidEntitlementEvidence(license)) {
+    return { eligible: false, reason: 'legacy_paid_licence' };
+  }
+
+  // Account-wide: a free second site on an account that pays for any other
+  // site (or has an account-level Stripe subscription) is not a paywall hit.
+  const accountPaid = await accountHasPayingSubscription(supabase, {
+    licenseKey,
+    licenseId: license?.id || licenseId || null,
+    siteId
+  });
+  if (accountPaid.error) return { eligible: false, reason: accountPaid.error };
+  if (accountPaid.paying) return { eligible: false, reason: 'account_paying_site' };
+
+  const { data: quotas, error: quotaError } = await supabase
+    .from('site_quotas')
+    .select('remaining_credits, purchased_credits_balance, bonus_credits_balance, quota_period_start, quota_period_end')
+    .eq('site_id', siteId)
+    .lte('quota_period_start', nowIso)
+    .gt('quota_period_end', nowIso)
+    .order('quota_period_start', { ascending: false })
+    .limit(1);
+  if (quotaError) return { eligible: false, reason: 'quota_lookup_failed' };
+  const quota = Array.isArray(quotas) ? quotas[0] : quotas;
+  if (!quota) return { eligible: false, reason: 'quota_not_found' };
+
+  const totalRemaining = toCreditCount(quota.remaining_credits)
+    + toCreditCount(quota.purchased_credits_balance)
+    + toCreditCount(quota.bonus_credits_balance);
+  if (totalRemaining > 0) return { eligible: false, reason: 'credits_remaining' };
+
+  const plan = typeof license?.plan === 'string' && license.plan.trim()
+    ? license.plan.trim().toLowerCase()
+    : 'free';
+  return { eligible: true, reason: null, plan, siteId };
+}
+
+/**
+ * Post-generation Loops tracking (milestones and the paywall event).
+ * recordUsage fires this without awaiting it.
+ */
+async function trackLoopsAfterGeneration(supabase, {
+  licenseKey,
+  licenseId,
+  siteHash,
+  userEmail,
+  pluginVersion,
+  featureType
+}) {
+  if (!userEmail || !licenseKey) return { milestone: false, creditsExhausted: false };
+  const selectLicense = (columns) => supabase
+    .from('licenses')
+    .select(columns)
+    .eq('license_key', licenseKey)
+    .single();
+  const baseColumns = 'id, plan, status, stripe_subscription_id, billing_day_of_month';
+  let { data: license, error: licenseError } = await selectLicense(`${baseColumns}, product_emails_opt_out`);
+  if (licenseError && isTelemetrySchemaError(licenseError)) {
+    // product_emails_opt_out migration not applied yet: nobody has opted out.
+    ({ data: license } = await selectLicense(baseColumns));
+  }
+  if (!license) return { milestone: false, creditsExhausted: false };
+  if (isProductEmailsOptedOut(license)) {
+    return { milestone: false, creditsExhausted: false, reason: 'product_emails_opt_out' };
+  }
+
+  const periodStart = computePeriodStart(license.billing_day_of_month || 1, new Date());
+  const { data: logs } = await supabase
+    .from('usage_logs')
+    .select('credits_used, feature_type')
+    .eq('license_key', licenseKey)
+    .gte('created_at', periodStart.toISOString());
+
+  const pluginId = pluginIdFromFeatureType(featureType);
+  const pluginLogs = (logs || []).filter((log) => pluginIdFromFeatureType(log.feature_type) === pluginId);
+  const generationsCount = pluginLogs.length;
+
+  await trackGenerationMilestone({
+    email: userEmail,
+    userId: licenseId,
+    pluginId,
+    pluginVersion,
+    generationsCount,
+    imagesUnprocessed: 0
+  });
+
+  const eligibility = await resolvePaywallEligibility(supabase, { siteHash, license, licenseKey, licenseId });
+  if (!eligibility.eligible) {
+    logger.debug('[Loops] credits_exhausted not sent', { reason: eligibility.reason, plugin_id: pluginId });
+    return { milestone: true, creditsExhausted: false, reason: eligibility.reason };
+  }
+
+  await trackCreditsExhausted({
+    email: userEmail,
+    userId: licenseId,
+    pluginId,
+    pluginVersion,
+    imagesUnprocessed: 0,
+    periodStart: periodStart.toISOString(),
+    plan: eligibility.plan,
+    paywallHitAt: new Date().toISOString()
+  });
+  return { milestone: true, creditsExhausted: true, reason: null };
+}
+
 /**
  * Get usage logs with optional filters.
  */
@@ -474,6 +636,8 @@ function getPeriodBounds(billingDay) {
 
 module.exports = {
   recordUsage,
+  resolvePaywallEligibility,
+  trackLoopsAfterGeneration,
   getUserUsage,
   getSiteUsage,
   getUsageLogs,

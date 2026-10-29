@@ -2549,6 +2549,7 @@ module.exports = {
   fetchAccountById,
   fetchAccountByLicenseKey,
   getSiteQuotaStatus,
+  hasLegacyPaidEntitlementEvidence,
   hashRequestFingerprint,
   ensureInitialSiteTrial,
   isMissingSchemaError,

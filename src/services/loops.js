@@ -237,6 +237,7 @@ async function upsertPluginContact({
   pluginVersion,
   acquisition = false,
   timestamp = new Date().toISOString(),
+  productEmailsOptOut = false,
   extra = {}
 }) {
   if (isLoopsSkippedEmail(email)) {
@@ -253,10 +254,12 @@ async function upsertPluginContact({
     email,
     ...(userId ? { userId: String(userId) } : {}),
     ...(firstName ? { firstName } : {}),
-    ...mailingListsPayload(),
+    // Opted-out accounts are never added to the plugin users list.
+    ...(productEmailsOptOut === true ? {} : mailingListsPayload()),
     ...properties,
     ...(acquisition === true ? { ...firstTouch, signupPlugin: plugin.id } : {}),
-    ...extra
+    ...extra,
+    ...(productEmailsOptOut === true ? { subscribed: false } : {})
   };
   await loopsRequest('PUT', '/contacts/update', payload);
   return payload;
@@ -298,10 +301,12 @@ async function trackAccountCreated({
   pluginId = 'alt_text',
   pluginVersion,
   isWooCommerce,
-  imagesUnprocessed
+  imagesUnprocessed,
+  productEmailsOptOut = false
 }) {
   const timestamp = new Date().toISOString();
   const normalizedPluginId = normalizePluginId(pluginId);
+  const optedOut = productEmailsOptOut === true;
   await upsertPluginContact({
     email,
     userId,
@@ -310,6 +315,7 @@ async function trackAccountCreated({
     pluginVersion,
     acquisition: true,
     timestamp,
+    productEmailsOptOut: optedOut,
     extra: {
       plan: 'free',
       generationsCount: 0,
@@ -317,6 +323,9 @@ async function trackAccountCreated({
       woocommerce: Boolean(isWooCommerce)
     }
   });
+  // Product lifecycle events can start product-email workflows, so an
+  // account that opted out at sign-up gets the contact (subscribed=false) only.
+  if (optedOut) return;
   await sendEvent('account_created', {
     email,
     userId,
@@ -337,10 +346,18 @@ async function trackAccountCreated({
   });
 }
 
-async function trackPluginConnected({ email, userId, pluginId, pluginVersion, emitEvent = true }) {
+async function trackPluginConnected({
+  email,
+  userId,
+  pluginId,
+  pluginVersion,
+  emitEvent = true,
+  productEmailsOptOut = false
+}) {
   const timestamp = new Date().toISOString();
-  await upsertPluginContact({ email, userId, pluginId, pluginVersion, timestamp });
-  if (emitEvent) {
+  const optedOut = productEmailsOptOut === true;
+  await upsertPluginContact({ email, userId, pluginId, pluginVersion, timestamp, productEmailsOptOut: optedOut });
+  if (emitEvent && !optedOut) {
     await sendEvent('plugin_connected', {
       email,
       userId,
@@ -381,22 +398,45 @@ async function trackGenerationMilestone({
   });
 }
 
+// Called only after the caller has confirmed the site's wallet is empty and
+// the site has no active, trialing or past_due subscription (see
+// fresh-stack/services/usage.js resolvePaywallEligibility). The plan is the
+// account's real plan id; it is never assumed to be 'free'.
 async function trackCreditsExhausted({
   email,
   userId,
   pluginId,
   pluginVersion,
   imagesUnprocessed,
-  periodStart
+  periodStart,
+  plan,
+  paywallHitAt = new Date().toISOString()
 }) {
-  await sendEvent('credits_exhausted', {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { path: '/events/send', method: 'POST', event_name: 'credits_exhausted' });
+    return null;
+  }
+  const plugin = getPlugin(pluginId);
+  const planId = typeof plan === 'string' && plan.trim() ? plan.trim().toLowerCase() : 'unknown';
+  // Loops workflows branch on contact properties, so record which plugin hit
+  // the paywall on the contact before the event that starts the workflow.
+  await loopsRequest('PUT', '/contacts/update', {
+    email,
+    ...(userId ? { userId: String(userId) } : {}),
+    paywallPluginId: plugin.id,
+    paywallHitAt,
+    plan: planId
+  });
+  return sendEvent('credits_exhausted', {
     email,
     userId,
-    pluginId,
+    pluginId: plugin.id,
     pluginVersion,
+    // Once per account, plugin and billing period (Loops idempotency key).
     idempotencyParts: [periodStart || 'current'],
     imagesUnprocessed: imagesUnprocessed || 0,
-    plan: 'free'
+    plan: planId,
+    paywallHitAt
   });
 }
 

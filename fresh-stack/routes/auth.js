@@ -25,6 +25,7 @@ const { PLUGIN_IDS } = require('../../src/services/pluginIdentity');
 const { recordPluginConnection } = require('../services/pluginConnections');
 const { recordSignupAttribution } = require('../services/auditorAttribution');
 const { normalizeSignupSource } = require('../lib/signupSource');
+const { normalizeProductEmailsOptOut, isProductEmailsOptedOut } = require('../lib/productEmailOptOut');
 const { identifyServerUser } = require('../lib/posthog');
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -156,7 +157,7 @@ function emitAuthWriteTrace(connectionSource, trace) {
   logger[level](`[${prefix}] ${connectionSource}_write_verification`, trace);
 }
 
-async function fireLoopsAccountCreated({ email, userId, pluginId, pluginVersion, requestId }) {
+async function fireLoopsAccountCreated({ email, userId, pluginId, pluginVersion, requestId, productEmailsOptOut = false }) {
   const trace = {
     attempted: Boolean(process.env.LOOPS_API_KEY),
     success: null,
@@ -190,7 +191,8 @@ async function fireLoopsAccountCreated({ email, userId, pluginId, pluginVersion,
       pluginId,
       pluginVersion,
       isWooCommerce: false,
-      imagesUnprocessed: 0
+      imagesUnprocessed: 0,
+      productEmailsOptOut: productEmailsOptOut === true
     });
     trace.success = true;
     trace.error = null;
@@ -229,7 +231,7 @@ async function ensurePluginConnection({ supabase, userId, pluginId, pluginVersio
   return connection;
 }
 
-async function fireLoopsPluginConnected({ supabase, email, userId, pluginId, pluginVersion, requestId }) {
+async function fireLoopsPluginConnected({ supabase, email, userId, pluginId, pluginVersion, requestId, productEmailsOptOut = false }) {
   // Always persist the account↔plugin link for the dashboard My Plugins page.
   // Loops telemetry stays optional and must not gate that write.
   const connection = await ensurePluginConnection({
@@ -245,7 +247,8 @@ async function fireLoopsPluginConnected({ supabase, email, userId, pluginId, plu
       userId,
       pluginId,
       pluginVersion,
-      emitEvent: connection.isFirstConnection
+      emitEvent: connection.isFirstConnection,
+      productEmailsOptOut: productEmailsOptOut === true
     });
     logger.info('[login] plugin_connected_loops_succeeded', {
       email: maskEmail(email),
@@ -531,6 +534,32 @@ async function recordSignupSource({ supabase, user, body, pluginId, requestId })
   return { source, other };
 }
 
+// Stores the sign-up "Don't send me product tips and plan emails" choice.
+// Best-effort separate update (like signup_source) so sign-up keeps working
+// before the product_emails_opt_out migration is applied. Returns the choice
+// so Loops honours it even if the write fails.
+async function recordProductEmailsOptOut({ supabase, user, body, requestId }) {
+  const optOut = normalizeProductEmailsOptOut(body);
+  if (optOut === null || !user?.id) return optOut === true;
+  try {
+    const { error } = await supabase
+      .from('licenses')
+      .update({ product_emails_opt_out: optOut })
+      .eq('id', user.id);
+    if (error) {
+      logger.warn('[Auth] product_emails_opt_out write failed', {
+        requestId,
+        error: serializeSupabaseError(error)
+      });
+    } else {
+      user.product_emails_opt_out = optOut;
+    }
+  } catch (error) {
+    logger.warn('[Auth] product_emails_opt_out write threw', { requestId, error: error.message });
+  }
+  return optOut === true;
+}
+
 const resetLogger = logger.withEmailRedaction();
 
 // One body for every valid forgot-password request: never the link or token.
@@ -660,7 +689,10 @@ function createAuthRouter({ supabase }) {
       // Optional "How did you find us?" answer. Accepted loosely and validated
       // by normalizeSignupSource so a bad value can never fail sign-up.
       signup_source: z.any().optional(),
-      signup_source_other: z.any().optional()
+      signup_source_other: z.any().optional(),
+      // Unticked by default in every sign-up form. Accepted loosely and
+      // normalised so a bad value can never fail sign-up.
+      product_emails_opt_out: z.any().optional()
     });
 
     const parsed = schema.safeParse(req.body);
@@ -815,12 +847,19 @@ function createAuthRouter({ supabase }) {
         body: parsed.data,
         requestId: req.id || null
       });
+      const productEmailsOptOut = await recordProductEmailsOptOut({
+        supabase,
+        user,
+        body: parsed.data,
+        requestId: req.id || null
+      });
       registerTrace.loops_account_created = await fireLoopsAccountCreated({
         email,
         userId: user.id,
         pluginId: parsed.data.plugin_id,
         pluginVersion: parsed.data.plugin_version,
-        requestId: req.id || null
+        requestId: req.id || null,
+        productEmailsOptOut
       });
 
       let siteLink = { site: null, sharedSite: false, existingAccount: null, error: null, trace: null };
@@ -1138,7 +1177,8 @@ function createAuthRouter({ supabase }) {
         userId: user.id,
         pluginId: parsed.data.plugin_id,
         pluginVersion: parsed.data.plugin_version,
-        requestId: req.id || null
+        requestId: req.id || null,
+        productEmailsOptOut: isProductEmailsOptedOut(user)
       });
 
       // Generate JWT token
