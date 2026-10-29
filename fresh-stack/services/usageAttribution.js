@@ -1,4 +1,5 @@
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 
 function isUuid(value) {
   return typeof value === 'string'
@@ -46,7 +47,7 @@ async function resolveUsageAttributionUserId(supabase, {
       }
     } catch (err) {
       logger.debug('[usage] attribution_site_owner_lookup_failed', {
-        site_hash: siteHash || null,
+        ...siteRefForLog(siteHash || null, req),
         error: err?.message || String(err)
       });
     }

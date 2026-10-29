@@ -1,5 +1,6 @@
 const { getLimits } = require('./planLimits');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const {
@@ -30,7 +31,7 @@ async function findOrCreateTrialSite(supabase, { siteHash, siteUrl, fingerprint 
 
   if (!identity.isValid) {
     logger.error('[Site] Trial site identity invalid', {
-      site_hash: siteHash || null,
+      ...siteRefForLog(siteHash || null),
       site_url: siteUrl || null,
       error: identity.error || 'site_hash is required'
     });
@@ -45,7 +46,7 @@ async function findOrCreateTrialSite(supabase, { siteHash, siteUrl, fingerprint 
 
   if (resolved.error) {
     logger.error('[Site] Trial site resolve failed', {
-      site_hash: siteHash || identity.siteHash || null,
+      ...siteRefForLog(siteHash || identity.siteHash || null),
       site_url: siteUrl || identity.siteUrl || null,
       error: resolved.error
     });
@@ -67,14 +68,14 @@ async function findOrCreateTrialSite(supabase, { siteHash, siteUrl, fingerprint 
   } catch (error) {
     logger.warn('[Site] Trial site activity update failed', {
       site_id: resolved.site.id,
-      site_hash: resolved.site.site_hash || identity.siteHash || null,
+      ...siteRefForLog(resolved.site.site_hash || identity.siteHash || null),
       site_url: resolved.site.site_url || identity.siteUrl || null,
       error: serializeSupabaseError(error)
     });
   }
 
   logger.info(resolved.created ? '[Site] Trial site created' : '[Site] Trial site reused', {
-    site_hash: resolved.site.site_hash,
+    ...siteRefForLog(resolved.site.site_hash),
     site_id: resolved.site.id,
     site_url: resolved.site.site_url || identity.siteUrl || null,
     matched_by: resolved.matchedBy,

@@ -231,8 +231,8 @@ async function sendContactEmail({
         ${wpVersion ? `WordPress Version: ${escapeHtml(wpVersion)}<br>` : ''}
         ${pluginVersion ? `Plugin Version: ${escapeHtml(pluginVersion)}<br>` : ''}
         ${siteUrl ? `Site URL: ${escapeHtml(siteUrl)}<br>` : ''}
-        ${siteHash ? `Site Hash: ${escapeHtml(String(siteHash).substring(0, 8))}...<br>` : ''}
-        ${licenseKey ? `License Key: ${escapeHtml(String(licenseKey).substring(0, 8))}...<br>` : ''}
+        ${siteHash ? 'Site Hash: present<br>' : ''}
+        ${licenseKey ? 'License Key: present<br>' : ''}
         ${userId ? `User ID: ${escapeHtml(userId)}<br>` : ''}
       </div>
     `;
@@ -295,7 +295,7 @@ Subject: ${subject}
 Message:
 ${message}
 
-${wpVersion || pluginVersion || siteUrl || siteHash || licenseKey || userId ? `\nSystem Information:\n${wpVersion ? `WordPress Version: ${wpVersion}\n` : ''}${pluginVersion ? `Plugin Version: ${pluginVersion}\n` : ''}${siteUrl ? `Site URL: ${siteUrl}\n` : ''}${siteHash ? `Site Hash: ${siteHash.substring(0, 8)}...\n` : ''}${licenseKey ? `License Key: ${licenseKey.substring(0, 8)}...\n` : ''}${userId ? `User ID: ${userId}\n` : ''}` : ''}
+${wpVersion || pluginVersion || siteUrl || siteHash || licenseKey || userId ? `\nSystem Information:\n${wpVersion ? `WordPress Version: ${wpVersion}\n` : ''}${pluginVersion ? `Plugin Version: ${pluginVersion}\n` : ''}${siteUrl ? `Site URL: ${siteUrl}\n` : ''}${siteHash ? 'Site Hash: present\n' : ''}${licenseKey ? 'License Key: present\n' : ''}${userId ? `User ID: ${userId}\n` : ''}` : ''}
 ${diagnosticText ? `\nAttached diagnostics:\n${diagnosticText}\n` : ''}
 
 ---

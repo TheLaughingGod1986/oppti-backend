@@ -1,5 +1,6 @@
 const express = require('express');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { fetchAccountByLicenseKey, resolveCanonicalSite } = require('../services/siteQuota');
 const { validateLicense, activateLicense, deactivateLicense, transferLicense, sanitizeLicense } = require('../services/license');
@@ -137,7 +138,7 @@ function createLicenseRouter({ supabase }) {
         request_id: req.id || null,
         account_id: account?.id || null,
         has_license_key: Boolean(licenseKey),
-        site_hash: siteIdentity.siteHash || null,
+        ...siteRefForLog(siteIdentity.siteHash || null, req),
         site_url: siteIdentity.siteUrl || null,
         site_fingerprint_present: Boolean(siteIdentity.siteFingerprint)
       });
@@ -154,7 +155,7 @@ function createLicenseRouter({ supabase }) {
           request_id: req.id || null,
           account_id: account?.id || null,
           has_license_key: Boolean(licenseKey),
-          site_hash: siteIdentity.siteHash || null,
+          ...siteRefForLog(siteIdentity.siteHash || null, req),
           site_url: siteIdentity.siteUrl || null,
           error: healed.error,
           site_write_error: healed.diagnostics?.site_write_error || null,
@@ -166,7 +167,7 @@ function createLicenseRouter({ supabase }) {
           account_id: account?.id || null,
           has_license_key: Boolean(licenseKey),
           site_id: healed.site?.id || null,
-          site_hash: healed.site?.site_hash || siteIdentity.siteHash || null,
+          ...siteRefForLog(healed.site?.site_hash || siteIdentity.siteHash || null, req),
           matched_by: healed.matchedBy || null,
           created: Boolean(healed.created),
           membership_attempted: Boolean(healed.diagnostics?.membership?.attempted),

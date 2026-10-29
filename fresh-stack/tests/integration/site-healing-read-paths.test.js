@@ -504,7 +504,7 @@ describe('authenticated site healing on read paths', () => {
       selected_source: 'fallback/default path',
       checked_sources: ['quota_summaries', 'usage_logs'],
       site_id: null,
-      site_hash: null,
+      has_site_key: false,
       license_key_prefix: 'present'
     }));
   });

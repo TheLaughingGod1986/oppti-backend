@@ -576,7 +576,7 @@ describe('V2 anonymous site trials', () => {
       '[V2_FALLBACK] Trial reservation V2 path failed; using legacy trial fallback',
       expect.objectContaining({
         v2_error_code: 'SITE_TRIAL_INIT_FAILED',
-        site_hash: 'trial-init-fail'
+        has_site_key: true
       })
     );
     expect(logger.info).toHaveBeenCalledWith(

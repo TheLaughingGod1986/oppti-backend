@@ -1,6 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const { buildTrialGenerationForBatchPlan } = require('../lib/trialGenerationContract');
 const {
@@ -102,7 +103,7 @@ function createUsageRouter({ supabase }) {
     });
 
     logger.info('[usage] trial_batch_plan', {
-      site_hash: siteKey,
+      ...siteRefForLog(siteKey, req),
       anon_id: anonymousContext.anonId || null,
       requested_count: trialGeneration.requested_count,
       processable_count: trialGeneration.processable_count,
@@ -167,7 +168,7 @@ function createUsageRouter({ supabase }) {
       });
 
       logger.info('[usage] Anonymous identity resolved', {
-        site_hash: siteKey,
+        ...siteRefForLog(siteKey, req),
         anon_id: anonymousContext.anonId || null,
         anon_id_source: anonymousContext.source || null,
         risk_key: anonymousContext.riskKey || null,
@@ -175,7 +176,7 @@ function createUsageRouter({ supabase }) {
         site_fingerprint: siteFingerprint ? 'present' : 'absent'
       });
       logger.info('[usage] Anonymous quota check', {
-        site_hash: siteKey,
+        ...siteRefForLog(siteKey, req),
         anon_id: trialInfo.anon_id || null,
         credits_used: trialInfo.credits_used,
         credits_total: trialInfo.credits_total,
@@ -184,7 +185,7 @@ function createUsageRouter({ supabase }) {
         quota_source: status?.trial ? 'site_trials' : 'trial_usage'
       });
       logger.info('[usage] Anonymous signup_required state returned', {
-        site_hash: siteKey,
+        ...siteRefForLog(siteKey, req),
         anon_id: trialInfo.anon_id || null,
         signup_required: trialInfo.signup_required,
         quota_state: trialInfo.quota_state,

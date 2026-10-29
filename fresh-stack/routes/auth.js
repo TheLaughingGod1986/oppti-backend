@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const { z } = require('zod');
 const crypto = require('crypto');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { sendPasswordResetEmail, isAvailable: isEmailAvailable } = require('../lib/email');
 const { buildPasswordResetLink } = require('../lib/passwordReset');
@@ -305,7 +306,7 @@ async function attachSiteContextForAccount({
     request_id: requestId || null,
     account_id: account.id || null,
     license_key_prefix: redactLicenseKey(account.license_key),
-    site_hash: siteIdentity.siteHash || null,
+    ...siteRefForLog(siteIdentity.siteHash || null),
     site_url: siteIdentity.siteUrl || null
   });
 
@@ -333,7 +334,7 @@ async function attachSiteContextForAccount({
       connection_source: connectionSource,
       request_id: requestId || null,
       account_id: account.id || null,
-      site_hash: siteIdentity.siteHash || null,
+      ...siteRefForLog(siteIdentity.siteHash || null),
       error: resolved.error,
       site_write_error: resolved.diagnostics?.site_write_error || null
     });
@@ -388,7 +389,7 @@ async function attachSiteContextForAccount({
     request_id: requestId || null,
     account_id: account.id || null,
     site_id: site.id || null,
-    site_hash: site.site_hash || null,
+    ...siteRefForLog(site.site_hash || null),
     shared_site: sharedSite,
     matched_by: trace.site_resolution.matched_by,
     created: trace.site_resolution.created,
@@ -426,7 +427,7 @@ async function observeAnonymousSignupMerge({
     connection_source: connectionSource,
     account_id: account.id,
     site_id: site.id,
-    site_hash: site.site_hash || null,
+    ...siteRefForLog(site.site_hash || null),
     anon_id: anonymousContext?.anonId || null,
     anonymous_usage_found: continuity.hasAnonymousUsage,
     anonymous_usage_used: continuity.used,

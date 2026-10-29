@@ -1,4 +1,5 @@
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { isMissingSchemaError } = require('../lib/supabaseErrors');
 const { getLimits } = require('./planLimits');
 
@@ -47,7 +48,7 @@ async function countLegacyAnonymousUsage(supabase, { siteHash }) {
   if (error) {
     if (!isMissingSchemaError(error)) {
       logger.warn('[anonymousTrial] legacy usage count failed', {
-        site_hash: siteHash,
+        ...siteRefForLog(siteHash),
         error: error.message
       });
     }
@@ -120,7 +121,7 @@ async function getAnonymousTrialStatus(supabase, {
     });
     logger.info('[anonymousTrial] quota resolved', {
       source: 'site_trials',
-      site_hash: siteHash,
+      ...siteRefForLog(siteHash),
       anon_id: anonId || null,
       credits_used: status.credits_used,
       credits_total: status.credits_total,
@@ -148,7 +149,7 @@ async function getAnonymousTrialStatus(supabase, {
   });
   logger.info('[anonymousTrial] quota resolved', {
     source: 'trial_usage',
-    site_hash: siteHash,
+    ...siteRefForLog(siteHash),
     anon_id: anonId || null,
     credits_used: status.credits_used,
     credits_total: status.credits_total,

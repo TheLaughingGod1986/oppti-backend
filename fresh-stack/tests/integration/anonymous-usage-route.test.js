@@ -219,3 +219,59 @@ describe('GET /usage anonymous trial status', () => {
     }));
   });
 });
+
+describe('usage route trial lines: no raw site key', () => {
+  const logger = require('../../lib/logger');
+  const { expectNoCredentialSlices } = require('../helpers/credentialSlices');
+  const RAW_SITE_KEY = 'qa-raw-site-key-secret-0001';
+  const MESSAGES = [
+    '[usage] trial_batch_plan',
+    '[usage] Anonymous identity resolved',
+    '[usage] Anonymous quota check',
+    '[usage] Anonymous signup_required state returned'
+  ];
+  let spies;
+  beforeEach(() => {
+    process.env.ANONYMOUS_TRIAL_CREDITS = '5';
+    quotaService.getQuotaStatus.mockReset();
+    quotaService.getQuotaStatus.mockResolvedValue({
+      error: null, plan_type: 'free', credits_used: 0, credits_remaining: 50, total_limit: 50,
+      reset_date: '2026-04-30T00:00:00.000Z', warning_threshold: 0.9, is_near_limit: false,
+      trial: { total_trial_credits: 5, used_trial_credits: 2 }
+    });
+    spies = ['warn', 'info', 'debug', 'error'].map((level) => jest.spyOn(logger, level).mockImplementation(() => {}));
+  });
+  afterEach(() => spies.forEach((spy) => spy.mockRestore()));
+  const usageLines = () => spies.flatMap((spy) => spy.mock.calls).filter(([m]) => MESSAGES.includes(m));
+
+  function app() {
+    const supabase = createAnonymousSupabaseMock(0);
+    const a = express();
+    a.use(express.json());
+    a.use(authMiddleware({ supabase }));
+    a.use('/api/usage', createUsageRouter({ supabase }));
+    return a;
+  }
+
+  test('GET /api/usage with X-Site-Key: identity, quota and signup lines log has_site_key only', async () => {
+    const res = await request(app()).get('/api/usage').set('X-Site-Key', RAW_SITE_KEY).set('X-Anon-Id', 'anon-usage-1');
+    expect(res.status).toBe(200);
+    const found = usageLines();
+    expect(found.map(([m]) => m)).toEqual(expect.arrayContaining(MESSAGES.slice(1)));
+    for (const [, ctx] of found) expect(ctx).toEqual(expect.objectContaining({ has_site_key: true }));
+    expectNoCredentialSlices(found, [RAW_SITE_KEY]);
+  });
+
+  test('POST /api/usage/trial-batch-plan with X-Trial-Site-Hash: trial_batch_plan logs has_site_key only', async () => {
+    const res = await request(app())
+      .post('/api/usage/trial-batch-plan')
+      .set('X-Trial-Mode', 'true')
+      .set('X-Trial-Site-Hash', RAW_SITE_KEY)
+      .send({ requested_count: 6 });
+    expect(res.status).toBe(200);
+    const found = usageLines().filter(([m]) => m === '[usage] trial_batch_plan');
+    expect(found.length).toBe(1);
+    expect(found[0][1]).toEqual(expect.objectContaining({ has_site_key: true }));
+    expectNoCredentialSlices(found, [RAW_SITE_KEY]);
+  });
+});

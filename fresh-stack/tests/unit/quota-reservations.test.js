@@ -167,7 +167,7 @@ describe('reserveGenerationQuota', () => {
       '[V2_FALLBACK] Trial reservation V2 path failed; using legacy trial fallback',
       expect.objectContaining({
         v2_error_code: 'SITE_QUOTA_V2_UNAVAILABLE',
-        site_hash: 'trial-site'
+        has_site_key: true
       })
     );
   });

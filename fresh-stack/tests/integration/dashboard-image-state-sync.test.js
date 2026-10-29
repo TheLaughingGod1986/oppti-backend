@@ -170,3 +170,31 @@ describe('POST /dashboard/image-states/sync', () => {
     );
   });
 });
+
+describe('image state sync lines: no raw site key', () => {
+  const logger = require('../../lib/logger');
+  const { expectNoCredentialSlices } = require('../helpers/credentialSlices');
+  const RAW_SITE_KEY = 'qa-raw-site-key-secret-0001';
+  let spies;
+  beforeEach(() => {
+    spies = ['warn', 'info', 'debug', 'error'].map((level) => jest.spyOn(logger, level).mockImplementation(() => {}));
+  });
+  afterEach(() => spies.forEach((spy) => spy.mockRestore()));
+  const calls = () => spies.flatMap((spy) => spy.mock.calls);
+
+  test('received and site-resolution-failed lines log has_site_key, never the sent key', async () => {
+    imageAltStateService.resolveImageAltStateSiteContext.mockResolvedValueOnce({ site: null, siteIdentity: null, error: 'SITE_NOT_FOUND' });
+    await request(createApp())
+      .post('/dashboard/image-states/sync')
+      .set('X-License-Key', 'key-123')
+      .set('X-Site-Key', RAW_SITE_KEY)
+      .send({ images: [{ attachment_id: 101, current_state: 'MISSING', image_url: 'https://example.com/1.jpg' }] });
+    for (const message of ['[dashboard] image_state_sync_received', '[dashboard] image_state_sync_site_resolution_failed']) {
+      const found = calls().filter(([m]) => m === message);
+      expect(found.length).toBe(1);
+      expect(found[0][1]).toEqual(expect.objectContaining({ has_site_key: true }));
+      expect(found[0][1]).not.toHaveProperty('request_site_hash');
+    }
+    expectNoCredentialSlices(calls(), [RAW_SITE_KEY]);
+  });
+});

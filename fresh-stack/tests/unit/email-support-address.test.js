@@ -79,3 +79,22 @@ describe('sender address', () => {
     expect(await sentFrom({ EMAIL_FROM: '  ' })).toBe('noreply@alttext.ai');
   });
 });
+
+describe('support email body: site hash and licence key as presence only', () => {
+  const { expectNoCredentialSlices } = require('../helpers/credentialSlices');
+  test('html and text bodies say "present" and carry no characters of either value', async () => {
+    const email = loadEmail();
+    const siteHash = 'qa-raw-site-key-secret-0001';
+    const licenseKey = 'QA-FAKE-LICENSE-KEY-0001';
+    await email.sendContactEmail({
+      name: 'Pat', email: 'pat@site.example', subject: 'Help', message: 'Hello there, need help.',
+      wpVersion: '6.6', pluginVersion: '4.6.143', siteHash, licenseKey
+    });
+    const sent = mockSend.mock.calls[0][0];
+    expect(sent.html).toContain('Site Hash: present');
+    expect(sent.html).toContain('License Key: present');
+    expect(sent.text).toContain('Site Hash: present');
+    expect(sent.text).toContain('License Key: present');
+    expectNoCredentialSlices([sent.html, sent.text], [siteHash, licenseKey]);
+  });
+});

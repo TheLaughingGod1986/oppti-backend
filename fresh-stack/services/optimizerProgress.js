@@ -1,4 +1,5 @@
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { getRecentFullAudits } = require('./optimizerAudit');
 
 /**
@@ -68,7 +69,7 @@ async function getUsageTotals(supabase, siteHash) {
     .select('image_count, feature_type, created_at, status')
     .eq('site_id', siteId);
   if (error || !data) {
-    logger.warn('[optimizer-progress] usage_events query failed', { site_hash: siteHash, error: error && error.message });
+    logger.warn('[optimizer-progress] usage_events query failed', { ...siteRefForLog(siteHash), error: error && error.message });
     return empty;
   }
 

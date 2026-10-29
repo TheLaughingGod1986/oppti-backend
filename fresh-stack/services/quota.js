@@ -1,5 +1,6 @@
 const { getLimits } = require('./planLimits');
 const logger = require('../lib/logger');
+const { installRefForLog, siteRefForLog } = require('../lib/logIdentity');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const {
   buildSiteIdentity,
@@ -103,7 +104,7 @@ async function getLegacyQuotaStatus(supabase, {
       // Use the site's license key for quota tracking
       if (site.license_key !== licenseKey) {
         logger.info('[Quota] Using site license for credit sharing', {
-          site_hash: siteHash,
+          ...siteRefForLog(siteHash),
           requested_license: maskLicenseKeyForAudit(licenseKey),
           site_license: maskLicenseKeyForAudit(site.license_key)
         });
@@ -133,7 +134,7 @@ async function getLegacyQuotaStatus(supabase, {
     license_id: license.id || null,
     license_key_prefix: maskLicenseKeyForAudit(license.license_key),
     site_id: null,
-    site_hash: siteHash || null,
+    ...siteRefForLog(siteHash || null),
     period_start: toAuditIsoString(periodStart),
     period_end: toAuditIsoString(periodEnd)
   };
@@ -196,7 +197,7 @@ async function getLegacyQuotaStatus(supabase, {
       : 0;
 
     const quotaLogData = {
-      siteHash: siteHash || 'none',
+      ...siteRefForLog(siteHash || 'none'),
       license_key_prefix: maskLicenseKeyForAudit(license.license_key),
       period_start: periodStart.toISOString(),
       period_end: periodEnd.toISOString(),
@@ -318,10 +319,10 @@ async function getQuotaStatus(supabase, {
     request_id: requestId || null,
     account_id: account?.id || null,
     license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
-    site_hash: siteHash || prebuiltIdentity?.siteHash || null,
+    ...siteRefForLog(siteHash || prebuiltIdentity?.siteHash || null),
     site_url: siteUrl || prebuiltIdentity?.siteUrl || null,
     site_fingerprint_present: Boolean(siteFingerprint || prebuiltIdentity?.siteFingerprint),
-    install_uuid: installUuid || prebuiltIdentity?.wpInstallUuid || null,
+    ...installRefForLog(installUuid || prebuiltIdentity?.wpInstallUuid || null),
     quota_mode: quotaMode,
     has_site_signals: hasSiteSignals
   });
@@ -358,7 +359,7 @@ async function getQuotaStatus(supabase, {
       license_id: account?.id || null,
       license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
       site_id: identity?.siteId || null,
-      site_hash: siteHash || identity.siteHash || null,
+      ...siteRefForLog(siteHash || identity.siteHash || null),
       source_selected: 'fallback/default path',
       selected_source: 'fallback/default path',
       checked_sources: ['site_quotas'],
@@ -393,7 +394,7 @@ async function getQuotaStatus(supabase, {
       request_id: requestId || null,
       account_id: account?.id || null,
       license_key_prefix: maskLicenseKeyForAudit(licenseKey),
-      site_hash: siteHash || identity?.siteHash || null,
+      ...siteRefForLog(siteHash || identity?.siteHash || null),
       site_url: siteUrl || identity?.siteUrl || null,
       site_fingerprint_present: Boolean(siteFingerprint || identity?.siteFingerprint),
       error: siteStatus.error,
@@ -409,7 +410,7 @@ async function getQuotaStatus(supabase, {
       selected_source: 'legacy_trial',
       checked_sources: ['site_quotas'],
       site_id: identity?.siteId || null,
-      site_hash: siteHash || identity?.siteHash || null,
+      ...siteRefForLog(siteHash || identity?.siteHash || null),
       license_id: account?.id || null,
       license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
       request_id: requestId || null
@@ -428,7 +429,7 @@ async function getQuotaStatus(supabase, {
     selected_source: 'fallback/default path',
     checked_sources: ['site_quotas'],
     site_id: identity?.siteId || null,
-    site_hash: siteHash || identity?.siteHash || null,
+    ...siteRefForLog(siteHash || identity?.siteHash || null),
     license_id: account?.id || null,
     license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null)
   });
@@ -438,7 +439,7 @@ async function getQuotaStatus(supabase, {
     license_id: account?.id || null,
     license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
     site_id: identity?.siteId || null,
-    site_hash: siteHash || identity?.siteHash || null,
+    ...siteRefForLog(siteHash || identity?.siteHash || null),
     source_selected: 'fallback/default path',
     selected_source: 'fallback/default path',
     checked_sources: ['site_quotas'],
@@ -600,7 +601,7 @@ async function reserveGenerationQuota(supabase, {
 
   if (!result.error) {
     logger.info('[Quota] Generation reservation succeeded', {
-      site_hash: result.site?.site_hash || effectiveSiteHash || null,
+      ...siteRefForLog(result.site?.site_hash || effectiveSiteHash || null),
       site_id: result.site?.id || null,
       quota_mode: quotaMode,
       quota_source: result.reservation?.quota_source || null,
@@ -613,7 +614,7 @@ async function reserveGenerationQuota(supabase, {
   }
 
   logger.warn('[Quota] Generation reservation returned non-success', {
-    site_hash: effectiveSiteHash || identity?.siteHash || null,
+    ...siteRefForLog(effectiveSiteHash || identity?.siteHash || null),
     quota_mode: quotaMode,
     error_code: result.error,
     error_message: result.message || null,
@@ -632,7 +633,7 @@ async function reserveGenerationQuota(supabase, {
         selected_source: 'legacy_trial',
         checked_sources: ['site_quotas'],
         site_id: result.site?.id || null,
-        site_hash: effectiveSiteHash || identity?.siteHash || null,
+        ...siteRefForLog(effectiveSiteHash || identity?.siteHash || null),
         license_id: account?.id || null,
         license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
         request_id: requestId || null
@@ -677,7 +678,7 @@ async function reserveGenerationQuota(supabase, {
     selected_source: 'legacy',
     checked_sources: ['site_quotas'],
     site_id: result.site?.id || null,
-    site_hash: effectiveSiteHash || identity?.siteHash || null,
+    ...siteRefForLog(effectiveSiteHash || identity?.siteHash || null),
     license_id: account?.id || null,
     license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
     request_id: requestId || null

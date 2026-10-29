@@ -1,4 +1,5 @@
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { gradeFor, getSiteId } = require('./optimizerProgress');
 
 /**
@@ -133,7 +134,7 @@ async function detectEvents({ supabase, siteHash, current, previous }) {
       });
     }
   } catch (error) {
-    logger.warn('[optimizer-events] detection failed', { site_hash: siteHash, error: error.message });
+    logger.warn('[optimizer-events] detection failed', { ...siteRefForLog(siteHash), error: error.message });
   }
 }
 
@@ -154,7 +155,7 @@ async function getEvents({ supabase, siteHash, type, limit = 12 }) {
       .order('created_at', { ascending: false })
       .limit(limit);
     if (!error && data) rows = data;
-    else if (error) logger.warn('[optimizer-events] read failed', { site_hash: siteHash, type, error: error.message });
+    else if (error) logger.warn('[optimizer-events] read failed', { ...siteRefForLog(siteHash), type, error: error.message });
   } else {
     rows = (memoryEvents.get(siteHash) || [])
       .filter((e) => e.type === type)

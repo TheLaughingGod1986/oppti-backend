@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { getQuotaStatus } = require('../services/quota');
 const { buildEntitlementState } = require('../services/entitlementState');
 const { getUsageLogs } = require('../services/usage');
@@ -110,7 +111,7 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
       image_count: images.length,
       scope: parsed.data.scope || 'full_site',
       payload_shape: Array.isArray(parsed.data.images) && parsed.data.images.length > 0 ? 'images' : 'items',
-      request_site_hash: req.header('X-Site-Key') || req.header('X-Site-Hash') || req.body?.site_hash || req.body?.site_id || null,
+      ...siteRefForLog(req.header('X-Site-Key') || req.header('X-Site-Hash') || req.body?.site_hash || req.body?.site_id || null, req),
       request_site_url: req.header('X-Site-URL') || req.body?.site_url || null,
       sample_items: summarizeSyncItemsForLog(images)
     });
@@ -123,7 +124,7 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
       logger.warn('[dashboard] image_state_sync_site_resolution_failed', {
         request_id: req.id || null,
         error: resolved.error || 'SITE_NOT_FOUND',
-        request_site_hash: req.header('X-Site-Key') || req.header('X-Site-Hash') || req.body?.site_hash || req.body?.site_id || null,
+        ...siteRefForLog(req.header('X-Site-Key') || req.header('X-Site-Hash') || req.body?.site_hash || req.body?.site_id || null, req),
         request_site_url: req.header('X-Site-URL') || req.body?.site_url || null
       });
       return res.status(resolved.error === 'INVALID_SITE_IDENTITY' ? 400 : 404).json({
@@ -138,7 +139,7 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
     logger.info('[dashboard] image_state_sync_site_resolved', {
       request_id: req.id || null,
       site_id: resolved.site.id,
-      site_hash: resolved.site.site_hash || null,
+      ...siteRefForLog(resolved.site.site_hash || null, req),
       matched_by: resolved.matchedBy || null,
       created: Boolean(resolved.created)
     });
@@ -155,7 +156,7 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
     logger.info('[dashboard] image_state_sync_completed', {
       request_id: req.id || null,
       site_id: resolved.site.id,
-      site_hash: resolved.site.site_hash || null,
+      ...siteRefForLog(resolved.site.site_hash || null, req),
       changed_count: result.count,
       inserted: Number(result.inserted || 0),
       updated: Number(result.updated || 0),

@@ -1,4 +1,5 @@
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { getQuotaStatus } = require('./quota');
 const { buildEntitlementState } = require('./entitlementState');
@@ -598,7 +599,7 @@ async function buildDashboardStateTruth({
     job_source: response.resolution.job_source,
     site_linked: response.site.linked,
     site_id: response.site.site_id,
-    site_hash: response.site.site_hash
+    ...siteRefForLog(response.site.site_hash, req)
   });
 
   return response;

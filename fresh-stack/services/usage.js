@@ -1,6 +1,7 @@
 const { computePeriodStart } = require('./quota');
 const { trackGenerationMilestone, trackCreditsExhausted } = require('../../src/services/loops');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { isInternalTelemetryHost } = require('../lib/siteIdentity');
 const { pluginIdFromFeatureType } = require('../../src/services/pluginIdentity');
@@ -131,7 +132,7 @@ async function recordUsage(supabase, {
     has_license_key: Boolean(licenseKey),
     license_id: validatedLicenseId ? `${validatedLicenseId.substring(0, 8)}...` : 'null (invalid or missing)',
     user_id: validatedUserId ? `${validatedUserId.substring(0, 8)}...` : `null (original: ${userId || 'missing'}, valid UUID: ${userId ? isValidUUID(userId) : false})`,
-    site_hash: siteHash,
+    ...siteRefForLog(siteHash),
     credits_used: creditsUsed 
   });
   
@@ -177,7 +178,7 @@ async function recordUsage(supabase, {
     logger.error('[usage] usage_log_write', {
       table: 'usage_logs',
       success: false,
-      site_hash: payload.site_hash || null,
+      ...siteRefForLog(payload.site_hash || null),
       endpoint: payload.endpoint,
       status: payload.status,
       schema_fallback_used: schemaFallbackUsed,
@@ -202,14 +203,14 @@ async function recordUsage(supabase, {
       table: 'usage_logs',
       success: true,
       inserted_id: data?.[0]?.id || null,
-      site_hash: payload.site_hash || null,
+      ...siteRefForLog(payload.site_hash || null),
       endpoint: payload.endpoint,
       status: payload.status
     });
     logger.info('[usage] Usage log inserted successfully', {
       operation: 'usage_logs_insert',
       inserted_id: data?.[0]?.id || null,
-      site_hash: payload.site_hash,
+      ...siteRefForLog(payload.site_hash),
       endpoint: payload.endpoint,
       status: payload.status,
       schema_fallback_used: schemaFallbackUsed,

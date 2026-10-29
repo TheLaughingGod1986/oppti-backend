@@ -38,28 +38,17 @@ function safeLogPath(raw) {
   return path.replace(/(.)\/+$/, '$1');
 }
 
-// A stored site_hash may be logged, but the raw site key a caller sends
-// (X-Site-Key / X-Site-Hash) is a credential. Many sites use their stored
-// site_hash as that key, so the stored value is logged only when it differs
-// from every raw key in the request. Otherwise callers log a has_site_key flag.
-function storedSiteHashForLog(storedHash, rawKeys = []) {
-  if (typeof storedHash !== 'string' || !storedHash.trim()) return null;
-  const stored = storedHash.trim().toLowerCase();
-  const sent = rawKeys
-    .filter((value) => typeof value === 'string' && value.trim())
-    .map((value) => value.trim().toLowerCase());
-  return sent.includes(stored) ? null : storedHash;
-}
-
-// Raw site key values a request can carry (headers and body), for
-// storedSiteHashForLog.
+// Raw site key values a request can carry (headers and body). auth accepts
+// each of them as site identity.
 function rawSiteKeysFromRequest(req) {
   const body = req?.body || {};
   const header = (name) => (typeof req?.header === 'function' ? req.header(name) : null);
   return [
     header('X-Site-Key'), header('X-Site-Hash'), header('X-Site-Id'), header('X-Site-ID'), header('X-Trial-Site-Hash'),
-    body.site_key, body.siteKey, body.site_hash, body.siteHash, body.site_id, body.siteId
+    header('X-Install-Hash'), header('X-Install-UUID'), header('X-Site-Fingerprint'),
+    body.site_key, body.siteKey, body.site_hash, body.siteHash, body.site_id, body.siteId,
+    body.installId, body.install_id
   ].filter(Boolean);
 }
 
-module.exports = { safeLogPath, looksLikeKey, FIXED_PUBLIC_PATHS, storedSiteHashForLog, rawSiteKeysFromRequest };
+module.exports = { safeLogPath, looksLikeKey, FIXED_PUBLIC_PATHS, rawSiteKeysFromRequest };
