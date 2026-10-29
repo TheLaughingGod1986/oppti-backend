@@ -2,6 +2,51 @@ const express = require('express');
 const logger = require('../lib/logger');
 const { captureServerEvent } = require('../lib/posthog');
 
+// Website events may only carry these properties. Strings are short labels;
+// page_path keeps the path only (no query string or fragment). Anything else,
+// including emails, keys, URLs and nested objects, is dropped.
+const ALLOWED_EVENT_PROPERTIES = Object.freeze([
+  'page_path',
+  'section',
+  'tab',
+  'cta',
+  'button',
+  'plan',
+  'target_plan',
+  'plugin',
+  'billing_interval',
+  'step',
+  'status',
+  'error_code',
+  'variant',
+  'count',
+  'value'
+]);
+const MAX_PROPERTY_LENGTH = 120;
+
+function sanitizeEventProperties(properties = {}) {
+  const out = {};
+  for (const key of ALLOWED_EVENT_PROPERTIES) {
+    let value = properties[key];
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      if (typeof value !== 'number' || Number.isFinite(value)) out[key] = value;
+      continue;
+    }
+    if (typeof value !== 'string') continue;
+    value = value.trim();
+    if (key === 'page_path') {
+      value = value.split(/[?#]/)[0];
+      if (!value.startsWith('/') || value.startsWith('//')) continue;
+    } else if (/[@:/]/.test(value)) {
+      // Labels never contain emails, URLs or paths.
+      continue;
+    }
+    if (value.includes('@')) continue;
+    if (value) out[key] = value.slice(0, MAX_PROPERTY_LENGTH);
+  }
+  return out;
+}
+
 function createAnalyticsRouter({ capture = captureServerEvent } = {}) {
   const router = express.Router();
 
@@ -29,8 +74,8 @@ function createAnalyticsRouter({ capture = captureServerEvent } = {}) {
       event,
       distinctId: account.id,
       properties: {
-        ...(properties || {}),
-        source: req.body?.source || 'website',
+        ...sanitizeEventProperties(properties || {}),
+        source: req.body?.source === 'app' ? 'app' : 'website',
         request_id: req.id || undefined
       }
     });
@@ -64,4 +109,4 @@ function createAnalyticsRouter({ capture = captureServerEvent } = {}) {
   return router;
 }
 
-module.exports = { createAnalyticsRouter };
+module.exports = { createAnalyticsRouter, sanitizeEventProperties, ALLOWED_EVENT_PROPERTIES };
