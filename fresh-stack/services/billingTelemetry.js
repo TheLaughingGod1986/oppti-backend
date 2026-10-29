@@ -6,6 +6,7 @@
 // Stripe errors can echo customer emails: mask them in every billing log line.
 const logger = require('../lib/logger').withEmailRedaction();
 const { captureServerEvent, identifyServerUser, aliasServerUser } = require('../lib/posthog');
+const { installIdFromSiteKey, siteHashForAnalytics } = require('../lib/installId');
 
 const TELEMETRY_VERSION = '1';
 const PAYMENT_PROVIDER = 'stripe';
@@ -171,6 +172,27 @@ function buildAnalyticsAttribution(attribution = {}) {
   };
 }
 
+// The raw site key behind a billing event: the stored site_hash of the
+// resolved site, else the site_hash carried in the event. Metadata or client
+// site_install_id values are never used: they may already be hashed.
+function rawSiteKeyFor({ site = null, eventProperties = {} } = {}) {
+  const value = site?.site_hash || eventProperties.site_hash || null;
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+// A distinct id must never be a raw site key, stored site_hash or licence key.
+// A site-key distinct id becomes the hashed install id; a licence key is
+// replaced by the account id when there is one, else dropped.
+function safeDistinctId(distinctId, { site = null, eventProperties = {}, account = null } = {}) {
+  if (!distinctId) return distinctId;
+  const value = String(distinctId);
+  const siteKeys = [site?.site_hash, eventProperties.site_hash].filter(Boolean).map(String);
+  if (siteKeys.includes(value)) return installIdFromSiteKey(value);
+  const licenceKeys = [eventProperties.license_key, account?.license_key, site?.license_key].filter(Boolean).map(String);
+  if (licenceKeys.includes(value)) return account?.id || eventProperties.account_id || null;
+  return distinctId;
+}
+
 function buildCanonicalProperties({
   eventProperties = {},
   metadata = {},
@@ -207,12 +229,8 @@ function buildCanonicalProperties({
     ...resolveAttributionFromMetadata(eventProperties)
   };
 
-  const siteInstallId = eventProperties.site_install_id
-    || metadata.site_install_id
-    || metadata.siteInstallId
-    || site?.site_hash
-    || eventProperties.site_hash
-    || null;
+  const rawSiteKey = rawSiteKeyFor({ site, eventProperties });
+  const siteInstallId = installIdFromSiteKey(rawSiteKey);
 
   const properties = {
     customer_id: eventProperties.stripe_customer_id || null,
@@ -242,7 +260,7 @@ function buildCanonicalProperties({
     account_id: eventProperties.account_id || account?.id || null,
     user_id: eventProperties.user_id || account?.id || null,
     site_id: eventProperties.site_id || site?.id || null,
-    site_hash: eventProperties.site_hash || site?.site_hash || null,
+    site_hash: siteHashForAnalytics(rawSiteKey),
     license_key_present: Boolean(eventProperties.license_key_present || eventProperties.license_key),
     purchase_type: eventProperties.purchase_type || null,
     billing_reason: eventProperties.billing_reason || null,
@@ -299,13 +317,7 @@ function buildLegacyPaymentSucceededProperties({
       || metadata.billingInterval
     ),
     account_id: scalar(eventProperties.account_id || account?.id),
-    site_install_id: scalar(
-      eventProperties.site_install_id
-      || metadata.site_install_id
-      || metadata.siteInstallId
-      || site?.site_hash
-      || eventProperties.site_hash
-    ),
+    site_install_id: installIdFromSiteKey(rawSiteKeyFor({ site, eventProperties })),
     checkout_session_id: scalar(eventProperties.checkout_session_id),
     is_test: typeof eventProperties.is_test === 'boolean' ? eventProperties.is_test : livemode === false,
     livemode
@@ -423,9 +435,9 @@ function resolveCanonicalEvents({
   return [];
 }
 
-async function emitIdentityLinks({ distinctId, eventProperties = {}, account = null }) {
+async function emitIdentityLinks({ distinctId, eventProperties = {}, account = null, site = null }) {
   const accountId = eventProperties.account_id || account?.id || null;
-  const siteInstallId = eventProperties.site_install_id || eventProperties.site_hash || null;
+  const siteInstallId = installIdFromSiteKey(rawSiteKeyFor({ site, eventProperties }));
 
   if (accountId && siteInstallId && accountId !== siteInstallId) {
     await aliasServerUser({
@@ -459,6 +471,7 @@ async function emitCanonicalBillingEvents({
   subscriptionStatus = null,
   includeLegacyPaymentSucceeded = false
 }) {
+  distinctId = safeDistinctId(distinctId, { site, eventProperties, account });
   if (!distinctId || !stripeEventId) {
     return { emitted: [], skipped: true };
   }
@@ -527,7 +540,7 @@ async function emitCanonicalBillingEvents({
     });
   }
 
-  await emitIdentityLinks({ distinctId, eventProperties, account });
+  await emitIdentityLinks({ distinctId, eventProperties, account, site });
 
   return { emitted, skipped: false };
 }

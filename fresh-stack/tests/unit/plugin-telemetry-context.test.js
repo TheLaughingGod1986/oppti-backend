@@ -6,9 +6,12 @@ test.each([undefined, 'no', 'true', ''])('no explicit opt-in %s means no capture
 test.each(['https://private.example/page', 'person@example.com', 'short', undefined])('rejects non-install identity %s', install => expect(pluginTelemetryContext(request({ 'X-Telemetry-Install-ID': install }), args)).toBeNull());
 test('standardizes attribution without exposing account identifiers or credentials', () => {
   const context = pluginTelemetryContext(request({}), args);
-  expect(context).toMatchObject({ product: 'alt_text', telemetry_consent: true, site_install_id: headers['X-Telemetry-Install-ID'], operation_id: 'operation-a', environment: 'production', is_test: false });
+  expect(context).toMatchObject({ product: 'alt_text', telemetry_consent: true, site_install_id: 'a4777e01c694d5c542c57dec46af1cc40850164d1aff787685f679f233ca8dc0', operation_id: 'operation-a', environment: 'production', is_test: false });
   expect(context.account_id).toMatch(/^acct_[a-f0-9]{32}$/);
   expect(JSON.stringify(context)).not.toContain('account-uuid');
+  // The raw X-Telemetry-Install-ID (the plugin's site key) never leaves; only sha256('oppti-install-v1:' + raw).
+  expect(JSON.stringify(context)).not.toContain(headers['X-Telemetry-Install-ID']);
+  expect(context.journey_id).toBe(context.site_install_id);
 });
 test('missing environment cannot silently become production', () => expect(pluginTelemetryContext(request({ 'X-Environment': undefined }), args)).toMatchObject({ environment: 'unknown', is_test: true }));
 test('QA production request remains marked QA', () => expect(pluginTelemetryContext(request({ 'X-Telemetry-Test': 'yes' }), args).is_test).toBe(true));

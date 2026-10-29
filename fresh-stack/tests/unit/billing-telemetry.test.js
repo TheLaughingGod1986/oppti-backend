@@ -14,6 +14,7 @@ const {
   LEGACY_PAYMENT_SUCCEEDED_KEYS,
   classifyReferrerHost
 } = require('../../services/billingTelemetry');
+const { installIdFromSiteKey } = require('../../lib/installId');
 const { identifyServerUser, aliasServerUser, captureServerEvent } = require('../../lib/posthog');
 
 describe('legacy payment_succeeded allowed list', () => {
@@ -53,7 +54,8 @@ describe('legacy payment_succeeded allowed list', () => {
         purchase_type: 'credit_top_up',
         payment_mode: 'payment'
       },
-      metadata: { plugin_id: 'alt_text', ...pii }
+      metadata: { plugin_id: 'alt_text', ...pii },
+      site: { id: 'site_9', site_hash: 'qa-raw-site-key-legacy-9' }
     });
 
     const call = captureServerEvent.mock.calls.find(([args]) => args.event === 'payment_succeeded');
@@ -67,7 +69,8 @@ describe('legacy payment_succeeded allowed list', () => {
       plugin: 'alt_text',
       billing_interval: 'one_time',
       account_id: 'acct_9',
-      site_install_id: 'install_abcdef1234567890',
+      // From the stored site key, never the client-sent site_install_id.
+      site_install_id: installIdFromSiteKey('qa-raw-site-key-legacy-9'),
       checkout_session_id: 'cs_test_9',
       is_test: true,
       livemode: false,
@@ -108,14 +111,17 @@ describe('billingTelemetry identity links', () => {
         stripe_customer_id: 'cus_1',
         plan: 'pro'
       },
-      account: { id: 'acct_1', email: 'owner@customer-brand.co.uk', license_key: 'lic_secret_1', plan: 'pro' }
+      account: { id: 'acct_1', email: 'owner@customer-brand.co.uk', license_key: 'lic_secret_1', plan: 'pro' },
+      site: { id: 'site_1', site_hash: 'qa-raw-site-key-links-1' }
     });
 
-    expect(aliasServerUser).toHaveBeenCalledWith({ distinctId: 'acct_1', alias: 'install_abcdef1234567890' });
+    const installId = installIdFromSiteKey('qa-raw-site-key-links-1');
+    expect(aliasServerUser).toHaveBeenCalledWith({ distinctId: 'acct_1', alias: installId });
     expect(identifyServerUser).toHaveBeenCalledTimes(1);
     const [args] = identifyServerUser.mock.calls[0];
     expect(args.distinctId).toBe('acct_1');
-    expect(args.properties).toEqual(expect.objectContaining({ site_install_id: 'install_abcdef1234567890', plan: 'pro' }));
+    expect(args.properties).toEqual(expect.objectContaining({ site_install_id: installId, plan: 'pro' }));
+    expect(JSON.stringify([aliasServerUser.mock.calls, identifyServerUser.mock.calls])).not.toMatch(/qa-raw-site-key-links-1|install_abcdef1234567890/);
     expect(args.properties).not.toHaveProperty('email');
     expect(args.properties).not.toHaveProperty('license_key');
     expect(JSON.stringify(args)).not.toMatch(/customer-brand|lic_secret_1/);
