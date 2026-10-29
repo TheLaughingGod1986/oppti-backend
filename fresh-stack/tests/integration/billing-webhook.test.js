@@ -371,6 +371,17 @@ async function sendWebhook(app, eventId = 'evt_test') {
 }
 
 describe('POST /billing/webhook', () => {
+  // Guard for every webhook test: PostHog never receives an email or a raw licence key.
+  afterEach(() => {
+    const { captureServerEvent: capture, identifyServerUser: identify } = require('../../lib/posthog');
+    for (const [args] of [...capture.mock.calls, ...identify.mock.calls]) {
+      const props = args.properties || {};
+      for (const key of ['email', 'license_key']) {
+        expect(props).not.toHaveProperty(key);
+      }
+    }
+  });
+
   const originalStripeSecretKey = process.env.STRIPE_SECRET_KEY;
 
   beforeEach(() => {
@@ -450,38 +461,14 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'account_123',
       properties: expect.objectContaining({
-        source: 'stripe_webhook',
-        stripe_event_id: 'evt_checkout_paid',
-        stripe_event_type: 'checkout.session.completed',
         amount: 19.99,
-        amount_minor: 1999,
-        revenue: 19.99,
         currency: 'gbp',
         plan: 'credits',
         price_id: 'price_credits',
-        product_id: 'prod_credits',
-        stripe_customer_id: 'cus_123',
-        stripe_subscription_id: null,
         checkout_session_id: 'cs_test_123',
-        invoice_id: null,
-        payment_link_id: 'plink_123',
-        site_id: null,
-        site_hash: null,
-        email: 'buyer@example.com',
         account_id: 'account_123',
-        user_id: 'account_123',
-        license_key: 'lic_123',
-        license_key_present: true,
         livemode: false,
-        payment_mode: 'payment',
-        billing_reason: null,
-        billing_period: 'one_time',
-        purchase_type: 'credit_top_up',
-        trigger_feature: null,
-        trigger_location: null,
-        source_page: null,
-        target_plan: null,
-        is_trial_conversion: false,
+        billing_interval: 'one_time',
         $insert_id: 'evt_checkout_paid'
       })
     });
@@ -563,7 +550,7 @@ describe('POST /billing/webhook', () => {
     expect(captureServerEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: 'payment_succeeded',
       distinctId: 'account_ci',
-      properties: expect.objectContaining({ account_id: 'account_ci', license_key: 'lic_ci' })
+      properties: expect.objectContaining({ account_id: 'account_ci' })
     }));
     expect(supabase.updates).toEqual([
       { table: 'licenses', column: 'id', value: 'account_ci', payload: { stripe_customer_id: 'cus_ci' } }
@@ -619,7 +606,7 @@ describe('POST /billing/webhook', () => {
     expect(captureServerEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: 'payment_succeeded',
       distinctId: 'account_mixed',
-      properties: expect.objectContaining({ account_id: 'account_mixed', license_key: 'lic_mixed' })
+      properties: expect.objectContaining({ account_id: 'account_mixed' })
     }));
   });
 
@@ -955,17 +942,8 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'lic_meta',
       properties: expect.objectContaining({
-        stripe_event_id: 'evt_checkout_metadata',
-        license_key: 'lic_meta',
-        license_key_present: true,
-        site_id: 'site_internal_123',
-        site_hash: 'site_hash_123',
-        stripe_customer_id: 'cus_meta',
-        account_id: null,
-        user_id: null,
         plan: 'credits',
-        purchase_type: 'credit_top_up',
-        billing_period: 'one_time'
+        billing_interval: 'one_time'
       })
     });
     expect(identifyServerUser).not.toHaveBeenCalled();
@@ -1009,11 +987,6 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'site_internal_only',
       properties: expect.objectContaining({
-        site_id: 'site_internal_only',
-        site_hash: 'site_hash_only',
-        stripe_customer_id: 'cus_site_only',
-        license_key: null,
-        account_id: null
       })
     });
   });
@@ -1060,9 +1033,6 @@ describe('POST /billing/webhook', () => {
       distinctId: 'account_meta',
       properties: expect.objectContaining({
         account_id: 'account_meta',
-        user_id: 'account_meta',
-        license_key: 'lic_meta_account',
-        identity_path: 'account',
         plan: 'agency'
       })
     });
@@ -1124,20 +1094,9 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'account_checkout_attr',
       properties: expect.objectContaining({
-        stripe_event_id: 'evt_checkout_attribution',
-        stripe_event_type: 'checkout.session.completed',
         account_id: 'account_checkout_attr',
-        user_id: 'account_checkout_attr',
-        license_key: 'lic_checkout_attr',
-        site_id: 'site_checkout_attr',
-        site_hash: 'site_hash_checkout_attr',
-        trigger_feature: 'bulk_generate',
-        trigger_location: 'dashboard_upgrade_banner',
-        source_page: '/wp-admin/upload.php',
-        target_plan: 'credits',
         plan: 'credits',
-        purchase_type: 'credit_top_up',
-        billing_period: 'one_time'
+        billing_interval: 'one_time'
       })
     });
   });
@@ -1172,11 +1131,6 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'user_internal_123',
       properties: expect.objectContaining({
-        account_id: null,
-        user_id: 'user_internal_123',
-        license_key: 'lic_user_priority',
-        stripe_customer_id: 'cus_user_id_priority',
-        identity_path: 'account'
       })
     });
   });
@@ -1248,37 +1202,13 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'account_456',
       properties: expect.objectContaining({
-        source: 'stripe_webhook',
-        stripe_event_id: 'evt_invoice_paid',
-        stripe_event_type: 'invoice.payment_succeeded',
         amount: 14.99,
-        amount_minor: 1499,
-        revenue: 14.99,
         currency: 'usd',
         plan: 'pro',
         price_id: 'price_pro',
-        product_id: 'prod_pro',
-        stripe_customer_id: 'cus_456',
-        stripe_subscription_id: 'sub_456',
-        invoice_id: 'in_123',
-        checkout_session_id: null,
-        payment_link_id: null,
-        site_id: null,
-        site_hash: null,
-        email: 'subscriber@example.com',
         account_id: 'account_456',
-        user_id: 'account_456',
-        license_key: 'lic_456',
-        license_key_present: true,
-        billing_reason: 'subscription_create',
-        billing_period: 'monthly',
-        purchase_type: 'new_purchase',
-        trigger_feature: null,
-        trigger_location: null,
-        source_page: null,
-        target_plan: null,
+        billing_interval: 'monthly',
         livemode: true,
-        payment_mode: null,
         $insert_id: 'evt_invoice_paid'
       })
     });
@@ -1366,17 +1296,10 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'account_invoice_paid_alias',
       properties: expect.objectContaining({
-        stripe_event_id: 'evt_invoice_paid_alias',
-        stripe_event_type: 'invoice.paid',
         amount: 12.99,
-        amount_minor: 1299,
         currency: 'gbp',
         plan: 'pro',
         price_id: 'price_pro',
-        stripe_customer_id: 'cus_invoice_paid_alias',
-        stripe_subscription_id: 'sub_invoice_paid_alias',
-        invoice_id: 'in_paid_alias',
-        purchase_type: 'renewal',
         $insert_id: 'evt_invoice_paid_alias'
       })
     });
@@ -1465,25 +1388,9 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'account_attr',
       properties: expect.objectContaining({
-        stripe_event_id: 'evt_invoice_attribution',
-        stripe_event_type: 'invoice.payment_succeeded',
         account_id: 'account_attr',
-        user_id: 'user_attr',
-        license_key: 'lic_attr',
-        site_id: 'site_attr',
-        site_hash: 'site_hash_attr',
         plan: 'agency',
-        billing_period: 'monthly',
-        purchase_type: 'new_purchase',
-        trigger_feature: 'site_scan',
-        trigger_location: 'pricing_table',
-        source_page: '/pricing',
-        target_plan: 'agency',
-        source: 'stripe_webhook',
-        stripe_customer_id: 'cus_attr',
-        stripe_subscription_id: 'sub_attr',
-        invoice_id: 'in_attr',
-        checkout_session_id: null,
+        billing_interval: 'monthly',
         $insert_id: 'evt_invoice_attribution'
       })
     });
@@ -2132,14 +2039,9 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'account_fail',
       properties: expect.objectContaining({
-        stripe_event_id: 'evt_checkout_enrichment_fail',
-        price_id: null,
-        product_id: null,
         plan: 'credits',
         amount: 9.99,
-        revenue: 9.99,
-        purchase_type: 'credit_top_up',
-        billing_period: 'one_time'
+        billing_interval: 'one_time'
       })
     });
   });
@@ -2183,12 +2085,8 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'cus_mode_mismatch',
       properties: expect.objectContaining({
-        stripe_event_id: 'evt_checkout_mode_mismatch',
-        price_id: null,
-        product_id: null,
         plan: 'credits',
-        billing_period: 'one_time',
-        purchase_type: 'credit_top_up'
+        billing_interval: 'one_time'
       })
     });
   });
@@ -2231,12 +2129,9 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'cus_plan_metadata',
       properties: expect.objectContaining({
-        stripe_event_id: 'evt_checkout_plan_metadata',
         price_id: 'price_pro',
-        product_id: 'prod_pro',
         plan: 'credits',
-        purchase_type: 'credit_top_up',
-        billing_period: 'one_time'
+        billing_interval: 'one_time'
       })
     });
   });
@@ -2319,7 +2214,6 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'account_fail_open',
       properties: expect.objectContaining({
-        stripe_event_id: 'evt_fail_open',
         $insert_id: 'evt_fail_open'
       })
     });
@@ -2369,11 +2263,6 @@ describe('POST /billing/webhook', () => {
       event: 'payment_succeeded',
       distinctId: 'cs_email_fallback',
       properties: expect.objectContaining({
-        stripe_event_id: 'evt_checkout_email_fallback',
-        stripe_customer_id: null,
-        stripe_subscription_id: null,
-        email: 'fallback@example.com',
-        identity_path: 'session',
         plan: 'credits'
       })
     });

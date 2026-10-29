@@ -201,6 +201,64 @@ function buildCanonicalProperties({
   );
 }
 
+// Legacy payment_succeeded carries an explicit allowed list only. Never email,
+// licence key, names, addresses, URLs or any other field from the payment.
+const LEGACY_PAYMENT_SUCCEEDED_KEYS = Object.freeze([
+  'amount',
+  'currency',
+  'plan',
+  'price_id',
+  'plugin',
+  'billing_interval',
+  'account_id',
+  'site_install_id',
+  'checkout_session_id',
+  'is_test',
+  'livemode'
+]);
+
+function buildLegacyPaymentSucceededProperties({
+  eventProperties = {},
+  metadata = {},
+  site = null,
+  account = null,
+  stripeEventId
+}) {
+  const livemode = typeof eventProperties.livemode === 'boolean' ? eventProperties.livemode : null;
+  const scalar = (value) => (typeof value === 'string' || typeof value === 'number' ? value : null);
+  const properties = {
+    amount: typeof eventProperties.amount === 'number' ? eventProperties.amount : null,
+    currency: scalar(eventProperties.currency),
+    plan: scalar(eventProperties.plan),
+    price_id: scalar(eventProperties.price_id),
+    plugin: scalar(eventProperties.plugin || eventProperties.plugin_id || metadata.plugin || metadata.plugin_id || metadata.pluginId),
+    billing_interval: normalizeBillingInterval(
+      eventProperties.billing_interval
+      || eventProperties.billing_period
+      || metadata.billing_interval
+      || metadata.billingInterval
+    ),
+    account_id: scalar(eventProperties.account_id || account?.id),
+    site_install_id: scalar(
+      eventProperties.site_install_id
+      || metadata.site_install_id
+      || metadata.siteInstallId
+      || site?.site_hash
+      || eventProperties.site_hash
+    ),
+    checkout_session_id: scalar(eventProperties.checkout_session_id),
+    is_test: typeof eventProperties.is_test === 'boolean' ? eventProperties.is_test : livemode === false,
+    livemode
+  };
+  const out = {};
+  for (const key of LEGACY_PAYMENT_SUCCEEDED_KEYS) {
+    if (properties[key] !== null && properties[key] !== undefined) out[key] = properties[key];
+  }
+  // PostHog's dedupe key (not a property): the Stripe event id, as before.
+  if (stripeEventId) out.$insert_id = stripeEventId;
+  return out;
+}
+
 function resolveCanonicalEvents({
   stripeEventType,
   eventProperties = {},
@@ -399,13 +457,7 @@ async function emitCanonicalBillingEvents({
     const legacyResult = await captureServerEvent({
       event: 'payment_succeeded',
       distinctId,
-      properties: {
-        ...eventProperties,
-        stripe_event_id: stripeEventId,
-        $insert_id: stripeEventId,
-        telemetry_version: TELEMETRY_VERSION,
-        event_source: EVENT_SOURCE
-      }
+      properties: buildLegacyPaymentSucceededProperties({ eventProperties, metadata, site, account, stripeEventId })
     });
     emitted.push({
       event: 'payment_succeeded',
@@ -452,5 +504,7 @@ module.exports = {
   resolveCanonicalEvents,
   emitCanonicalBillingEvents,
   emitIdentityLinks,
+  buildLegacyPaymentSucceededProperties,
+  LEGACY_PAYMENT_SUCCEEDED_KEYS,
   emitPaymentFailedEvent
 };

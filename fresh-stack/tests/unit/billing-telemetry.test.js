@@ -9,9 +9,89 @@ const {
   buildCanonicalProperties,
   calculateMrrDelta,
   normalizePlan,
-  emitIdentityLinks
+  emitIdentityLinks,
+  emitCanonicalBillingEvents,
+  LEGACY_PAYMENT_SUCCEEDED_KEYS
 } = require('../../services/billingTelemetry');
-const { identifyServerUser, aliasServerUser } = require('../../lib/posthog');
+const { identifyServerUser, aliasServerUser, captureServerEvent } = require('../../lib/posthog');
+
+describe('legacy payment_succeeded allowed list', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const pii = {
+    email: 'qa-person@example.invalid',
+    license_key: 'QA-FAKE-LICENSE-KEY-0001',
+    name: 'Jane Customer',
+    customer_name: 'Jane Customer',
+    address: '1 High Street',
+    referrer: 'https://shop.customer-brand.co.uk/wp-admin/admin.php?page=x',
+    landing_page: 'https://shop.customer-brand.co.uk/pricing',
+    source_page: 'https://shop.customer-brand.co.uk/wp-admin/upload.php',
+    site_url: 'https://shop.customer-brand.co.uk',
+    meta: { site_url: 'https://shop.customer-brand.co.uk' }
+  };
+
+  test('sends only the allowed keys; email, licence key, names, addresses and URLs are stripped', async () => {
+    await emitCanonicalBillingEvents({
+      stripeEventId: 'evt_pii_1',
+      stripeEventType: 'checkout.session.completed',
+      distinctId: 'acct_9',
+      includeLegacyPaymentSucceeded: true,
+      eventProperties: {
+        ...pii,
+        amount: 19.99,
+        currency: 'gbp',
+        plan: 'credits',
+        price_id: 'price_credits',
+        billing_period: 'one_time',
+        account_id: 'acct_9',
+        site_install_id: 'install_abcdef1234567890',
+        checkout_session_id: 'cs_test_9',
+        livemode: false,
+        stripe_customer_id: 'cus_9',
+        purchase_type: 'credit_top_up',
+        payment_mode: 'payment'
+      },
+      metadata: { plugin_id: 'alt_text', ...pii }
+    });
+
+    const call = captureServerEvent.mock.calls.find(([args]) => args.event === 'payment_succeeded');
+    expect(call).toBeTruthy();
+    const props = call[0].properties;
+    expect(props).toEqual({
+      amount: 19.99,
+      currency: 'gbp',
+      plan: 'credits',
+      price_id: 'price_credits',
+      plugin: 'alt_text',
+      billing_interval: 'one_time',
+      account_id: 'acct_9',
+      site_install_id: 'install_abcdef1234567890',
+      checkout_session_id: 'cs_test_9',
+      is_test: true,
+      livemode: false,
+      $insert_id: 'evt_pii_1'
+    });
+    for (const key of Object.keys(props)) {
+      expect([...LEGACY_PAYMENT_SUCCEEDED_KEYS, '$insert_id']).toContain(key);
+    }
+    expect(JSON.stringify(call[0])).not.toMatch(/example\.invalid|QA-FAKE-LICENSE-KEY|Jane|High Street|customer-brand/);
+  });
+
+  test('live payment is not test traffic', async () => {
+    await emitCanonicalBillingEvents({
+      stripeEventId: 'evt_live_1',
+      stripeEventType: 'invoice.payment_succeeded',
+      distinctId: 'acct_9',
+      includeLegacyPaymentSucceeded: true,
+      eventProperties: { amount: 14.99, currency: 'usd', plan: 'pro', livemode: true, email: pii.email, license_key: pii.license_key }
+    });
+    const [args] = captureServerEvent.mock.calls.find(([a]) => a.event === 'payment_succeeded');
+    expect(args.properties).toEqual(expect.objectContaining({ is_test: false, livemode: true }));
+    expect(args.properties).not.toHaveProperty('email');
+    expect(args.properties).not.toHaveProperty('license_key');
+  });
+});
 
 describe('billingTelemetry identity links', () => {
   beforeEach(() => jest.clearAllMocks());
