@@ -399,7 +399,6 @@ function createGenerationTelemetry({
   startedAt
 }) {
   let terminalEmitted = false;
-  let siteIdentityRef = null;
   let requestTelemetry = null;
   let imageMeta = null;
 
@@ -444,7 +443,7 @@ function createGenerationTelemetry({
         environment: requestTelemetry?.environment || process.env.NODE_ENV || null,
         request_source: requestTelemetry?.request_source || 'wordpress_plugin',
         is_terminal: isTerminal,
-        site_hash: siteIdentityRef?.siteHash || null,
+        // No site_hash: it can be derived from the site URL. site_install_id identifies the install.
         ...context,
         $insert_id: crypto.createHash('sha256').update([event, distinctId, generationRunId].join(':')).digest('hex')
       }
@@ -462,7 +461,6 @@ function createGenerationTelemetry({
 
   return {
     bindContext({ siteIdentity = null, telemetry = null, imageMeta: nextImageMeta = null } = {}) {
-      if (siteIdentity) siteIdentityRef = siteIdentity;
       if (telemetry) requestTelemetry = telemetry;
       if (nextImageMeta) imageMeta = nextImageMeta;
     },
