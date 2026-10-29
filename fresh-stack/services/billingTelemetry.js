@@ -109,6 +109,63 @@ function resolveAttributionFromMetadata(metadata = {}) {
   };
 }
 
+// Referrers become a host label only, and only for known search, social and
+// Oppti hosts. Any other host (including the customer's own site) is 'other'.
+// Full referrer, landing page and source page URLs never reach PostHog.
+const REFERRER_HOST_ALLOWLIST = Object.freeze([
+  'bing.com',
+  'duckduckgo.com',
+  'wordpress.org',
+  'oppti.dev',
+  'x.com',
+  't.co',
+  'facebook.com',
+  'linkedin.com',
+  'youtube.com',
+  'reddit.com'
+]);
+// google.* and yahoo.* on any country domain (google.com, google.co.uk, uk.yahoo.com).
+const REFERRER_BRAND_PATTERNS = Object.freeze([
+  /(^|\.)google\.(com|[a-z]{2,3})(\.[a-z]{2})?$/,
+  /(^|\.)yahoo\.(com|[a-z]{2,3})(\.[a-z]{2})?$/
+]);
+const MAX_UTM_LENGTH = 100;
+
+function classifyReferrerHost(referrer) {
+  if (typeof referrer !== 'string' || !referrer.trim()) return null;
+  let host;
+  try {
+    host = new URL(referrer.trim()).hostname.toLowerCase();
+  } catch (_error) {
+    return 'other';
+  }
+  host = host.replace(/^www\./, '').replace(/\.$/, '');
+  if (!host) return 'other';
+  const listed = REFERRER_HOST_ALLOWLIST.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+  if (listed || REFERRER_BRAND_PATTERNS.some((pattern) => pattern.test(host))) {
+    return host;
+  }
+  return 'other';
+}
+
+function capUtm(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, MAX_UTM_LENGTH) : null;
+}
+
+// Attribution as sent to PostHog: three UTM fields, a referrer host label and
+// the derived channel. No URLs, no utm_content/utm_term free text.
+function buildAnalyticsAttribution(attribution = {}) {
+  return {
+    utm_source: capUtm(attribution.utm_source),
+    utm_medium: capUtm(attribution.utm_medium),
+    utm_campaign: capUtm(attribution.utm_campaign),
+    referrer_host: classifyReferrerHost(attribution.referrer),
+    acquisition_channel: capUtm(inferAcquisitionChannel(attribution))
+  };
+}
+
 function buildCanonicalProperties({
   eventProperties = {},
   metadata = {},
@@ -187,11 +244,9 @@ function buildCanonicalProperties({
     stripe_event_id: stripeEventId,
     stripe_event_type: eventProperties.stripe_event_type || null,
     $insert_id: stripeEventId,
-    ...attribution,
-    acquisition_channel: inferAcquisitionChannel(attribution),
+    ...buildAnalyticsAttribution(attribution),
     trigger_feature: eventProperties.trigger_feature || null,
     trigger_location: eventProperties.trigger_location || null,
-    source_page: eventProperties.source_page || attribution.landing_page || null,
     target_plan: eventProperties.target_plan || null,
     identity_path: eventProperties.identity_path || null
   };
@@ -505,6 +560,8 @@ module.exports = {
   emitCanonicalBillingEvents,
   emitIdentityLinks,
   buildLegacyPaymentSucceededProperties,
+  buildAnalyticsAttribution,
+  classifyReferrerHost,
   LEGACY_PAYMENT_SUCCEEDED_KEYS,
   emitPaymentFailedEvent
 };

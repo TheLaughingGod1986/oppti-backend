@@ -11,7 +11,8 @@ const {
   normalizePlan,
   emitIdentityLinks,
   emitCanonicalBillingEvents,
-  LEGACY_PAYMENT_SUCCEEDED_KEYS
+  LEGACY_PAYMENT_SUCCEEDED_KEYS,
+  classifyReferrerHost
 } = require('../../services/billingTelemetry');
 const { identifyServerUser, aliasServerUser, captureServerEvent } = require('../../lib/posthog');
 
@@ -219,5 +220,73 @@ describe('billingTelemetry', () => {
     });
 
     expect(delta).toBeLessThan(0);
+  });
+});
+
+describe('billing attribution sent to PostHog', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test.each([
+    ['https://www.google.com/search?q=alt+text', 'google.com'],
+    ['https://www.google.co.uk/', 'google.co.uk'],
+    ['https://uk.search.yahoo.com/search?p=x', 'uk.search.yahoo.com'],
+    ['https://www.bing.com/search?q=x', 'bing.com'],
+    ['https://duckduckgo.com/', 'duckduckgo.com'],
+    ['https://wordpress.org/plugins/x/', 'wordpress.org'],
+    ['https://app.oppti.dev/pricing?ref=1', 'app.oppti.dev'],
+    ['https://t.co/abc', 't.co'],
+    ['https://x.com/someone/status/1', 'x.com'],
+    ['https://l.facebook.com/l.php?u=x', 'l.facebook.com'],
+    ['https://www.linkedin.com/feed/', 'linkedin.com'],
+    ['https://m.youtube.com/watch?v=1', 'm.youtube.com'],
+    ['https://old.reddit.com/r/wordpress', 'old.reddit.com'],
+    ['https://shop.customer-brand.co.uk/wp-admin/admin.php?page=bbai', 'other'],
+    ['https://google.com.attacker.test/', 'other'],
+    ['https://notgoogle.com/', 'other'],
+    ['https://oppti.dev.evil.test/', 'other'],
+    ['not a url', 'other'],
+    ['', null],
+    [null, null]
+  ])('referrer %s -> %s', (referrer, expected) => {
+    expect(classifyReferrerHost(referrer)).toBe(expected);
+  });
+
+  test('canonical billing events carry UTMs and referrer_host only: no referrer, landing or source page URLs', async () => {
+    await emitCanonicalBillingEvents({
+      stripeEventId: 'evt_attr_1',
+      stripeEventType: 'checkout.session.completed',
+      distinctId: 'acct_attr',
+      includeLegacyPaymentSucceeded: true,
+      eventProperties: {
+        plan: 'pro',
+        purchase_type: 'new_purchase',
+        payment_mode: 'subscription',
+        amount: 14.99,
+        account_id: 'acct_attr',
+        source_page: 'https://shop.customer-brand.co.uk/wp-admin/upload.php?page=bbai',
+        referrer: 'https://shop.customer-brand.co.uk/wp-admin/admin.php?page=bbai-billing',
+        landing_page: 'https://shop.customer-brand.co.uk/pricing?x=1',
+        utm_source: 'newsletter',
+        utm_medium: 'email',
+        utm_campaign: 'october',
+        utm_content: 'Hi Jane, your site shop.customer-brand.co.uk',
+        utm_term: 'jane@customer-brand.co.uk'
+      }
+    });
+    expect(captureServerEvent).toHaveBeenCalled();
+    for (const [args] of captureServerEvent.mock.calls) {
+      const props = args.properties;
+      for (const key of ['referrer', 'landing_page', 'source_page', 'utm_content', 'utm_term']) {
+        expect(props).not.toHaveProperty(key);
+      }
+      expect(JSON.stringify(props)).not.toMatch(/customer-brand|https?:/);
+    }
+    const canonical = captureServerEvent.mock.calls.find(([a]) => a.event !== 'payment_succeeded')[0].properties;
+    expect(canonical).toEqual(expect.objectContaining({
+      utm_source: 'newsletter',
+      utm_medium: 'email',
+      utm_campaign: 'october',
+      referrer_host: 'other'
+    }));
   });
 });

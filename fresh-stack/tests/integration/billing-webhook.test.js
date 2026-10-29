@@ -376,7 +376,7 @@ describe('POST /billing/webhook', () => {
     const { captureServerEvent: capture, identifyServerUser: identify } = require('../../lib/posthog');
     for (const [args] of [...capture.mock.calls, ...identify.mock.calls]) {
       const props = args.properties || {};
-      for (const key of ['email', 'license_key']) {
+      for (const key of ['email', 'license_key', 'referrer', 'landing_page', 'source_page']) {
         expect(props).not.toHaveProperty(key);
       }
     }
