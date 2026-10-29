@@ -1,6 +1,6 @@
 const express = require('express');
 const logger = require('../lib/logger');
-const { captureServerEvent } = require('../lib/posthog');
+const { captureServerEvent, stripSiteIdentifiers } = require('../lib/posthog');
 
 // Website events may only carry these properties. Strings are short labels;
 // page_path keeps the path only (no query string or fragment). Anything else,
@@ -95,11 +95,14 @@ function createAnalyticsRouter({ capture = captureServerEvent } = {}) {
     const result = await capture({
       event,
       distinctId: account.id,
-      properties: {
+      // Allowlist first, then the same strip every server capture uses, so
+      // the pass-through can never forward a licence key or site identifier
+      // even if a caller's capture function skips lib/posthog.
+      properties: stripSiteIdentifiers({
         ...sanitizeEventProperties(properties || {}),
         source: req.body?.source === 'app' ? 'app' : 'website',
         request_id: req.id || undefined
-      }
+      })
     });
 
     if (!result?.ok) {

@@ -49,10 +49,22 @@ function isFlatValue(value) {
   return Array.isArray(value) && value.every((item) => item === null || ['string', 'number', 'boolean'].includes(typeof item));
 }
 
+// Any spelling of a licence key: license_key, licenceKey, License-Key,
+// LICENCE KEY, x_license_key... (case-insensitive licence/license + key).
+const LICENCE_KEY_PATTERN = /licen[cs]e[\W_]*key/i;
+
+function isBlockedKey(key, blockedKeys) {
+  if (LICENCE_KEY_PATTERN.test(String(key))) return true;
+  const lower = String(key).toLowerCase();
+  return blockedKeys.some((blocked) => blocked.toLowerCase() === lower);
+}
+
+// Nested objects at any depth are dropped whole (isFlatValue), so a licence
+// key or site URL can never ride inside one; flat keys are matched by name.
 function cleanFlat(object, blockedKeys) {
   const cleaned = {};
   for (const [key, value] of Object.entries(object)) {
-    if (blockedKeys.includes(key) || value === undefined || !isFlatValue(value)) continue;
+    if (isBlockedKey(key, blockedKeys) || value === undefined || !isFlatValue(value)) continue;
     cleaned[key] = value;
   }
   return cleaned;
@@ -189,5 +201,6 @@ module.exports = {
   aliasServerUser,
   getPostHogConfig,
   stripSiteIdentifiers,
-  SITE_IDENTIFIER_KEYS
+  SITE_IDENTIFIER_KEYS,
+  LICENCE_KEY_PATTERN
 };
