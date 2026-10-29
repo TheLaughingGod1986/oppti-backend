@@ -474,7 +474,7 @@ describe('POST /billing/checkout', () => {
     expect(stripeClient.checkout.sessions.create).toHaveBeenCalledTimes(3);
     const blocked = warnSpy.mock.calls.filter(([message]) => message === '[rate-limit] blocked');
     expect(blocked).toHaveLength(1);
-    expect(blocked[0][1]).toEqual(expect.objectContaining({ limiter: 'checkout-credits', route: 'POST /billing/checkout', limit: 3 }));
+    expect(blocked[0][1]).toEqual({ limiter: 'checkout-credits', limit: 3, count: 4, window_seconds: 900 });
     expect(JSON.stringify(blocked[0])).not.toMatch(/203\.0\.113\.10|credits-limited@example\.com|lic_credits_limited|site_hash_credits_limited|account_credits_limited/);
     warnSpy.mockRestore();
   });

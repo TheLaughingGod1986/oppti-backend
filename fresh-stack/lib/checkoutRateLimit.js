@@ -23,17 +23,10 @@ function getClientIp(req) {
     || 'unknown-ip';
 }
 
-// Route template (no ids or query string) for the block log line.
-function routeLabel(req) {
-  if (!req) return null;
-  const template = req.route?.path;
-  return `${req.method || ''} ${(req.baseUrl || '') + (typeof template === 'string' ? template : (req.path || ''))}`.trim() || null;
-}
-
 // Records one hit in a bucket and reports whether it is within the limit.
-// options: { limiter, req, now } (a number is still accepted as now). When a
-// hit is over the limit, one structured line is logged with the limiter name
-// and route only: never the bucket key, IP, email, account or licence key.
+// options: { limiter, now } (a number is still accepted as now). When a hit is
+// over the limit, one structured line is logged with a fixed limiter label
+// only: never a route or path, bucket key, IP, email, account or licence key.
 function recordHit(bucketKey, limit, options = {}) {
   const opts = typeof options === 'number' ? { now: options } : (options || {});
   const now = opts.now ?? Date.now();
@@ -50,7 +43,6 @@ function recordHit(bucketKey, limit, options = {}) {
   if (!result.allowed) {
     logger.warn('[rate-limit] blocked', {
       limiter: opts.limiter || 'unnamed',
-      route: routeLabel(opts.req),
       limit,
       count: result.count,
       window_seconds: result.retryAfterSeconds
