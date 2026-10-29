@@ -81,6 +81,24 @@ function stripSiteIdentifiers(properties = {}) {
   return cleaned;
 }
 
+// Identify sets person properties, so a null or undefined value would wipe a
+// good stored value. Those keys are omitted instead.
+function omitEmptyPersonValues(properties) {
+  if (!isPlainObject(properties)) return properties;
+  const keep = (object) => Object.fromEntries(
+    Object.entries(object).filter(([, value]) => value !== null && value !== undefined)
+  );
+  const cleaned = keep(properties);
+  for (const personKey of PERSON_KEYS) {
+    if (isPlainObject(cleaned[personKey])) {
+      const person = keep(cleaned[personKey]);
+      if (Object.keys(person).length) cleaned[personKey] = person;
+      else delete cleaned[personKey];
+    }
+  }
+  return cleaned;
+}
+
 async function sendPostHogRequest({ path, payload }) {
   const { apiKey, host } = getPostHogConfig();
 
@@ -142,7 +160,7 @@ async function identifyServerUser({ distinctId, properties = {} }) {
     path: '/identify/',
     payload: {
       distinct_id: distinctId,
-      properties: stripSiteIdentifiers(properties)
+      properties: omitEmptyPersonValues(stripSiteIdentifiers(properties))
     }
   });
 }
@@ -165,6 +183,7 @@ async function aliasServerUser({ distinctId, alias }) {
 }
 
 module.exports = {
+  omitEmptyPersonValues,
   captureServerEvent,
   identifyServerUser,
   aliasServerUser,

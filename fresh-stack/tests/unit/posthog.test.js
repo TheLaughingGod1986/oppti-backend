@@ -101,5 +101,21 @@ describe('PostHog site identifier stripping', () => {
       });
       expect(bodies[0].properties).toEqual({ $set: { signup_source: 'search' } });
     });
+
+    test('identify omits null and undefined values so stored person properties are not overwritten', async () => {
+      await identifyServerUser({
+        distinctId: 'acct-1',
+        properties: {
+          plan: 'pro',
+          stripe_customer_id: null,
+          stripe_subscription_id: undefined,
+          site_install_id: null,
+          $set: { signup_source: 'search', signup_source_plugin: null },
+          $set_once: { first_plan: null }
+        }
+      });
+      expect(bodies[0].properties).toEqual({ plan: 'pro', $set: { signup_source: 'search' } });
+      expect(JSON.stringify(bodies[0])).not.toContain('null');
+    });
   });
 });
