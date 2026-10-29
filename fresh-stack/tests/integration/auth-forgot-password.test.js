@@ -342,6 +342,11 @@ describe('reset-password', () => {
     const winnerPassword = a.status === 200 ? 'racer-password-a1' : 'racer-password-b2';
     expect(await bcrypt.compare(winnerPassword, supabase.licenses[0].password_hash)).toBe(true);
     expect(supabase.licenses[0].password_reset_token).toBeNull();
+    const usedLines = logSpies.flatMap((spy) => spy.mock.calls)
+      .filter(([message]) => message === '[Auth] Reset token already used');
+    expect(usedLines).toHaveLength(1);
+    expect(usedLines[0][1]).toEqual({ userId: 'lic-1' });
+    expect(JSON.stringify(usedLines)).not.toMatch(/reset-owner|qa\.oppti\.dev|\*\*\*/);
     const resetUpdates = supabase.updates.filter((u) => 'password_hash' in u.values);
     for (const u of resetUpdates) {
       expect(u.filters).toEqual(expect.arrayContaining([['password_reset_token', hashResetToken(token)]]));

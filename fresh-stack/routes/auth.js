@@ -1509,7 +1509,8 @@ function createAuthRouter({ supabase }) {
       }
 
       if (!Array.isArray(updatedRows) || updatedRows.length === 0) {
-        resetLogger.warn('[Auth] Reset token already used', { email: user.email });
+        // No email (raw or masked): the account id is enough to correlate.
+        resetLogger.warn('[Auth] Reset token already used', { userId: user.id });
         return res.status(400).json({
           error: 'INVALID_TOKEN',
           code: 'INVALID_TOKEN',
