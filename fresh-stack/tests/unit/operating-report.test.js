@@ -96,3 +96,47 @@ test('explicit v2 plugin context distinguishes automatic transport from QA', () 
   expect(exclusion({ ...p, is_test: true })).toBe('QA');
   expect(exclusion({ ...p, telemetry_consent: false })).not.toBeNull();
 });
+
+describe('export fidelity and legacy rows', () => {
+  const alt = { plugin_slug: 'beepbeep-ai-alt-text-generator', product: 'alt_text', telemetry_schema: 'opptiai_usage_v2', telemetry_source: 'wordpress', environment: 'production', site_install_id: 'install-alt-1' };
+  const altOptions = { ...options, product: 'alt_text' };
+  const row = (id, extra = {}) => ({ uuid: `u-${id}`, event: 'alt_generated', timestamp: '2026-10-10T00:00:00Z', properties: { ...alt, operation_id: `op-${id}`, telemetry_consent: true, is_test: false, traffic_type: 'Automation', ...extra } });
+
+  test('string booleans from a HogQL export still count', () => {
+    const r = calculate([row(1, { telemetry_consent: 'true', is_test: 'false' }), row(2, { telemetry_consent: 'true', is_test: 'false' })], altOptions);
+    expect(r.successes).toEqual({ value: 2, status: 'measured' });
+  });
+
+  test("string 'true' is_test is still excluded as QA", () => {
+    expect(exclusion(row(3, { is_test: 'true' }).properties, 'alt_generated')).toBe('QA');
+  });
+
+  test("string 'false' consent is not consent", () => {
+    expect(exclusion(row(4, { telemetry_consent: 'false', traffic_type: undefined, traffic_origin: 'customer_action' }).properties, 'alt_generated')).toBe('consent coverage unknown');
+  });
+
+  test('a success row with no environment is unknown and makes the total U, not silently dropped', () => {
+    const legacy = { uuid: 'L1', event: 'alt_generated', timestamp: '2026-10-10T00:00:00Z', properties: { plugin_slug: 'beepbeep-ai-alt-text-generator', operation_id: 'legacy1', site_install_id: 'install-legacy' } };
+    expect(exclusion(legacy.properties, 'alt_generated')).toBe('environment unknown');
+    const r = calculate([row(5), legacy], altOptions);
+    expect(r.successes.status).toBe('U');
+  });
+
+  test('a non-success diagnostic row with no environment is excluded without blocking the total', () => {
+    const diagnostic = { uuid: 'D1', event: 'generation_completed', timestamp: '2026-10-10T00:00:00Z', properties: { plugin_slug: 'beepbeep-ai-alt-text-generator', operation_id: 'gen1', site_install_id: 'install-alt-1' } };
+    expect(exclusion(diagnostic.properties, 'generation_completed')).toBe('environment');
+    expect(calculate([row(6), diagnostic], altOptions).successes).toEqual({ value: 1, status: 'measured' });
+  });
+
+  test('staging rows stay excluded as environment', () => {
+    expect(exclusion(row(7, { environment: 'staging' }).properties, 'alt_generated')).toBe('environment');
+  });
+
+  test.each([['beepbeep-titles', 'title_meta'], ['oppti-internal-linking', 'internal_linking']])('legacy slug %s maps to %s', (slug, product) => {
+    expect(productOf({ plugin_slug: slug })).toBe(product);
+  });
+
+  test('legacy slug that conflicts with an explicit product is still Unclassified', () => {
+    expect(productOf({ plugin_slug: 'beepbeep-titles', product: 'alt_text' })).toBe('Unclassified');
+  });
+});

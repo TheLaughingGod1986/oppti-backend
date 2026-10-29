@@ -75,6 +75,14 @@ Bot/AI traffic, explicit QA/internal flags, staging/development/local/unknown
 environments and known sandbox hosts never enter customer metrics. Do not change
 PostHog's virtual bot fields or impersonate a browser to make metrics pass.
 
+A success event (`alt_generated`, `title_meta_generated`, `link_inserted`) with
+no `environment` is treated as `unknown`: it is not counted and it makes the
+success total U rather than being silently excluded. Non-success diagnostic rows
+with no environment are excluded without blocking the total. Boolean contract
+fields may arrive as the strings `'true'`/`'false'` from a HogQL export and are
+read as booleans. Legacy slugs `beepbeep-titles` and `oppti-internal-linking`
+map to Titles and Internal Linking.
+
 ## Reusable queries and calculation runner
 
 [Delivery/attribution table](https://us.posthog.com/project/358941/insights/GRtA1jAH)

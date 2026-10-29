@@ -1,23 +1,36 @@
 const DAY = 86400000;
 const PRODUCTS = { 'beepbeep-ai-alt-text-generator': 'alt_text', 'opptiai-titles': 'title_meta', 'opptiai-internal-linking': 'internal_linking' };
+// Older builds sent the repository / text-domain slug instead of the WP.org slug.
+const LEGACY_SLUGS = { 'beepbeep-titles': 'title_meta', 'oppti-internal-linking': 'internal_linking' };
 const ALIASES = { alt_text: 'alt_text', 'alt-text': 'alt_text', title_meta: 'title_meta', meta_titles_descriptions: 'title_meta', titles: 'title_meta', internal_linking: 'internal_linking', website: 'website' };
 const SUCCESS = { alt_text: 'alt_generated', title_meta: 'title_meta_generated', internal_linking: 'link_inserted' };
 const unavailable = reason => ({ value: null, status: 'U', reason });
 const measured = value => ({ value, status: 'measured' });
+// HogQL exports can return JSON booleans as the strings 'true'/'false'.
+function bool(v) {
+  if (v === true || v === 'true') return true;
+  if (v === false || v === 'false') return false;
+  return undefined;
+}
+const SUCCESS_EVENTS = new Set(Object.values(SUCCESS));
 function productOf(p) {
-  const slug = PRODUCTS[p.plugin_slug];
+  const slug = PRODUCTS[p.plugin_slug] || LEGACY_SLUGS[p.plugin_slug];
   const explicit = ALIASES[p.product];
   if (slug && p.product && explicit !== slug) return 'Unclassified';
   return slug || explicit || (p.source_surface === 'website' ? 'website' : 'Unclassified');
 }
-function exclusion(p) {
-  if (p.environment !== 'production') return 'environment';
-  if ([p.is_test, p.is_internal, p.is_qa].some(v => v === true || v === 'true')) return 'QA';
+function exclusion(p, event) {
+  // A missing environment is unknown, never assumed production and never silently dropped.
+  const environment = p.environment === undefined || p.environment === null || p.environment === '' ? 'unknown' : p.environment;
+  if (environment !== 'production' && environment !== 'unknown') return 'environment';
+  if ([p.is_test, p.is_internal, p.is_qa].some(v => bool(v) === true)) return 'QA';
   const host = String(p.site_host || p.host || p.domain || p.site_url || '').toLowerCase();
   if (/(localhost|127\.0\.0\.1|\[?::1\]?|wpsandbox|tastewp|playground\.wordpress|wp-env|\.local\b|\.test\b|myftpupload|hostingersite|pmwdev|edge-|render\.com|smoke-test|smoke-account|rollout_smoke|example\.com|trycloudflare|instawp)/.test(host)) return 'QA host';
-  const trustedPluginTransport = p.telemetry_schema === 'opptiai_usage_v2' && ['wordpress', 'backend'].includes(p.telemetry_source) && p.telemetry_consent === true && p.is_test === false && !!p.site_install_id;
+  if (environment === 'unknown') return SUCCESS_EVENTS.has(event) ? 'environment unknown' : 'environment';
+  const consent = bool(p.telemetry_consent);
+  const trustedPluginTransport = p.telemetry_schema === 'opptiai_usage_v2' && ['wordpress', 'backend'].includes(p.telemetry_source) && consent === true && bool(p.is_test) === false && !!p.site_install_id;
   if (p.traffic_type && p.traffic_type !== 'Regular' && !(p.traffic_type === 'Automation' && trustedPluginTransport)) return 'unresolved automated transport';
-  if (p.telemetry_consent !== true && p.source_surface !== 'website') return 'consent coverage unknown';
+  if (consent !== true && p.source_surface !== 'website') return 'consent coverage unknown';
   if (!p.traffic_type && p.traffic_origin !== 'customer_action' && !trustedPluginTransport) return 'traffic origin unknown';
   return null;
 }
@@ -48,9 +61,9 @@ function calculate(rows, { start, end, product, coverage = {} }) {
   const lower = Date.parse(start), upper = Date.parse(end);
   if (!(upper > lower)) throw new Error('Invalid reporting bounds');
   const all = deduplicate(rows).filter(r => Number.isFinite(Date.parse(r.timestamp)) && Date.parse(r.timestamp) < upper);
-  const relevant = all.filter(r => productOf(r.properties || {}) === product && !exclusion(r.properties || {}));
+  const relevant = all.filter(r => productOf(r.properties || {}) === product && !exclusion(r.properties || {}, r.event));
   const current = relevant.filter(r => Date.parse(r.timestamp) >= lower);
-  const successful = r => r.event === SUCCESS[product] && (r.properties || {}).success !== false;
+  const successful = r => r.event === SUCCESS[product] && bool((r.properties || {}).success) !== false;
   const result = {
     observed_success_events: current.filter(successful).length,
     successes: unavailable('Production delivery and complete instrumentation not verified'),
@@ -59,9 +72,9 @@ function calculate(rows, { start, end, product, coverage = {} }) {
     repeat_success_identities: unavailable('Success history or operation deduplication unavailable'),
     seven_day_retention: unavailable('Eligible cohort or complete eight-day follow-up unavailable'),
     lifecycle: unavailable('Complete identity history unavailable'),
-    excluded_rows: all.filter(r => productOf(r.properties || {}) === product && exclusion(r.properties || {})).length
+    excluded_rows: all.filter(r => productOf(r.properties || {}) === product && exclusion(r.properties || {}, r.event)).length
   };
-  if (all.some(r => productOf(r.properties || {}) === product && /unknown|unresolved/.test(exclusion(r.properties || {}) || ''))) {
+  if (all.some(r => productOf(r.properties || {}) === product && /unknown|unresolved/.test(exclusion(r.properties || {}, r.event) || ''))) {
     result.successes = unavailable('Customer traffic or consent attribution unresolved');
     return result;
   }
@@ -116,4 +129,4 @@ function calculate(rows, { start, end, product, coverage = {} }) {
   result.lifecycle = measured(lifecycle);
   return result;
 }
-module.exports = { productOf, exclusion, deduplicate, calculate, windows, PRODUCTS, SUCCESS };
+module.exports = { productOf, exclusion, deduplicate, calculate, windows, bool, PRODUCTS, LEGACY_SLUGS, SUCCESS };
