@@ -6,7 +6,6 @@
  *   a subdomain of one), or oppti.dev. www.<host> and <host> are the same host.
  *   Only http and https. Week one is log-only: BILLING_REDIRECT_ALLOWLIST_ENFORCE
  *   (default off) switches unlisted URLs to an oppti.dev fallback page.
- * - Loops websiteUrl: kept only when its host matches a registered site host.
  *
  * Logs carry the host only, never the full URL, its query, or any email.
  */
@@ -106,16 +105,6 @@ function evaluateBillingRedirect(rawUrl, registeredHosts = []) {
   return { allowed: false, host, reason: 'host_not_registered' };
 }
 
-/**
- * Loops websiteUrl rule: only a registered site host (or a subdomain of one).
- * No oppti.dev exception, no flag.
- */
-function isWebsiteUrlForRegisteredSite(rawUrl, registeredHosts = []) {
-  const { host, reason } = parseRedirectUrl(rawUrl);
-  if (reason || !host) return false;
-  return uniqueHosts(registeredHosts).some((registered) => hostMatches(host, registered));
-}
-
 function truncateHost(host) {
   if (!host) return null;
   return String(host).slice(0, MAX_LOGGED_HOST_LENGTH);
@@ -161,33 +150,17 @@ async function loadAccountSiteHosts(supabase, account, { extraSites = [] } = {})
   return collectSiteHosts(sites);
 }
 
-/**
- * Site hosts registered to the account that owns this email (Loops contacts).
- * No account, or any lookup error, means no hosts.
- */
-async function loadSiteHostsForEmail(supabase, email) {
-  if (!supabase || typeof supabase.from !== 'function' || typeof email !== 'string' || !email.trim()) {
-    return [];
-  }
-  let account = null;
-  try {
-    const { data } = await supabase
-      .from('licenses')
-      .select('id, license_key')
-      .eq('email', email.trim().toLowerCase())
-      .maybeSingle();
-    account = data || null;
-  } catch (_error) {
-    account = null;
-  }
-  if (!account) return [];
-  return loadAccountSiteHosts(supabase, account);
+// The URL Stripe receives is the one that was checked: the parsed, normalised
+// href (trimmed; backslashes, tabs and newlines resolved the way the check saw
+// them). Stripe's {CHECKOUT_SESSION_ID} placeholder is kept literal.
+function normalizedRedirectUrl(rawUrl) {
+  return new URL(String(rawUrl).trim()).href.replace(/%7BCHECKOUT_SESSION_ID%7D/g, '{CHECKOUT_SESSION_ID}');
 }
 
 /**
  * Apply the Stripe redirect allowlist to one caller URL.
  * - No caller URL: returns null so the route keeps its existing default.
- * - Allowed: the caller URL unchanged.
+ * - Allowed: the normalised form of the caller URL (what was checked).
  * - Not allowed, flag off: the caller URL unchanged plus one structured warning.
  * - Not allowed, flag on: the oppti.dev fallback plus one structured warning.
  */
@@ -202,7 +175,7 @@ function resolveBillingRedirect({
 }) {
   if (url === undefined || url === null || url === '') return null;
   const decision = evaluateBillingRedirect(url, registeredHosts);
-  if (decision.allowed) return url;
+  if (decision.allowed) return normalizedRedirectUrl(url);
   const enforced = isBillingRedirectEnforced(env);
   if (logger && typeof logger.warn === 'function') {
     logger.warn('[billing] redirect_url_not_allowlisted', {
@@ -228,9 +201,8 @@ module.exports = {
   hostsFromSite,
   isBillingRedirectEnforced,
   isFlagOn,
-  isWebsiteUrlForRegisteredSite,
   loadAccountSiteHosts,
-  loadSiteHostsForEmail,
+  normalizedRedirectUrl,
   parseRedirectUrl,
   resolveBillingRedirect
 };

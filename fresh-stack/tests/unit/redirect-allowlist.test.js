@@ -1,11 +1,10 @@
 /**
- * Stripe redirect / Loops websiteUrl host allowlist (services/redirectAllowlist).
+ * Stripe redirect host allowlist (services/redirectAllowlist).
  */
 const {
   BILLING_FALLBACK_URLS,
   evaluateBillingRedirect,
   isBillingRedirectEnforced,
-  isWebsiteUrlForRegisteredSite,
   loadAccountSiteHosts,
   resolveBillingRedirect
 } = require('../../services/redirectAllowlist');
@@ -141,12 +140,31 @@ describe('loadAccountSiteHosts', () => {
   });
 });
 
-describe('isWebsiteUrlForRegisteredSite (Loops)', () => {
-  test('matches registered hosts only; oppti.dev gets no exception', () => {
-    expect(isWebsiteUrlForRegisteredSite('https://www.example.com/', REGISTERED)).toBe(true);
-    expect(isWebsiteUrlForRegisteredSite('https://blog.example.com/', REGISTERED)).toBe(true);
-    expect(isWebsiteUrlForRegisteredSite('https://attacker.test/', REGISTERED)).toBe(false);
-    expect(isWebsiteUrlForRegisteredSite('https://oppti.dev/', REGISTERED)).toBe(false);
-    expect(isWebsiteUrlForRegisteredSite('https://example.com/', [])).toBe(false);
+describe('allowed redirects go to Stripe in the normalised form that was checked', () => {
+  const makeQuietLogger = () => ({ warn: jest.fn() });
+  test.each([
+    ['surrounding spaces are trimmed', '  https://example.com/wp-admin/admin.php?page=bbai  ', 'https://example.com/wp-admin/admin.php?page=bbai'],
+    ['backslash becomes a slash', 'https://example.com\\wp-admin\\admin.php', 'https://example.com/wp-admin/admin.php'],
+    ['tab and newline are removed', 'https://exa\tmple.com/wp-ad\nmin/', 'https://example.com/wp-admin/'],
+    ['host is lower-cased', 'https://EXAMPLE.com/Path', 'https://example.com/Path'],
+    ['Stripe placeholder stays literal in the query', 'https://example.com/thanks?session_id={CHECKOUT_SESSION_ID}', 'https://example.com/thanks?session_id={CHECKOUT_SESSION_ID}'],
+    ['Stripe placeholder stays literal in the path', 'https://example.com/thanks/{CHECKOUT_SESSION_ID}', 'https://example.com/thanks/{CHECKOUT_SESSION_ID}']
+  ])('%s', (_label, raw, expected) => {
+    const logger = makeQuietLogger();
+    expect(resolveBillingRedirect({ url: raw, field: 'successUrl', fallbackUrl: BILLING_FALLBACK_URLS.success, registeredHosts: REGISTERED, logger, env: {} })).toBe(expected);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  test('success and cancel back to a registered site wp-admin pass unflagged; an unregistered host is flagged', () => {
+    const logger = makeQuietLogger();
+    const success = 'https://customer.example/wp-admin/admin.php?page=bbai-billing&checkout=success';
+    const cancel = 'https://customer.example/wp-admin/admin.php?page=bbai-billing&checkout=cancel';
+    const hosts = ['customer.example'];
+    expect(resolveBillingRedirect({ url: success, field: 'successUrl', fallbackUrl: BILLING_FALLBACK_URLS.success, registeredHosts: hosts, logger, env: {} })).toBe(success);
+    expect(resolveBillingRedirect({ url: cancel, field: 'cancelUrl', fallbackUrl: BILLING_FALLBACK_URLS.cancel, registeredHosts: hosts, logger, env: {} })).toBe(cancel);
+    expect(logger.warn).not.toHaveBeenCalled();
+    resolveBillingRedirect({ url: 'https://other-shop.example/wp-admin/', field: 'cancelUrl', fallbackUrl: BILLING_FALLBACK_URLS.cancel, registeredHosts: hosts, logger, env: {} });
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][1]).toMatchObject({ field: 'cancelUrl', reason: 'host_not_registered' });
   });
 });
