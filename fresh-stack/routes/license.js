@@ -28,6 +28,28 @@ function normalizeDeactivateBody(body) {
   };
 }
 
+// The :site_id path segment of the per-site licence routes may be the sites
+// row id or the site's raw key (older clients). A row id resolves to that
+// row's key only when the row is on the caller's licence or owned by the
+// caller; anything else is used as given. The raw key is never logged.
+async function siteKeyFromPathId(supabase, pathId, { licenseKey, account } = {}) {
+  if (!supabase || !pathId) return pathId;
+  try {
+    const { data, error } = await supabase
+      .from('sites')
+      .select('id, site_hash, license_key, owner_user_id')
+      .eq('id', pathId)
+      .maybeSingle();
+    if (error || !data?.site_hash) return pathId;
+    const onLicence = Boolean(licenseKey) && data.license_key === licenseKey;
+    const owned = Boolean(account?.id) && data.owner_user_id === account.id;
+    return onLicence || owned ? data.site_hash : pathId;
+  } catch (_error) {
+    // Not a row id (for example not a uuid): treat it as the raw key.
+    return pathId;
+  }
+}
+
 function createLicenseRouter({ supabase }) {
   const router = express.Router();
 
@@ -188,12 +210,18 @@ function createLicenseRouter({ supabase }) {
     });
   });
 
-  router.delete('/sites/:site_id', async (req, res) => {
-    const licenseKey = req.header('X-License-Key') || req.license?.license_key;
-    const siteHash = req.params.site_id;
-    if (!licenseKey || !siteHash) {
+  // Disconnect and per-site quota change the account's sites: account
+  // credential only (Chief's ruling, 29 Oct). No shipped plugin calls either
+  // with site headers alone (Alt Text 4.6.143/4.6.144 send the licence key or
+  // token on DELETE; nothing calls quota).
+  router.delete('/sites/:site_id', requireAccountCredential, async (req, res) => {
+    const account = req.license || req.user || null;
+    const licenseKey = req.license?.license_key || req.user?.license_key || req.header('X-License-Key');
+    const pathId = req.params.site_id;
+    if (!licenseKey || !pathId) {
       return res.status(400).json({ error: 'INVALID_REQUEST', message: 'License key and site ID required' });
     }
+    const siteHash = await siteKeyFromPathId(supabase, pathId, { licenseKey, account });
     const result = await deactivateSite(supabase, { licenseKey, siteHash });
     if (result.error) {
       return res.status(result.status || 400).json({
@@ -209,9 +237,10 @@ function createLicenseRouter({ supabase }) {
     });
   });
 
-  router.post('/sites/:site_id/quota', async (req, res) => {
-    const licenseKey = req.header('X-License-Key') || req.body?.license_key;
-    const siteHash = req.params.site_id;
+  router.post('/sites/:site_id/quota', requireAccountCredential, async (req, res) => {
+    const account = req.license || req.user || null;
+    const licenseKey = req.license?.license_key || req.user?.license_key || req.header('X-License-Key');
+    const siteHash = await siteKeyFromPathId(supabase, req.params.site_id, { licenseKey, account });
     const { quota_limit } = req.body || {};
     const result = await setSiteQuota(supabase, { licenseKey, siteHash, quotaLimit: quota_limit });
     if (result.error) {
@@ -232,4 +261,4 @@ function createLicenseRouter({ supabase }) {
   return router;
 }
 
-module.exports = { createLicenseRouter };
+module.exports = { createLicenseRouter, siteKeyFromPathId };

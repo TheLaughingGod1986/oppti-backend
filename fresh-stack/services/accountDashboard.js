@@ -440,7 +440,8 @@ function createAccountDashboardService({ supabase, getStripe }) {
       }
 
       const sites = await listRawSites(account);
-      const site = sites.find((row) => row.id === siteId);
+      // site_id is the sites row id; the raw site key is accepted too.
+      const site = sites.find((row) => row.id === siteId) || sites.find((row) => row.site_hash && row.site_hash === siteId);
       if (!site?.site_hash) {
         throw createServiceError('Site not found on this account', 404, 'SITE_NOT_FOUND');
       }
@@ -459,7 +460,7 @@ function createAccountDashboardService({ supabase, getStripe }) {
 
       return {
         ok: true,
-        site_id: siteId,
+        site_id: site.id,
         site_hash: site.site_hash
       };
     },

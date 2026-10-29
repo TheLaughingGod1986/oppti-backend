@@ -66,7 +66,8 @@ function createAccountDashboardRouter({ supabase, getStripe, service } = {}) {
     ok: true,
     sites: await accountService.getSites(req)
   })));
-  router.post('/me/sites/detach', accountRoute('me.sites.detach', async (req) => (
+  // Detach changes the account's sites: account credential only.
+  router.post('/me/sites/detach', requireAccountCredential, accountRoute('me.sites.detach', async (req) => (
     accountService.detachSite(req)
   )));
   router.get('/me/plugins/stats', accountRoute('me.plugins.stats', async (req) => accountService.getPluginStats(req)));
