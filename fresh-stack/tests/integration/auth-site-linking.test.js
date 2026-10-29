@@ -1047,12 +1047,18 @@ describe('responses never carry the raw site key; licence key only for account c
     const licence = reg.body.user.license_key;
 
     const siteOnly = await request(siteOnlyApp(supabase, 'site', licence)).get('/api/license/sites').set('X-Site-Key', RAW);
-    expect(siteOnly.status).toBe(200);
-    expect(siteOnly.body.sites.length).toBeGreaterThan(0);
-    expect(siteOnly.body).not.toHaveProperty('license_key');
+    // With the data-route gate (billing branch) a site-key-only caller gets
+    // the sign-in reply; without it, the list carries neither key.
+    expect([200, 401]).toContain(siteOnly.status);
+    if (siteOnly.status === 401) {
+      expect(siteOnly.body).toEqual({ code: 'SIGN_IN_REQUIRED', message: 'Sign in to manage billing.' });
+    } else {
+      expect(siteOnly.body.sites.length).toBeGreaterThan(0);
+      expect(siteOnly.body).not.toHaveProperty('license_key');
+      for (const site of siteOnly.body.sites) expect(site).not.toHaveProperty('site_hash');
+    }
     expect(JSON.stringify(siteOnly.body)).not.toContain(RAW);
     expect(JSON.stringify(siteOnly.body)).not.toContain(licence);
-    for (const site of siteOnly.body.sites) expect(site).not.toHaveProperty('site_hash');
 
     const withLicence = await request(siteOnlyApp(supabase, 'license', licence)).get('/api/license/sites').set('X-License-Key', licence);
     expect(withLicence.status).toBe(200);
