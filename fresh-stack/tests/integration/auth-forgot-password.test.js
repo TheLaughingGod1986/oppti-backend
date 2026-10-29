@@ -8,6 +8,7 @@
 const express = require('express');
 const request = require('supertest');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 
 process.env.JWT_SECRET = 'test-jwt-secret';
 
@@ -33,7 +34,10 @@ jest.mock('../../lib/email', () => ({
 }));
 
 const logger = require('../../lib/logger');
-const { createAuthRouter } = require('../../routes/auth');
+const { createAuthRouter, hashResetToken } = require('../../routes/auth');
+
+const sha256 = (value) => crypto.createHash('sha256').update(value, 'utf8').digest('hex');
+const tokenFromLink = (link) => new URL(link).searchParams.get('token');
 
 const KNOWN_EMAIL = 'reset-owner@qa.oppti.dev';
 const UNKNOWN_EMAIL = 'nobody-here@qa.oppti.dev';
@@ -53,19 +57,22 @@ function createSupabaseMock() {
     if (table !== 'licenses') throw new Error(`unexpected table ${table}`);
     const filters = [];
     let pendingUpdate = null;
+    let returnRows = false;
+    // Updates run when awaited, after every filter is applied (like PostgREST).
+    const runUpdate = () => {
+      const rows = licenses.filter((row) => filters.every(([c, v]) => row[c] === v));
+      rows.forEach((row) => Object.assign(row, pendingUpdate));
+      updates.push({ filters: [...filters], values: pendingUpdate });
+      return { data: returnRows ? rows.map((row) => ({ id: row.id })) : null, error: null };
+    };
     const builder = {
-      select() { return builder; },
-      eq(column, value) {
-        filters.push([column, value]);
-        if (pendingUpdate) {
-          const rows = licenses.filter((row) => filters.every(([c, v]) => row[c] === v));
-          rows.forEach((row) => Object.assign(row, pendingUpdate));
-          updates.push({ filters: [...filters], values: pendingUpdate });
-          return Promise.resolve({ data: null, error: null });
-        }
-        return builder;
-      },
+      select() { if (pendingUpdate) returnRows = true; return builder; },
+      eq(column, value) { filters.push([column, value]); return builder; },
       update(values) { pendingUpdate = values; return builder; },
+      then(resolve, reject) {
+        if (!pendingUpdate) return Promise.resolve({ data: null, error: null }).then(resolve, reject);
+        return Promise.resolve().then(runUpdate).then(resolve, reject);
+      },
       maybeSingle() {
         const rows = licenses.filter((row) => filters.every(([c, v]) => row[c] === v));
         return Promise.resolve({ data: rows[0] ? { ...rows[0] } : null, error: null });
@@ -137,9 +144,14 @@ describe.each(['production', 'development', 'test'])('forgot-password (NODE_ENV=
 
     const [to, link] = mockEmail.sendPasswordResetEmail.mock.calls[0];
     const stored = supabase.licenses[0].password_reset_token;
+    const token = tokenFromLink(link);
     expect(to).toBe(KNOWN_EMAIL);
-    expect(stored).toMatch(/^[0-9a-f-]{36}$/);
-    expect(link).toBe(`https://oppti.dev/reset-password?token=${stored}`);
+    expect(token).toMatch(/^[0-9a-f-]{36}$/);
+    expect(link).toBe(`https://oppti.dev/reset-password?token=${token}`);
+    // Only the sha256 digest is stored, never the emailed token.
+    expect(stored).toMatch(/^[0-9a-f]{64}$/);
+    expect(stored).toBe(sha256(token));
+    expect(stored).not.toContain(token);
     expect(link).not.toMatch(/attacker|localhost|8080|wp-admin/);
     expectNoSecrets(res, supabase);
   });
@@ -251,8 +263,40 @@ describe('reset-password', () => {
   async function issueToken(supabase) {
     await request(buildApp(supabase)).post('/auth/forgot-password').send({ email: KNOWN_EMAIL });
     await waitFor(() => mockEmail.sendPasswordResetEmail.mock.calls.length === 1);
-    return supabase.licenses[0].password_reset_token;
+    return tokenFromLink(mockEmail.sendPasswordResetEmail.mock.calls[0][1]);
   }
+
+  test('hashed token round trip: emailed token resets once; the stored digest itself is useless', async () => {
+    const supabase = createSupabaseMock();
+    const token = await issueToken(supabase);
+    const stored = supabase.licenses[0].password_reset_token;
+    expect(hashResetToken(token)).toBe(stored);
+    const app = buildApp(supabase);
+
+    // Someone who read the DB value cannot use it as the token.
+    const leaked = await request(app).post('/auth/reset-password').send({ token: stored, password: 'stolen-password-1' });
+    expect(leaked.status).toBe(400);
+    const leakedWithEmail = await request(app).post('/auth/reset-password').send({ email: KNOWN_EMAIL, token: stored, password: 'stolen-password-1' });
+    expect(leakedWithEmail.status).toBe(400);
+    expect(supabase.licenses[0].password_hash).toBe('old');
+
+    const ok = await request(app).post('/auth/reset-password').send({ token, password: 'new-password-789' });
+    expect(ok.status).toBe(200);
+    expect(await bcrypt.compare('new-password-789', supabase.licenses[0].password_hash)).toBe(true);
+
+    const again = await request(app).post('/auth/reset-password').send({ email: KNOWN_EMAIL, token, password: 'another-password-1' });
+    expect(again.status).toBe(400);
+  });
+
+  test('a token stored in plain text before this release no longer matches (expires within 1h anyway)', async () => {
+    const supabase = createSupabaseMock();
+    const legacy = '3f2b8c1e-0d4a-4c47-9a51-7b3e2d1f0a99';
+    supabase.licenses[0].password_reset_token = legacy;
+    supabase.licenses[0].password_reset_expires = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const res = await request(buildApp(supabase)).post('/auth/reset-password').send({ email: KNOWN_EMAIL, token: legacy, password: 'new-password-123' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_TOKEN');
+  });
 
   test('token-only request (oppti.dev reset page) sets the password and clears the token', async () => {
     const supabase = createSupabaseMock();
@@ -280,6 +324,42 @@ describe('reset-password', () => {
     expect(wrong.status).toBe(400);
     expect(unknown.text).toBe(wrong.text);
     expect(tokenOnly.text).toBe(wrong.text);
+    expect(supabase.licenses[0].password_hash).toBe('old');
+  });
+
+  test('two simultaneous resets with the same token: exactly one succeeds', async () => {
+    const supabase = createSupabaseMock();
+    const token = await issueToken(supabase);
+    const app = buildApp(supabase);
+    const [a, b] = await Promise.all([
+      request(app).post('/auth/reset-password').send({ token, password: 'racer-password-a1' }),
+      request(app).post('/auth/reset-password').send({ email: KNOWN_EMAIL, token, password: 'racer-password-b2' })
+    ]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([200, 400]);
+    const loser = a.status === 400 ? a : b;
+    expect(loser.body.code).toBe('INVALID_TOKEN');
+    const winnerPassword = a.status === 200 ? 'racer-password-a1' : 'racer-password-b2';
+    expect(await bcrypt.compare(winnerPassword, supabase.licenses[0].password_hash)).toBe(true);
+    expect(supabase.licenses[0].password_reset_token).toBeNull();
+    const usedLines = logSpies.flatMap((spy) => spy.mock.calls)
+      .filter(([message]) => message === '[Auth] Reset token already used');
+    expect(usedLines).toHaveLength(1);
+    expect(usedLines[0][1]).toEqual({ userId: 'lic-1' });
+    expect(JSON.stringify(usedLines)).not.toMatch(/reset-owner|qa\.oppti\.dev|\*\*\*/);
+    const resetUpdates = supabase.updates.filter((u) => 'password_hash' in u.values);
+    for (const u of resetUpdates) {
+      expect(u.filters).toEqual(expect.arrayContaining([['password_reset_token', hashResetToken(token)]]));
+    }
+  });
+
+  test('a token row with no expiry is treated as expired and leaves the password unchanged', async () => {
+    const supabase = createSupabaseMock();
+    const token = await issueToken(supabase);
+    supabase.licenses[0].password_reset_expires = null;
+    const res = await request(buildApp(supabase)).post('/auth/reset-password').send({ token, password: 'new-password-123' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('TOKEN_EXPIRED');
     expect(supabase.licenses[0].password_hash).toBe('old');
   });
 

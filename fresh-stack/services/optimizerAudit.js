@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const {
   normalizeAuditUrl,
   assertPublicUrl,
@@ -770,7 +771,7 @@ async function getOptimizerHistory({ siteHash, supabase = null, limit = 12 }) {
         completedAt: row.completed_at || row.created_at
       }));
     }
-    logger.warn('[optimizer-audit] history query failed', { site_hash: siteHash, error: error && error.message });
+    logger.warn('[optimizer-audit] history query failed', { ...siteRefForLog(siteHash), error: error && error.message });
   }
   return [...auditStore.values()]
     .filter((r) => r.siteHash === siteHash && r.status === 'completed' && r.result)
@@ -809,7 +810,7 @@ async function getRecentFullAudits({ siteHash, supabase = null, limit = 12 }) {
         completedAt: row.completed_at || row.created_at
       }));
     }
-    logger.warn('[optimizer-audit] full history query failed', { site_hash: siteHash, error: error && error.message });
+    logger.warn('[optimizer-audit] full history query failed', { ...siteRefForLog(siteHash), error: error && error.message });
   }
   return [...auditStore.values()]
     .filter((r) => r.siteHash === siteHash && r.status === 'completed' && r.result)

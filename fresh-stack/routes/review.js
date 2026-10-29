@@ -1,6 +1,8 @@
 const express = require('express');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
+const { safeLogPath } = require('../lib/logPath');
 const { reviewAltText } = require('../lib/openai');
 const { validateImagePayload } = require('../lib/validation');
 const {
@@ -125,7 +127,7 @@ function createReviewRouter({ supabase } = {}) {
       logger.warn('[review] approve site resolution failed', {
         request_id: req.id || null,
         error: resolved.error || 'SITE_NOT_FOUND',
-        site_hash: resolved.siteIdentity?.siteHash || null,
+        ...siteRefForLog(resolved.siteIdentity?.siteHash || null, req),
         site_url: resolved.siteIdentity?.siteUrl || null
       });
       return res.status(resolved.error === 'INVALID_SITE_IDENTITY' ? 400 : 404).json({
@@ -172,7 +174,7 @@ function createReviewRouter({ supabase } = {}) {
     logger.info('[review] approve_state_succeeded', {
       request_id: req.id || null,
       site_id: resolved.site.id,
-      site_hash: resolved.site.site_hash || null,
+      ...siteRefForLog(resolved.site.site_hash || null, req),
       image_ref: result.data?.image_ref || null
     });
 
@@ -186,8 +188,7 @@ function createReviewRouter({ supabase } = {}) {
 
   router.post('/', async (req, res) => {
     logger.info('[review] post', {
-      path: req.path,
-      originalUrl: req.originalUrl,
+      path: safeLogPath(`${req.baseUrl || ''}${req.path || ''}`),
       authMethod: req.authMethod || null
     });
     const parsed = requestSchema.safeParse(req.body || {});

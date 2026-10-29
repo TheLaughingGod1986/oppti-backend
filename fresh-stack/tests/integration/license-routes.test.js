@@ -98,6 +98,13 @@ describe('license routes response sanitisation', () => {
     expect(res.body.organization.plan).toBe('pro');
     expect(res.body.license.email).toBe('owner@example.com');
     expectNoSensitiveFields(res.body.license);
+    // Alt Text has_active_license() (class-api-client-v2.php:424) needs both
+    // organization and site from this reply (stored at :1608-1614).
+    for (const body of [res.body, res.body.data]) {
+      expect(body.organization).toEqual(expect.objectContaining({ plan: 'pro', license_key: 'key-123' }));
+      expect(body.site).toEqual(expect.objectContaining({ id: 'site-row-1', site_url: 'https://example.com', site_install_id: expect.stringMatching(/^[0-9a-f]{64}$/) }));
+      expect(body.site).not.toHaveProperty('site_hash');
+    }
   });
 
   test('POST /license/transfer does not leak sensitive license fields', async () => {
@@ -114,6 +121,8 @@ describe('license routes response sanitisation', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
+    expect(res.body.site).toEqual(expect.objectContaining({ id: 'site-row-1' }));
+    expect(res.body.site).not.toHaveProperty('site_hash');
     expect(res.body.license.email).toBe('owner@example.com');
     expectNoSensitiveFields(res.body.license);
   });

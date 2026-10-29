@@ -65,10 +65,17 @@ describe('account dashboard route contracts', () => {
   });
 
   test('logged-out account requests return 401 instead of 404', async () => {
-    const response = await request(createApp({ authenticated: false })).get('/me/sites');
+    const response = await request(createApp({ authenticated: false })).get('/me/plugins/stats');
 
     expect(response.status).toBe(401);
     expect(response.body.code).toBe('UNAUTHORIZED');
+  });
+
+  test.each(['/me/sites', '/me/licenses'])('logged-out %s gets the sign-in reply', async (path) => {
+    const response = await request(createApp({ authenticated: false })).get(path);
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({ code: 'SIGN_IN_REQUIRED', message: 'Sign in to manage billing.' });
   });
 
   test.each([
@@ -164,6 +171,44 @@ describe('analytics event route', () => {
         request_id: 'req-account-test'
       }
     });
+  });
+
+  test('forwards only allowed flat properties: no email, licence key, URLs, query strings or nested objects', async () => {
+    const capture = jest.fn().mockResolvedValue({ ok: true, status: 200 });
+    const response = await request(createApp({ capture }))
+      .post('/analytics/event')
+      .send({
+        event: 'cta_clicked',
+        source: 'https://evil.example/',
+        properties: {
+          page_path: '/dashboard/billing?email=qa-person@example.invalid#x',
+          cta: 'upgrade',
+          plan: 'pro',
+          count: 2,
+          email: 'qa-person@example.invalid',
+          license_key: 'QA-FAKE-LICENSE-KEY-0001',
+          site_url: 'https://shop.customer-brand.co.uk',
+          section: 'https://shop.customer-brand.co.uk/wp-admin/',
+          tab: 'qa-person@example.invalid',
+          meta: { site_url: 'https://shop.customer-brand.co.uk' },
+          free_text: 'anything'
+        }
+      });
+
+    expect(response.status).toBe(200);
+    expect(capture).toHaveBeenCalledWith({
+      event: 'cta_clicked',
+      distinctId: 'account-1',
+      properties: {
+        page_path: '/dashboard/billing',
+        cta: 'upgrade',
+        plan: 'pro',
+        count: 2,
+        source: 'website',
+        request_id: 'req-account-test'
+      }
+    });
+    expect(JSON.stringify(capture.mock.calls)).not.toMatch(/example\.invalid|QA-FAKE|customer-brand|evil/);
   });
 
   test('returns 401 for a logged-out analytics submission', async () => {

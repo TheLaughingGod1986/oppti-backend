@@ -1,7 +1,9 @@
 const { getSites, deactivateSite } = require('./site');
+const { redactStripeIdsInString } = require('../lib/redact');
 const { getQuotaStatus, computePeriodStart } = require('./quota');
 const { getLimits } = require('./planLimits');
 const { recordPluginConnection } = require('./pluginConnections');
+const { installIdFromSiteKey } = require('../lib/installId');
 
 const FEATURE_LABELS = {
   alt_text: 'OpptiAI Alt Text',
@@ -47,18 +49,28 @@ function formatPlanName(planId) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+const maskStripeId = (value) => (typeof value === 'string' ? redactStripeIdsInString(value) : value ?? null);
+
+// Sites whose billing belongs to the account: on its licence or owned by it.
+// Membership alone does not count.
+function isSiteOwnedByAccount(site, account) {
+  if (!site || !account) return false;
+  if (account.license_key && site.license_key === account.license_key) return true;
+  return Boolean(account.id && site.owner_user_id === account.id);
+}
+
 function mapSubscription(subscription) {
   const interval = subscription.billing_interval || subscription.billing_cycle || null;
   const planId = subscription.plan_id || subscription.plan || 'free';
   const mapped = {
-    id: subscription.id || subscription.stripe_subscription_id || `plan-${planId}`,
+    id: maskStripeId(subscription.id || subscription.stripe_subscription_id || `plan-${planId}`),
     plan_name: formatPlanName(planId),
     interval: interval === 'monthly' ? 'month' : interval === 'yearly' ? 'year' : interval,
     status: subscription.status || 'active',
     current_period_start: subscription.current_period_start || subscription.created_at || null,
     current_period_end: subscription.current_period_end || subscription.expires_at || null,
     cancel_at_period_end: Boolean(subscription.cancel_at_period_end),
-    stripe_subscription_id: subscription.stripe_subscription_id || null
+    stripe_subscription_id: maskStripeId(subscription.stripe_subscription_id || null)
   };
 
   if (Number.isFinite(Number(subscription.price))) {
@@ -156,6 +168,7 @@ function createAccountDashboardService({ supabase, getStripe }) {
       .from('usage_logs')
       .select('id, feature_type, credits_used, site_hash, license_key, license_id')
       .or(filters.join(','))
+      .or('is_trial.is.null,is_trial.eq.false')
       .gte('created_at', periodStart.toISOString())
       .lt('created_at', periodEnd.toISOString());
 
@@ -205,7 +218,10 @@ function createAccountDashboardService({ supabase, getStripe }) {
   }
 
   async function listSubscriptions(account, sites) {
-    const siteIds = sites.map((site) => site.id).filter(Boolean);
+    const siteIds = sites
+      .filter((site) => isSiteOwnedByAccount(site, account))
+      .map((site) => site.id)
+      .filter(Boolean);
     let subscriptions = [];
 
     if (siteIds.length > 0) {
@@ -398,8 +414,9 @@ function createAccountDashboardService({ supabase, getStripe }) {
           id: site.id,
           domain: toDomain(site.site_url),
           status: site.status === 'deactivated' ? 'suspended' : (site.status || 'active'),
-          site_hash: site.site_hash || null,
-          license_ids: account?.id ? [account.id] : (site.license_key ? [site.license_key] : []),
+          // Hashed install id, never the raw site key; never a licence key.
+          site_install_id: installIdFromSiteKey(site.site_hash || null),
+          license_ids: account?.id ? [account.id] : [],
           plugins,
           credits_used: creditsUsed,
           created_at: site.created_at || site.activated_at,
@@ -425,7 +442,8 @@ function createAccountDashboardService({ supabase, getStripe }) {
       }
 
       const sites = await listRawSites(account);
-      const site = sites.find((row) => row.id === siteId);
+      // site_id is the sites row id; the raw site key is accepted too.
+      const site = sites.find((row) => row.id === siteId) || sites.find((row) => row.site_hash && row.site_hash === siteId);
       if (!site?.site_hash) {
         throw createServiceError('Site not found on this account', 404, 'SITE_NOT_FOUND');
       }
@@ -444,8 +462,8 @@ function createAccountDashboardService({ supabase, getStripe }) {
 
       return {
         ok: true,
-        site_id: siteId,
-        site_hash: site.site_hash
+        site_id: site.id,
+        site_install_id: installIdFromSiteKey(site.site_hash)
       };
     },
 

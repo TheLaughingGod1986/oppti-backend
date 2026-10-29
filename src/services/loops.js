@@ -557,8 +557,6 @@ async function trackPaymentSucceeded({
 
 async function trackImageSeoAuditRequested({
   email,
-  websiteUrl,
-  normalizedDomain,
   auditId,
   source = 'image-seo-audit'
 }) {
@@ -566,14 +564,12 @@ async function trackImageSeoAuditRequested({
     logSkippedEmail(email, { context: 'trackImageSeoAuditRequested' });
     return null;
   }
-  await upsertAuditLeadContact({ email, websiteUrl, normalizedDomain, source });
+  await upsertAuditLeadContact({ email, source });
   await loopsPost('/events/send', {
     email,
     eventName: 'image_seo_audit_requested',
     eventProperties: {
       auditId,
-      websiteUrl,
-      normalizedDomain,
       source
     }
   });
@@ -581,8 +577,6 @@ async function trackImageSeoAuditRequested({
 
 async function trackImageSeoAuditCompleted({
   email,
-  websiteUrl,
-  normalizedDomain,
   auditId,
   auditScore,
   pagesScanned,
@@ -596,8 +590,6 @@ async function trackImageSeoAuditCompleted({
   }
   await upsertAuditLeadContact({
     email,
-    websiteUrl,
-    normalizedDomain,
     source,
     auditScore,
     pagesScanned,
@@ -609,8 +601,6 @@ async function trackImageSeoAuditCompleted({
     eventName: 'image_seo_audit_completed',
     eventProperties: {
       auditId,
-      websiteUrl,
-      normalizedDomain,
       auditScore,
       pagesScanned,
       imagesScanned,
@@ -622,8 +612,6 @@ async function trackImageSeoAuditCompleted({
 
 async function trackImageSeoAuditFailed({
   email,
-  websiteUrl,
-  normalizedDomain,
   auditId,
   errorCode,
   source = 'image-seo-audit'
@@ -632,14 +620,12 @@ async function trackImageSeoAuditFailed({
     logSkippedEmail(email, { context: 'trackImageSeoAuditFailed' });
     return null;
   }
-  await upsertAuditLeadContact({ email, websiteUrl, normalizedDomain, source });
+  await upsertAuditLeadContact({ email, source });
   await loopsPost('/events/send', {
     email,
     eventName: 'image_seo_audit_failed',
     eventProperties: {
       auditId,
-      websiteUrl,
-      normalizedDomain,
       errorCode,
       source
     }
@@ -648,8 +634,6 @@ async function trackImageSeoAuditFailed({
 
 async function upsertAuditLeadContact({
   email,
-  websiteUrl,
-  normalizedDomain,
   source,
   auditScore = null,
   pagesScanned = null,
@@ -660,11 +644,8 @@ async function upsertAuditLeadContact({
     logSkippedEmail(email, { path: '/contacts/create', method: 'POST' });
     return null;
   }
-  const body = {
-    email,
-    websiteUrl,
-    normalizedDomain
-  };
+  // Lead contacts carry the email and audit metrics only: no site URL or domain.
+  const body = { email };
   if (auditScore !== null) body.auditScore = auditScore;
   if (pagesScanned !== null) body.pagesScanned = pagesScanned;
   if (imagesScanned !== null) body.imagesScanned = imagesScanned;

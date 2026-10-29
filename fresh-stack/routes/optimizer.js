@@ -1,6 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const {
   startOptimizerAudit,
   getOptimizerAudit,
@@ -91,7 +92,7 @@ function createOptimizerRouter({ supabase = null } = {}) {
       logger.info('[optimizer] audit started', {
         audit_id: record.auditId,
         site_url: record.siteUrl,
-        site_hash: siteHash,
+        ...siteRefForLog(siteHash, req),
         auth_method: req.authMethod || 'unknown'
       });
 
@@ -160,7 +161,7 @@ function createOptimizerRouter({ supabase = null } = {}) {
       const progress = await getOptimizerProgress({ siteHash, supabase });
       return res.json({ ok: true, ...progress });
     } catch (error) {
-      logger.warn('[optimizer] progress failed', { site_hash: siteHash, error: error.message });
+      logger.warn('[optimizer] progress failed', { ...siteRefForLog(siteHash, req), error: error.message });
       return res.status(500).json({ ok: false, error: 'PROGRESS_FAILED', message: 'Unable to load progress' });
     }
   });

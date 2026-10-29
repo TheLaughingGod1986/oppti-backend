@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { normalizeItemIdentifier } = require('../lib/queue');
 const { validateImagePayload } = require('../lib/validation');
 const { normalizeImageForProvider, ImageNormalizationError } = require('../lib/imageNormalization');
@@ -104,9 +105,9 @@ function logBulkGenerationTrace({
     final_result_state: finalResultState,
     user_id: userInfo?.user_id || null,
     user_email: userInfo?.user_email || null,
-    license_key_prefix: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : null,
+    has_license_key: Boolean(effectiveLicenseKey),
     site_id: effectiveSite?.id || reservation?.site?.id || null,
-    site_hash: effectiveSite?.site_hash || reservation?.site?.site_hash || null,
+    ...siteRefForLog(effectiveSite?.site_hash || reservation?.site?.site_hash || null),
     quota_path: resolveQuotaPathLabel(reservation),
     quota_source: reservation?.reservation?.quota_source || null,
     generation_request_id: reservation?.reservation?.generation_request_id || null,
@@ -334,7 +335,7 @@ async function processLicensedBulkItem({
     } else {
       logger.warn('[image-state] ledger_write_skipped', {
         site_id: null,
-        site_hash: effectiveSite?.site_hash || siteKey || null,
+        ...siteRefForLog(effectiveSite?.site_hash || siteKey || null),
         batch_job_id: jobId,
         item_index: itemIndex,
         error: 'SITE_ID_UNAVAILABLE_AFTER_GENERATION'

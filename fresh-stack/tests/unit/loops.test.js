@@ -486,8 +486,6 @@ describe('Loops multi-plugin integration', () => {
     const body = JSON.parse(options.body);
     expect(body).toEqual({
       email: auditArgs.email,
-      websiteUrl: auditArgs.websiteUrl,
-      normalizedDomain: auditArgs.normalizedDomain,
       ...metrics
     });
     for (const key of ['subscribed', 'userGroup', 'source', 'firstName']) {
@@ -508,10 +506,28 @@ describe('Loops multi-plugin integration', () => {
       missingAltPercent: null
     });
     expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual({
-      email: auditArgs.email,
-      websiteUrl: auditArgs.websiteUrl,
-      normalizedDomain: auditArgs.normalizedDomain
+      email: auditArgs.email
     });
+  });
+
+  test.each([
+    'trackImageSeoAuditRequested',
+    'trackImageSeoAuditCompleted',
+    'trackImageSeoAuditFailed'
+  ])('%s sends no site URL or domain to Loops (contact create, update or event)', async (helper) => {
+    global.fetch.mockResolvedValueOnce({ ok: false, status: 409, json: jest.fn().mockResolvedValue({}) });
+    const loops = require('../../../src/services/loops');
+    await loops[helper]({ ...auditArgs, websiteUrl: 'https://shop.customer-brand.co.uk/', normalizedDomain: 'shop.customer-brand.co.uk' });
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    for (const [, options] of global.fetch.mock.calls) {
+      const raw = String(options.body);
+      expect(raw).not.toContain('customer-brand');
+      const body = JSON.parse(raw);
+      for (const key of ['websiteUrl', 'normalizedDomain', 'domain']) {
+        expect(body).not.toHaveProperty(key);
+        if (body.eventProperties) expect(body.eventProperties).not.toHaveProperty(key);
+      }
+    }
   });
 
   test('audit failures other than conflicts do not update the contact or send events', async () => {

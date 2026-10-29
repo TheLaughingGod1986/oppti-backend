@@ -12,6 +12,58 @@ const {
   buildTitleRequestFingerprint
 } = require('../services/titleQuota');
 const { recordUsage } = require('../services/usage');
+const { isFlagOn } = require('../services/redirectAllowlist');
+
+// X-Request-Source the Titles plugin sends for Autopilot (paid feature).
+const TITLES_AUTOPILOT_SOURCE = 'beepbeep_titles_autopilot';
+
+function isAutopilotRequest(req) {
+  return String(req.header('X-Request-Source') || '').trim().toLowerCase() === TITLES_AUTOPILOT_SOURCE;
+}
+
+function isAutopilotFreeBlockEnforced(env = process.env) {
+  return isFlagOn(env.TITLES_AUTOPILOT_FREE_BLOCK_ENFORCE);
+}
+
+const AUTOPILOT_REQUIRES_PAID_PLAN = Object.freeze({
+  success: false,
+  error: 'AUTOPILOT_REQUIRES_PAID_PLAN',
+  code: 'AUTOPILOT_REQUIRES_PAID_PLAN',
+  message: 'Autopilot is available on paid plans. Upgrade to turn it on.',
+  upgrade_required: true
+});
+
+/**
+ * Free accounts may not run Titles Autopilot. Log-only unless
+ * TITLES_AUTOPILOT_FREE_BLOCK_ENFORCE is on. The plan comes from the shared
+ * wallet (site subscription first), not the drift-prone licenses.plan column.
+ * An unresolved plan never blocks. Returns true when the request was refused.
+ */
+async function refuseFreeAutopilot(req, res, { status, route }) {
+  if (!isAutopilotRequest(req)) return false;
+  const plan = status && !status.error ? String(status.plan || '').toLowerCase() : null;
+  if (plan !== 'free') {
+    if (!plan) {
+      logger.warn('[titles] autopilot_plan_unresolved', {
+        route,
+        account_id: resolveAccount(req)?.id || null,
+        error: status?.error || null
+      });
+    }
+    return false;
+  }
+  const enforced = isAutopilotFreeBlockEnforced();
+  logger.warn('[titles] autopilot_free_account', {
+    route,
+    account_id: resolveAccount(req)?.id || null,
+    site_id: status?.site_id || null,
+    enforced,
+    action: enforced ? 'refused' : 'allowed_log_only'
+  });
+  if (!enforced) return false;
+  res.status(403).json(AUTOPILOT_REQUIRES_PAID_PLAN);
+  return true;
+}
 
 const pageSchema = z.object({
   url: z.string().max(2048).optional(),
@@ -143,6 +195,16 @@ function createTitlesRouter({
         code: siteIdentity.error,
         message: 'Site identity could not be resolved.'
       });
+    }
+
+    if (isAutopilotRequest(req)) {
+      const planStatus = await getTitleQuotaStatus(supabase, {
+        account: resolveAccount(req),
+        licenseKey,
+        siteIdentity,
+        requestId: req.id || null
+      }).catch((error) => ({ error: error?.code || 'PLAN_LOOKUP_FAILED' }));
+      if (await refuseFreeAutopilot(req, res, { status: planStatus, route: 'titles_generate' })) return;
     }
 
     if (typeof checkRateLimit === 'function' && !(await checkRateLimit(siteKey))) {
@@ -317,6 +379,8 @@ function createTitlesRouter({
       requestId: req.id || null
     });
 
+    if (await refuseFreeAutopilot(req, res, { status, route: 'titles_jobs' })) return;
+
     const requiredCredits = pages.length * CREDITS_PER_PAGE;
     if (!status.error && status.credits_remaining != null && status.credits_remaining < requiredCredits) {
       return res.status(402).json({
@@ -357,7 +421,7 @@ function createTitlesRouter({
     logger.info('[titles.jobs] bulk_job_accepted', {
       job_id: jobId,
       total_pages: pages.length,
-      site_key: siteKey
+      has_site_key: siteKey !== 'default'
     });
 
     return res.status(202).json({
@@ -432,4 +496,4 @@ function createTitlesRouter({
   return router;
 }
 
-module.exports = { createTitlesRouter };
+module.exports = { createTitlesRouter, TITLES_AUTOPILOT_SOURCE };

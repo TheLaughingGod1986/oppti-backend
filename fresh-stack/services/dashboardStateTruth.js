@@ -1,4 +1,6 @@
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
+const { installIdFromSiteKey } = require('../lib/installId');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { getQuotaStatus } = require('./quota');
 const { buildEntitlementState } = require('./entitlementState');
@@ -517,7 +519,7 @@ async function buildDashboardStateTruth({
       },
       site: {
         site_id: null,
-        site_hash: siteIdentity.siteHash || null,
+        site_install_id: installIdFromSiteKey(siteIdentity.siteHash || null),
         linked: false
       },
       resolution: {
@@ -578,7 +580,7 @@ async function buildDashboardStateTruth({
     },
     site: {
       site_id: site?.id || null,
-      site_hash: site?.site_hash || siteIdentity.siteHash || null,
+      site_install_id: installIdFromSiteKey(site?.site_hash || siteIdentity.siteHash || null),
       linked: Boolean(site?.id)
     },
     resolution: {
@@ -598,7 +600,7 @@ async function buildDashboardStateTruth({
     job_source: response.resolution.job_source,
     site_linked: response.site.linked,
     site_id: response.site.site_id,
-    site_hash: response.site.site_hash
+    ...siteRefForLog(response.site.site_hash, req)
   });
 
   return response;

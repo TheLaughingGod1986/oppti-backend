@@ -231,8 +231,8 @@ async function sendContactEmail({
         ${wpVersion ? `WordPress Version: ${escapeHtml(wpVersion)}<br>` : ''}
         ${pluginVersion ? `Plugin Version: ${escapeHtml(pluginVersion)}<br>` : ''}
         ${siteUrl ? `Site URL: ${escapeHtml(siteUrl)}<br>` : ''}
-        ${siteHash ? `Site Hash: ${escapeHtml(String(siteHash).substring(0, 8))}...<br>` : ''}
-        ${licenseKey ? `License Key: ${escapeHtml(String(licenseKey).substring(0, 8))}...<br>` : ''}
+        ${siteHash ? 'Site Hash: present<br>' : ''}
+        ${licenseKey ? 'License Key: present<br>' : ''}
         ${userId ? `User ID: ${escapeHtml(userId)}<br>` : ''}
       </div>
     `;
@@ -295,7 +295,7 @@ Subject: ${subject}
 Message:
 ${message}
 
-${wpVersion || pluginVersion || siteUrl || siteHash || licenseKey || userId ? `\nSystem Information:\n${wpVersion ? `WordPress Version: ${wpVersion}\n` : ''}${pluginVersion ? `Plugin Version: ${pluginVersion}\n` : ''}${siteUrl ? `Site URL: ${siteUrl}\n` : ''}${siteHash ? `Site Hash: ${siteHash.substring(0, 8)}...\n` : ''}${licenseKey ? `License Key: ${licenseKey.substring(0, 8)}...\n` : ''}${userId ? `User ID: ${userId}\n` : ''}` : ''}
+${wpVersion || pluginVersion || siteUrl || siteHash || licenseKey || userId ? `\nSystem Information:\n${wpVersion ? `WordPress Version: ${wpVersion}\n` : ''}${pluginVersion ? `Plugin Version: ${pluginVersion}\n` : ''}${siteUrl ? `Site URL: ${siteUrl}\n` : ''}${siteHash ? 'Site Hash: present\n' : ''}${licenseKey ? 'License Key: present\n' : ''}${userId ? `User ID: ${userId}\n` : ''}` : ''}
 ${diagnosticText ? `\nAttached diagnostics:\n${diagnosticText}\n` : ''}
 
 ---
@@ -307,8 +307,8 @@ This is an automated message from the OpptiAI contact form. You can reply direct
       logger.error('[Email] Failed to send contact form email', { 
         to: recipientEmails,
         sender: fromEmail,
-        replyTo: email,
-        error: error.message 
+        replyTo: redactEmailsInString(String(email ?? '')),
+        error: redactEmailsInString(String(error?.message ?? ''))
       });
       return {
         success: false,
@@ -320,8 +320,8 @@ This is an automated message from the OpptiAI contact form. You can reply direct
       to: recipientEmail,
       recipients: recipientEmails,
       sender: fromEmail,
-      replyTo: email,
-      subject,
+      replyTo: redactEmailsInString(String(email ?? '')),
+      subject: redactEmailsInString(String(subject ?? '')),
       messageId: data?.id 
     });
 
@@ -335,8 +335,8 @@ This is an automated message from the OpptiAI contact form. You can reply direct
     logger.error('[Email] Error sending contact form email', { 
       to: recipientEmails,
       sender: fromEmail,
-      replyTo: email,
-      error: error.message 
+      replyTo: redactEmailsInString(String(email ?? '')),
+      error: redactEmailsInString(String(error?.message ?? ''))
     });
     return {
       success: false,

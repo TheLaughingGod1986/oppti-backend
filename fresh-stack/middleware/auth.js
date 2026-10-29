@@ -1,7 +1,9 @@
 const { validateLicense } = require('../services/license');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const jwt = require('jsonwebtoken');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
+const { sendSignInRequired } = require('../lib/signInRequired');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -15,9 +17,44 @@ function supportsAnonymousTrialPath(path = '') {
     || path === '/api/optimizer/progress';
 }
 
+// Log label for the request path. Only fixed, known route names are logged;
+// anything else is 'other', because paths such as /billing/<email>/<key> can
+// carry an email address or licence key.
+function logPathLabel(path = '') {
+  return supportsAnonymousTrialPath(path) || path === '/api/jobs' ? path : 'other';
+}
+
 function isPublicJobPollRequest(req) {
   return req?.method === 'GET'
     && /^\/api\/(jobs|optimizer\/audit)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req?.path || '');
+}
+
+// Billing and account-billing paths answer unrecognised credentials with the
+// same sign-in reply the billing routes use for site-header-only callers.
+const BILLING_ACCOUNT_PATHS = new Set(['/dashboard', '/me/invoices', '/me/subscriptions', '/v1/account']);
+const BILLING_CHECKOUT_PATHS = new Set(['/billing/checkout', '/api/billing/checkout']);
+
+function normalizeRoutePath(path = '') {
+  const lower = String(path).toLowerCase();
+  return lower.length > 1 ? lower.replace(/\/+$/, '') : lower;
+}
+
+function isBillingPath(path) {
+  const normalized = normalizeRoutePath(path);
+  return normalized.startsWith('/billing/')
+    || normalized.startsWith('/api/billing/')
+    || BILLING_ACCOUNT_PATHS.has(normalized);
+}
+
+function rejectCredentials(req, res, next, fallback) {
+  // Checkout decides itself, after its own request validation, so a refusal
+  // here looks and counts the same as one from the route.
+  if (req.method === 'POST' && BILLING_CHECKOUT_PATHS.has(normalizeRoutePath(req.path))) {
+    req.billingCredentialRejected = true;
+    return next();
+  }
+  if (isBillingPath(req.path)) return sendSignInRequired(req, res);
+  return fallback();
 }
 
 function authMiddleware({ supabase }) {
@@ -86,13 +123,13 @@ function authMiddleware({ supabase }) {
       req.anonymous = anonymousContext;
       req.authMethod = 'trial';
       logger.info('[Auth] Anonymous trial request accepted', {
-        site_hash: trialSiteHash,
+        ...siteRefForLog(trialSiteHash, req),
         anon_id: anonymousContext.anonId || null,
         anon_id_source: anonymousContext.source || null,
         risk_key: anonymousContext.riskKey || null,
         source: req.header('X-Trial-Site-Hash') ? 'X-Trial-Site-Hash'
           : req.header('X-Site-Hash') ? 'X-Site-Hash' : 'X-Site-Key',
-        site_url: req.header('X-Site-URL') || null,
+        has_site_url: Boolean(req.header('X-Site-URL')),
         site_fingerprint: req.header('X-Site-Fingerprint') ? 'present' : 'absent'
       });
       return next();
@@ -109,7 +146,7 @@ function authMiddleware({ supabase }) {
         has_license_key: !!licenseKey,
         has_api_key: !!apiKey,
         has_bearer: hasBearerAuth,
-        path: req.path,
+        path: logPathLabel(req.path),
         reason: !supportsAnonymousTrialPath(req.path) ? 'unsupported_path'
           : !trialSiteHash ? 'no_site_identity'
           : licenseKey ? 'has_license_key'
@@ -120,11 +157,11 @@ function authMiddleware({ supabase }) {
 
     // Debug logging
     logger.debug('[Auth] Request headers', {
-      'X-License-Key': licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
+      has_license_key: Boolean(licenseKey),
       'X-API-Key': apiKey ? 'present' : 'missing',
       'Authorization': authHeader ? 'present' : 'missing',
       'X-Anon-Id': anonymousContext.anonId ? 'present' : 'missing',
-      path: req.path
+      path: logPathLabel(req.path)
     });
 
     let jwtExpired = false;
@@ -135,8 +172,7 @@ function authMiddleware({ supabase }) {
       try {
         const decoded = jwt.verify(token, JWT_SECRET);
         logger.debug('[Auth] JWT validated', {
-          user_id: decoded.user_id,
-          email: decoded.email
+          user_id: decoded.user_id
         });
 
         // Fetch user from database
@@ -169,7 +205,7 @@ function authMiddleware({ supabase }) {
         const context = {
           reason: isExpired ? 'expired' : 'invalid',
           fallback_present: hasFallback,
-          path: req.path,
+          path: logPathLabel(req.path),
           method: req.method
         };
         if (isExpired && hasFallback) {
@@ -189,7 +225,7 @@ function authMiddleware({ supabase }) {
         logger.warn('[Auth] License validation failed', {
           error: result.error,
           message: result.message,
-          licenseKeyPrefix: licenseKey.substring(0, 8)
+          has_license_key: true
         });
         return res.status(result.status || 401).json({
           error: result.error,
@@ -268,14 +304,16 @@ function authMiddleware({ supabase }) {
             req.authMethod = 'site';
             logger.info('[Auth] Site-based auth resolved', {
               matchedBy,
-              site_hash: site.site_hash || null,
+              ...siteRefForLog(site.site_hash, req),
+              has_site_key: Boolean(siteKey),
               requestId: req.id || null,
-              path: req.path
+              path: logPathLabel(req.path)
             });
             return next();
           }
           logger.warn('[Auth] Site-key resolved license invalid', {
-            site_hash: site.site_hash || siteKey,
+            ...siteRefForLog(site.site_hash, req),
+            has_site_key: Boolean(siteKey),
             error: siteLicense.error
           });
         }
@@ -291,7 +329,7 @@ function authMiddleware({ supabase }) {
         req.authMethod = 'api_token';
         return next();
       }
-      return res.status(401).json({ error: 'INVALID_API_TOKEN', code: 'INVALID_API_TOKEN', message: 'Invalid or missing API token' });
+      return rejectCredentials(req, res, next, () => res.status(401).json({ error: 'INVALID_API_TOKEN', code: 'INVALID_API_TOKEN', message: 'Invalid or missing API token' }));
     }
 
     // A stale bearer without valid independent credentials needs sign-in,
@@ -305,7 +343,7 @@ function authMiddleware({ supabase }) {
 
     // Allow unauthenticated only if no token configured
     logger.warn('[Auth] No license key or API token provided', {
-      path: req.path,
+      reason: 'missing_credentials',
       method: req.method,
       headers: req.headers ? Object.keys(req.headers).filter(h => h.toLowerCase().includes('license') || h.toLowerCase().includes('api') || h.toLowerCase().includes('auth') || h.toLowerCase().includes('site') || h.toLowerCase().includes('install')) : [],
       hasBodyLicenseKey: Boolean(body.license_key || body.licenseKey),
@@ -315,12 +353,12 @@ function authMiddleware({ supabase }) {
       hasInstallUuid: Boolean(installUuid),
       hasSiteFingerprint: Boolean(siteFingerprint)
     });
-    return res.status(401).json({
+    return rejectCredentials(req, res, next, () => res.status(401).json({
       error: 'INVALID_LICENSE',
       code: 'INVALID_LICENSE',
       message: 'License key required. Please send X-License-Key header with your license key.',
       hint: 'Check your plugin settings to ensure the license key is configured correctly.'
-    });
+    }));
   };
 }
 

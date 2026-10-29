@@ -126,12 +126,13 @@ function createSupabaseMock({
   };
 }
 
-function createApp({ supabase, license = null, user = null, requiredToken = null }) {
+function createApp({ supabase, license = null, user = null, requiredToken = null, authMethod = null }) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     req.license = license;
     req.user = user;
+    req.authMethod = authMethod || (user ? 'jwt' : license ? 'license' : undefined);
     next();
   });
   app.use('/billing', createBillingRouter({
@@ -198,7 +199,7 @@ describe('billing truth-source cleanup', () => {
       source: 'licenses',
       resolution_path: 'license',
       account_id: 'acct_free',
-      licenseKeyPrefix: '[redacted]',
+      licenseKeyPrefix: 'present',
       stripe_subscription_id: null
     }));
   });
@@ -239,16 +240,16 @@ describe('billing truth-source cleanup', () => {
       status: 'past_due',
       billingCycle: 'yearly',
       nextBillingDate: '2026-07-01T00:00:00.000Z',
-      subscriptionId: 'sub_123',
+      subscriptionId: 'sub_***',
       cancelAtPeriodEnd: true,
-      customerId: 'cus_123'
+      customerId: 'cus_***'
     });
     expect(infoSpy).toHaveBeenCalledWith('[billing] info_source_resolved', expect.objectContaining({
       source: 'site_subscriptions',
       resolution_path: 'stripe_subscription_id',
       account_id: 'acct_paid',
-      licenseKeyPrefix: '[redacted]',
-      stripe_subscription_id: 'sub_123'
+      licenseKeyPrefix: 'present',
+      stripe_subscription_id: 'sub_***'
     }));
   });
 
@@ -289,16 +290,16 @@ describe('billing truth-source cleanup', () => {
       status: 'active',
       billingCycle: 'monthly',
       nextBillingDate: '2026-06-15T00:00:00.000Z',
-      subscriptionId: 'sub_linked',
+      subscriptionId: 'sub_***',
       cancelAtPeriodEnd: false,
-      customerId: 'cus_linked'
+      customerId: 'cus_***'
     });
     expect(infoSpy).toHaveBeenCalledWith('[billing] info_source_resolved', expect.objectContaining({
       source: 'site_subscriptions',
       resolution_path: 'license_sites',
       account_id: 'acct_linked',
-      licenseKeyPrefix: 'lic_link...',
-      stripe_subscription_id: 'sub_linked'
+      licenseKeyPrefix: 'present',
+      stripe_subscription_id: 'sub_***'
     }));
   });
 
@@ -349,15 +350,15 @@ describe('billing truth-source cleanup', () => {
         status: 'active',
         billingCycle: 'month',
         nextBillingDate: '2026-05-20T00:00:00.000Z',
-        subscriptionId: 'sub_paid',
+        subscriptionId: 'sub_***',
         cancelAtPeriodEnd: false
       }
     });
     expect(infoSpy).toHaveBeenCalledWith('[billing] subscription_source_resolved', expect.objectContaining({
       source: 'site_subscriptions',
       site_id: 'site_paid',
-      site_hash: 'site_hash_paid',
-      stripe_subscription_id: 'sub_paid'
+      has_site_key: true,
+      stripe_subscription_id: 'sub_***'
     }));
     expect(resolveCanonicalSite).toHaveBeenCalledWith(
       expect.anything(),
@@ -416,7 +417,7 @@ describe('billing truth-source cleanup', () => {
     expect(infoSpy).toHaveBeenCalledWith('[billing] subscription_source_resolved', expect.objectContaining({
       source: 'licenses',
       site_id: 'site_free',
-      site_hash: 'site_hash_free',
+      has_site_key: true,
       stripe_subscription_id: null
     }));
   });

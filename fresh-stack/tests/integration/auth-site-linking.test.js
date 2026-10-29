@@ -1,5 +1,6 @@
 const express = require('express');
 const request = require('supertest');
+const { installIdFromSiteKey } = require('../../lib/installId');
 
 process.env.JWT_SECRET = 'test-jwt-secret';
 
@@ -25,6 +26,7 @@ jest.mock('../../services/quota', () => ({
 }));
 
 const { createAuthRouter } = require('../../routes/auth');
+const { createGuestRowsTables } = require('../helpers/guestRowsMock');
 const { createLicenseRouter } = require('../../routes/license');
 
 const LEGACY_UNSUPPORTED_SITE_COLUMNS = [
@@ -75,8 +77,10 @@ function stripToLegacySitePayload(payload = {}) {
 function createSupabaseMock({
   legacySiteSchema = false,
   missingSiteMembershipsTable = false,
-  pluginConnectionInsertError = null
+  pluginConnectionInsertError = null,
+  guestRows = null
 } = {}) {
+  const guestTables = guestRows ? createGuestRowsTables(guestRows) : null;
   const licenses = [];
   const sites = [];
   const siteMemberships = [];
@@ -135,6 +139,7 @@ function createSupabaseMock({
   }
 
   return {
+    _guest: guestTables,
     _state: {
       licenses,
       sites,
@@ -383,6 +388,10 @@ function createSupabaseMock({
         };
       }
 
+      if (guestTables && guestTables.handles(table)) {
+        return guestTables.from(table);
+      }
+
       throw new Error(`Unexpected table: ${table}`);
     }
   };
@@ -393,6 +402,19 @@ function createApp(supabase, { includeLicenseRoutes = false } = {}) {
   app.use(express.json());
   app.use('/auth', createAuthRouter({ supabase }));
   if (includeLicenseRoutes) {
+    // Stands in for the auth middleware: an X-License-Key caller is an
+    // account credential (authMethod 'license').
+    app.use((req, _res, next) => {
+      const key = req.header('X-License-Key');
+      if (!key) return next();
+      return require('../../services/siteQuota').fetchAccountByLicenseKey(supabase, key).then((account) => {
+        if (account) {
+          req.license = account;
+          req.authMethod = 'license';
+        }
+        next();
+      }, next);
+    });
     app.use('/api/license', createLicenseRouter({ supabase }));
     app.use('/api/licenses', createLicenseRouter({ supabase }));
   }
@@ -525,8 +547,9 @@ describe('site-aware auth linking', () => {
     expect(res.body.code).not.toBe('AMBIGUOUS_SITE_MATCH');
     expect(res.body.site).toEqual(expect.objectContaining({
       id: targetSite.id,
-      site_hash: targetSite.site_hash
+      site_install_id: installIdFromSiteKey(targetSite.site_hash)
     }));
+    expect(res.body.site).not.toHaveProperty('site_hash');
     expect(supabase._state.siteAuditLogs).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ event_type: 'ambiguous_site_match' })
     ]));
@@ -618,9 +641,9 @@ describe('site-aware auth linking', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.site).toEqual(expect.objectContaining({
-      site_hash: 'localhost-new-install',
-      fingerprint: 'localhost-fingerprint-new'
+      site_install_id: installIdFromSiteKey('localhost-new-install')
     }));
+    expect(res.body.site).not.toHaveProperty('site_hash');
     expect(res.body.site.id).not.toBe('site_existing_localhost');
     expect(supabase._state.sites).toHaveLength(2);
   });
@@ -653,7 +676,7 @@ describe('site-aware auth linking', () => {
     expect(login.status).toBe(200);
     expect(login.body.site).toEqual(expect.objectContaining({
       id: expect.any(String),
-      site_hash: 'wp-login-heal'
+      site_install_id: installIdFromSiteKey('wp-login-heal')
     }));
     expect(login.body.entitlement_state).toEqual(expect.objectContaining({
       plan: 'free',
@@ -695,7 +718,7 @@ describe('site-aware auth linking', () => {
     expect(sitesRes.body.sites).toHaveLength(1);
     expect(sitesRes.body.sites[0]).toEqual(expect.objectContaining({
       id: expect.any(String),
-      site_hash: 'wp-license-heal'
+      site_install_id: installIdFromSiteKey('wp-license-heal')
     }));
 
     const siteId = sitesRes.body.sites[0].id;
@@ -729,11 +752,13 @@ describe('site-aware auth linking', () => {
     expect(register.status).toBe(200);
     expect(register.body.site).toEqual(expect.objectContaining({
       id: expect.any(String),
-      site_hash: 'legacy-install',
-      site_url: 'http://localhost:8080/wp-admin/',
-      fingerprint: 'legacy-fingerprint',
-      license_key: register.body.user.license_key
+      site_install_id: installIdFromSiteKey('legacy-install'),
+      site_url: 'http://localhost:8080/wp-admin/'
     }));
+    // Password register is an account credential: user.license_key stays.
+    expect(register.body.user.license_key).toEqual(expect.any(String));
+    // Password callers keep the site object (Alt Text has_active_license()); only the raw site key goes.
+    expect(register.body.site).not.toHaveProperty('site_hash');
 
     const login = await request(app)
       .post('/auth/login')
@@ -742,9 +767,9 @@ describe('site-aware auth linking', () => {
     expect(login.status).toBe(200);
     expect(login.body.site).toEqual(expect.objectContaining({
       id: register.body.site.id,
-      site_hash: 'legacy-install',
-      license_key: register.body.user.license_key
+      site_install_id: installIdFromSiteKey('legacy-install')
     }));
+    expect(login.body.site).not.toHaveProperty('site_hash');
 
     const sitesRes = await request(app)
       .get('/api/license/sites')
@@ -754,9 +779,9 @@ describe('site-aware auth linking', () => {
     expect(sitesRes.body.sites).toHaveLength(1);
     expect(sitesRes.body.sites[0]).toEqual(expect.objectContaining({
       id: register.body.site.id,
-      site_hash: 'legacy-install',
-      license_key: register.body.user.license_key
+      site_install_id: installIdFromSiteKey('legacy-install')
     }));
+    expect(sitesRes.body.sites[0]).not.toHaveProperty('site_hash');
     expect(supabase._state.siteMemberships).toHaveLength(0);
   });
 });
@@ -896,7 +921,7 @@ describe('register signup_source ("How did you find us?")', () => {
     expect(row.signup_source_other).toBeNull();
     expect(identifyServerUser).toHaveBeenCalledWith({
       distinctId: row.id,
-      properties: { $set: { signup_source: 'wporg', signup_source_other: null, signup_source_plugin: 'alt_text' } }
+      properties: { $set: { signup_source: 'wporg', signup_source_plugin: 'alt_text' } }
     });
   });
 
@@ -925,6 +950,11 @@ describe('register signup_source ("How did you find us?")', () => {
     expect(row.signup_source_other).not.toMatch(/[<>]/);
     expect(row.signup_source_other.startsWith('Podcast')).toBe(true);
     expect(row.signup_source_other.length).toBeLessThanOrEqual(200);
+    // The free text stays in the database; PostHog gets the source only.
+    expect(identifyServerUser).toHaveBeenCalledWith(expect.objectContaining({
+      properties: { $set: expect.objectContaining({ signup_source: 'other' }) }
+    }));
+    expect(JSON.stringify(identifyServerUser.mock.calls)).not.toMatch(/Podcast|signup_source_other/);
   });
 });
 
@@ -984,5 +1014,214 @@ describe('register product_emails_opt_out ("Don\'t send me product tips and plan
     expect(res.body.success).toBe(true);
     expect(res.body.token).toBeTruthy();
     expect(trackAccountCreated).toHaveBeenCalledWith(expect.objectContaining({ productEmailsOptOut: true }));
+  });
+});
+
+describe('responses never carry the raw site key; licence key only for account credentials', () => {
+  const RAW = 'qa-raw-site-key-resp-0001';
+  // Sign-in bodies the plugins read the licence from:
+  // Alt Text 4.6.143 class-api-client-v2.php:1345-1346 (login) and 1494-1495
+  // (register) read data.user.license_key / user.license_key; Titles 1.0.30
+  // Api/Client.php:620-621 reads user.license_key; IL 0.1.4 account.php:70
+  // reads the Alt Text stored user data (license_key or data.user.license_key).
+  const plugins = {
+    'alt-text-4.6.143': { site_id: RAW, install_uuid: RAW, site_url: 'https://alt.example.com/', plugin_id: 'alt_text', plugin_version: '4.6.143' },
+    'titles-1.0.30': { site_id: RAW, site_url: 'https://titles.example.com/', plugin_id: 'titles', plugin_version: '1.0.30', blog_id: 1, network_id: 1, is_multisite: false },
+    'internal-linking-0.1.4': { site_id: RAW, site_url: 'https://il.example.com/', plugin_id: 'internal_linking', plugin_version: '0.1.4' }
+  };
+
+  test.each(Object.entries(plugins))('%s register and login: user, user.license_key and site kept, no raw site key anywhere', async (_name, siteBody) => {
+    const supabase = createSupabaseMock();
+    const app = createApp(supabase);
+    const email = `resp-${siteBody.plugin_id}@example.com`;
+    const register = await request(app).post('/auth/register').send({ email, password: 'Password123!', ...siteBody });
+    expect(register.status).toBe(200);
+    const login = await request(app).post('/auth/login').send({ email, password: 'Password123!', ...siteBody });
+    expect(login.status).toBe(200);
+    for (const res of [register, login]) {
+      const licence = res.body.user.license_key;
+      expect(licence).toEqual(expect.any(String));
+      expect(res.body.data.user.license_key).toBe(licence);
+      expect(JSON.stringify(res.body)).not.toContain(RAW);
+      for (const site of [res.body.site, res.body.data.site]) {
+        // Alt Text stores user (register :1350-1362, login :1496-1511) and
+        // copies user.license_key; the site object stays for sign-in callers.
+        expect(res.body.user).toEqual(expect.objectContaining({ id: expect.any(String), email: expect.any(String), license_key: licence }));
+        expect(site).toEqual(expect.objectContaining({ id: expect.any(String), site_install_id: installIdFromSiteKey(RAW) }));
+        expect(site).not.toHaveProperty('site_hash');
+      }
+    }
+  });
+
+  function siteOnlyApp(supabase, authMethod, licence) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, res, next) => {
+      req.license = { id: 'license_1', license_key: licence };
+      req.authMethod = authMethod;
+      next();
+    });
+    app.use('/api/license', createLicenseRouter({ supabase }));
+    return app;
+  }
+
+  test('/license/sites: a site-key-only caller gets no licence key and no raw site key; a licence caller keeps the echo', async () => {
+    const supabase = createSupabaseMock();
+    const reg = await request(createApp(supabase)).post('/auth/register').send({ email: 'resp-sites@example.com', password: 'Password123!', ...plugins['alt-text-4.6.143'] });
+    const licence = reg.body.user.license_key;
+
+    const siteOnly = await request(siteOnlyApp(supabase, 'site', licence)).get('/api/license/sites').set('X-Site-Key', RAW);
+    // With the data-route gate (billing branch) a site-key-only caller gets
+    // the sign-in reply; without it, the list carries neither key.
+    expect([200, 401]).toContain(siteOnly.status);
+    if (siteOnly.status === 401) {
+      expect(siteOnly.body).toEqual({ code: 'SIGN_IN_REQUIRED', message: 'Sign in to manage billing.' });
+    } else {
+      expect(siteOnly.body.sites.length).toBeGreaterThan(0);
+      expect(siteOnly.body).not.toHaveProperty('license_key');
+      for (const site of siteOnly.body.sites) expect(site).not.toHaveProperty('site_hash');
+    }
+    expect(JSON.stringify(siteOnly.body)).not.toContain(RAW);
+    expect(JSON.stringify(siteOnly.body)).not.toContain(licence);
+
+    const withLicence = await request(siteOnlyApp(supabase, 'license', licence)).get('/api/license/sites').set('X-License-Key', licence);
+    expect(withLicence.status).toBe(200);
+    expect(withLicence.body.license_key).toBe(licence);
+    expect(JSON.stringify(withLicence.body)).not.toContain(RAW);
+  });
+});
+
+describe('register links the site\'s earlier guest-trial rows', () => {
+  const PAST = '2020-01-01T00:00:00.000Z';
+  const sitePayload = {
+    site_id: 'wp-install-guest',
+    install_uuid: 'wp-install-guest',
+    site_url: 'https://guest-site.example.com',
+    site_fingerprint: 'fingerprint-guest'
+  };
+  const existingSite = () => ({
+    id: 'site_guest_existing',
+    license_key: null,
+    site_hash: 'wp-install-guest',
+    wp_install_uuid: 'wp-install-guest',
+    site_fingerprint: 'fingerprint-guest',
+    site_url: 'https://guest-site.example.com',
+    normalized_site_url: 'guest-site.example.com',
+    canonical_domain: 'guest-site.example.com',
+    status: 'active',
+    created_at: PAST,
+    updated_at: PAST
+  });
+  const guestRows = () => ({
+    usageLogs: [
+      { id: 'ul_guest_1', site_hash: 'wp-install-guest', is_trial: true, auth_state: 'guest_trial', license_id: null, user_id: null, created_at: PAST },
+      { id: 'ul_guest_2', site_hash: 'wp-install-guest', is_trial: true, auth_state: 'guest_trial', license_id: null, user_id: null, created_at: PAST },
+      { id: 'ul_other_site', site_hash: 'wp-install-elsewhere', is_trial: true, auth_state: 'guest_trial', license_id: null, user_id: null, created_at: PAST }
+    ],
+    generationRequests: [
+      { id: 'gr_guest_1', site_id: 'site_guest_existing', quota_source: 'trial', user_id: null, created_at: PAST },
+      { id: 'gr_other_site', site_id: 'site_elsewhere', quota_source: 'trial', user_id: null, created_at: PAST }
+    ]
+  });
+  const ORIGINAL = process.env.LINK_GUEST_TRIAL_ON_SIGNUP;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.LINK_GUEST_TRIAL_ON_SIGNUP;
+    else process.env.LINK_GUEST_TRIAL_ON_SIGNUP = ORIGINAL;
+  });
+
+  test('with the flag off (default) nothing is written', async () => {
+    delete process.env.LINK_GUEST_TRIAL_ON_SIGNUP;
+    const supabase = createSupabaseMock({ guestRows: guestRows() });
+    supabase._state.sites.push(existingSite());
+    const logger = require('../../lib/logger');
+    const info = jest.spyOn(logger, 'info');
+    try {
+      const res = await request(createApp(supabase))
+        .post('/auth/register')
+        .send({ email: 'guest-off@qa.oppti.dev', password: 'Password123!', ...sitePayload });
+
+      expect(res.body.success).toBe(true);
+      expect(supabase._guest.updates).toHaveLength(0);
+      const line = info.mock.calls.find(([message]) => message === '[Auth] guest_trial_link');
+      expect(line[1]).toEqual(expect.objectContaining({
+        mode: 'dry_run', would_link_usage_logs: 2, would_link_generation_requests: 1
+      }));
+      expect(JSON.stringify(line[1])).not.toContain('guest-off@');
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  test('with the flag on only the registering site\'s guest rows are linked to the new account', async () => {
+    process.env.LINK_GUEST_TRIAL_ON_SIGNUP = 'true';
+    const supabase = createSupabaseMock({ guestRows: guestRows() });
+    supabase._state.sites.push(existingSite());
+
+    const res = await request(createApp(supabase))
+      .post('/auth/register')
+      .send({ email: 'guest-on@qa.oppti.dev', password: 'Password123!', ...sitePayload });
+
+    expect(res.body.success).toBe(true);
+    const accountId = supabase._state.licenses[0].id;
+    const usage = Object.fromEntries(supabase._guest.tables.usage_logs.map((row) => [row.id, row]));
+    expect(usage.ul_guest_1).toEqual(expect.objectContaining({ license_id: accountId, is_trial: true, auth_state: 'guest_trial' }));
+    expect(usage.ul_guest_2.license_id).toBe(accountId);
+    expect(usage.ul_other_site.license_id).toBeNull();
+    const requests = Object.fromEntries(supabase._guest.tables.generation_requests.map((row) => [row.id, row]));
+    expect(requests.gr_guest_1).toEqual(expect.objectContaining({ user_id: accountId, quota_source: 'trial' }));
+    expect(requests.gr_other_site.user_id).toBeNull();
+    expect(supabase._state.siteAuditLogs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event_type: 'guest_trial_rows_linked',
+        site_id: 'site_guest_existing',
+        actor_user_id: accountId,
+        metadata: expect.objectContaining({
+          usage_log_ids: ['ul_guest_1', 'ul_guest_2'],
+          generation_request_ids: ['gr_guest_1']
+        })
+      })
+    ]));
+  });
+
+  test('a second account joining an owned site links nothing', async () => {
+    process.env.LINK_GUEST_TRIAL_ON_SIGNUP = 'true';
+    const supabase = createSupabaseMock({ guestRows: guestRows() });
+    supabase._state.sites.push({ ...existingSite(), license_key: 'lic-someone-else' });
+
+    const res = await request(createApp(supabase))
+      .post('/auth/register')
+      .send({ email: 'guest-joiner@qa.oppti.dev', password: 'Password123!', ...sitePayload });
+
+    expect(res.body.success).toBe(true);
+    expect(res.body.shared_site).toBe(true);
+    expect(supabase._guest.updates).toHaveLength(0);
+  });
+});
+
+describe('auth log lines mask email addresses', () => {
+  const EMAIL = 'masking-check@qa.oppti.dev';
+  const loggedText = (spies) => JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
+
+  test('register, duplicate register and login never log the full email', async () => {
+    const logger = require('../../lib/logger');
+    const spies = ['info', 'warn', 'error', 'debug'].map((level) => jest.spyOn(logger, level));
+    try {
+      const app = createApp(createSupabaseMock());
+      const credentials = { email: EMAIL, password: 'Password123!' };
+      expect((await request(app).post('/auth/register').send(credentials)).body.success).toBe(true);
+      expect((await request(app).post('/auth/register').send(credentials)).body.code).toBe('USER_EXISTS');
+      expect((await request(app).post('/auth/login').send(credentials)).body.success).toBe(true);
+
+      expect(loggedText(spies)).not.toContain(EMAIL);
+      const success = spies[0].mock.calls.find(([message]) => message === '[Auth] Register successful');
+      expect(success[1].email).toBe('m***@qa.oppti.dev');
+      const exists = spies[0].mock.calls.find(([message]) => message === '[Auth] Register rejected: user exists');
+      expect(exists[1].email).toBe('m***@qa.oppti.dev');
+      const login = spies[0].mock.calls.find(([message]) => message === '[Auth] Login successful');
+      expect(login[1].email).toBe('m***@qa.oppti.dev');
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
   });
 });

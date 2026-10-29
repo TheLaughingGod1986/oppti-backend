@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const {
@@ -396,7 +397,7 @@ async function resolveImageAltStateSiteContext(supabase, req, { createIfMissing 
       request_id: req?.id || null,
       account_id: account?.id || null,
       create_if_missing: shouldCreateIfMissing,
-      site_hash: siteIdentity.siteHash || null,
+      ...siteRefForLog(siteIdentity.siteHash || null, req),
       site_url: siteIdentity.siteUrl || null,
       error: resolved.error,
       site_write_error: resolved.diagnostics?.site_write_error || null,
@@ -523,7 +524,7 @@ async function resolveImageAltStateSyncTarget(supabase, {
       logger.error('[site] image_state_sync_target_healing_failed', {
         account_id: account?.id || null,
         create_if_missing: shouldCreateIfMissing,
-        site_hash: siteIdentity.siteHash || null,
+        ...siteRefForLog(siteIdentity.siteHash || null),
         site_url: siteIdentity.siteUrl || null,
         error: resolved.error,
         site_write_error: resolved.diagnostics?.site_write_error || null,
@@ -785,7 +786,7 @@ async function syncImageAltStates(supabase, {
 
   logger.info('[image-state] sync_started', {
     site_id: siteId,
-    site_hash: siteHash || null,
+    ...siteRefForLog(siteHash || null),
     scope,
     request_id: requestId || null,
     requested_rows: Array.isArray(images) ? images.length : 0,
@@ -798,7 +799,7 @@ async function syncImageAltStates(supabase, {
     logger.error('[image-state] sync_failed', {
       table: 'image_alt_states',
       site_id: siteId,
-      site_hash: siteHash || null,
+      ...siteRefForLog(siteHash || null),
       request_id: requestId || null,
       error: serializeSupabaseError(existingError)
     });
@@ -855,7 +856,7 @@ async function syncImageAltStates(supabase, {
 
   logger.info('[image-state] sync_normalized', {
     site_id: siteId,
-    site_hash: siteHash || null,
+    ...siteRefForLog(siteHash || null),
     request_id: requestId || null,
     existing_row_count: existingRows.length,
     requested_rows: Array.isArray(images) ? images.length : 0,
@@ -930,7 +931,7 @@ async function syncImageAltStates(supabase, {
     logger.info('[image-state] ledger_batch_write_started', {
       table: 'image_alt_states',
       site_id: siteId,
-      site_hash: siteHash || null,
+      ...siteRefForLog(siteHash || null),
       row_count: rowsToWrite.length,
       inserted_estimate: inserted,
       updated_estimate: updated,
@@ -950,7 +951,7 @@ async function syncImageAltStates(supabase, {
       logger.error('[image-state] ledger_batch_write_failed', {
         table: 'image_alt_states',
         site_id: siteId,
-        site_hash: siteHash || null,
+        ...siteRefForLog(siteHash || null),
         row_count: rowsToWrite.length,
         request_id: requestId || null,
         error: serializeSupabaseError(error)
@@ -971,7 +972,7 @@ async function syncImageAltStates(supabase, {
     logger.info('[image-state] ledger_batch_write_succeeded', {
       table: 'image_alt_states',
       site_id: siteId,
-      site_hash: siteHash || null,
+      ...siteRefForLog(siteHash || null),
       row_count: rowsToWrite.length,
       request_id: requestId || null
     });
@@ -991,7 +992,7 @@ async function syncImageAltStates(supabase, {
 
   logger.info('[image-state] sync_completed', {
     site_id: siteId,
-    site_hash: siteHash || null,
+    ...siteRefForLog(siteHash || null),
     scope,
     request_id: requestId || null,
     requested_rows: Array.isArray(images) ? images.length : 0,

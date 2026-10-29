@@ -1,9 +1,11 @@
 const crypto = require('crypto');
 const logger = require('../lib/logger');
+const { installRefForLog, siteRefForLog } = require('../lib/logIdentity');
 const { isMissingSchemaError, serializeSupabaseError } = require('../lib/supabaseErrors');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { getAnonymousTrialLimit } = require('./anonymousTrial');
 const { getLimits } = require('./planLimits');
+const { redactStripeIds } = require('../lib/redact');
 
 const SITE_SELECT = [
   'id',
@@ -59,9 +61,9 @@ const LEGACY_SITE_COLUMN_MAP = {
 };
 
 function maskSecret(value) {
-  if (!value) return null;
-  const stringValue = String(value);
-  return stringValue.length <= 8 ? '[redacted]' : `${stringValue.slice(0, 8)}...`;
+  // Logs record only whether a licence key was present: never any of its
+  // characters. The output only ever goes to log lines.
+  return value ? 'present' : null;
 }
 
 function ensureDiagnosticsBucket(target, key) {
@@ -176,7 +178,7 @@ function logLegacySitesFallback(event, {
   logger.warn(`[site] ${event}`, {
     match_column: column,
     match_value: truncateMatchValue(value),
-    site_hash: siteHash || null,
+    ...siteRefForLog(siteHash || null),
     site_url: siteUrl || null,
     error: serializeSupabaseError(error)
   });
@@ -358,9 +360,9 @@ function truncateMatchValue(value) {
 }
 
 function maskLicenseKeyForCreditAudit(licenseKey) {
-  if (!licenseKey) return null;
-  const normalized = String(licenseKey);
-  return normalized.length > 8 ? `${normalized.substring(0, 8)}...` : '[redacted]';
+  // Logs record only whether a licence key was present: never any of its
+  // characters. The output only ever goes to log lines.
+  return licenseKey ? 'present' : null;
 }
 
 function toCreditAuditIsoString(value) {
@@ -465,10 +467,10 @@ async function selectEffectiveSiteQuotaRead(supabase, {
   const auditContext = {
     request_id: requestId || null,
     account_id: account?.id || null,
-    license_id_prefix: maskLicenseKeyForCreditAudit(account?.id || null),
+    license_id: account?.id || null,
     license_key_prefix: maskLicenseKeyForCreditAudit(licenseKey || account?.license_key || site?.license_key || null),
     site_id: site?.id || null,
-    site_hash: site?.site_hash || null,
+    ...siteRefForLog(site?.site_hash || null),
     period_start: toCreditAuditIsoString(quotaPeriodStart),
     period_end: toCreditAuditIsoString(quotaPeriodEnd)
   };
@@ -644,8 +646,8 @@ function logCanonicalSiteResolutionAttempt({
     request_id: requestId || null,
     account_id: account?.id || null,
     create_if_missing: Boolean(createIfMissing),
-    site_hash: identity?.siteHash || identity?.syntheticSiteHash || null,
-    install_uuid: identity?.wpInstallUuid || null,
+    ...siteRefForLog(identity?.siteHash || identity?.syntheticSiteHash || null),
+    ...installRefForLog(identity?.wpInstallUuid || null),
     site_url: identity?.siteUrl || identity?.normalizedSiteUrl || null,
     canonical_domain: identity?.canonicalDomain || null,
     site_fingerprint_present: Boolean(identity?.siteFingerprint)
@@ -669,8 +671,8 @@ function logCanonicalSiteResolutionFailed({
     create_if_missing: Boolean(createIfMissing),
     error: errorCode || 'UNKNOWN_SITE_RESOLUTION_ERROR',
     matched_by: matchedBy || null,
-    site_hash: identity?.siteHash || identity?.syntheticSiteHash || null,
-    install_uuid: identity?.wpInstallUuid || null,
+    ...siteRefForLog(identity?.siteHash || identity?.syntheticSiteHash || null),
+    ...installRefForLog(identity?.wpInstallUuid || null),
     site_url: identity?.siteUrl || identity?.normalizedSiteUrl || null,
     canonical_domain: identity?.canonicalDomain || null,
     site_fingerprint_present: Boolean(identity?.siteFingerprint)
@@ -901,7 +903,7 @@ async function reconcileResolvedSite(supabase, site, identity, { legacyLicenseKe
       }
       logger.error('[site] canonical_site_reconcile_failed', {
         site_id: site.id,
-        site_hash: site.site_hash || identity.siteHash || null,
+        ...siteRefForLog(site.site_hash || identity.siteHash || null),
         schema_mode: 'legacy',
         error: serializeSupabaseError(legacyError)
       });
@@ -921,7 +923,7 @@ async function reconcileResolvedSite(supabase, site, identity, { legacyLicenseKe
     }
     logger.info('[site] canonical_site_reconciled', {
       site_id: legacyData?.id || site.id,
-      site_hash: legacyData?.site_hash || site.site_hash || identity.siteHash || null,
+      ...siteRefForLog(legacyData?.site_hash || site.site_hash || identity.siteHash || null),
       updated_fields: Object.keys(legacyUpdates),
       schema_mode: 'legacy'
     });
@@ -941,7 +943,7 @@ async function reconcileResolvedSite(supabase, site, identity, { legacyLicenseKe
     }
     logger.error('[site] canonical_site_reconcile_failed', {
       site_id: site.id,
-      site_hash: site.site_hash || identity.siteHash || null,
+      ...siteRefForLog(site.site_hash || identity.siteHash || null),
       error: serializeSupabaseError(error)
     });
     logger.warn('[siteQuota] failed to reconcile resolved site', {
@@ -962,7 +964,7 @@ async function reconcileResolvedSite(supabase, site, identity, { legacyLicenseKe
   }
   logger.info('[site] canonical_site_reconciled', {
     site_id: data?.id || site.id,
-    site_hash: data?.site_hash || site.site_hash || identity.siteHash || null,
+    ...siteRefForLog(data?.site_hash || site.site_hash || identity.siteHash || null),
     updated_fields: Object.keys(updates)
   });
 
@@ -1035,7 +1037,7 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
         createDiagnostics.schema_mode = 'legacy';
       }
       logger.info('[siteQuota] Legacy site create reused existing row after unique race', {
-        site_hash: legacyPayload.site_hash,
+        ...siteRefForLog(legacyPayload.site_hash),
         site_url: legacyPayload.site_url || null
       });
       return null;
@@ -1050,14 +1052,14 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
         createDiagnostics.schema_mode = 'legacy';
       }
       logger.error('[site] canonical_site_create_failed', {
-        site_hash: legacyPayload.site_hash,
+        ...siteRefForLog(legacyPayload.site_hash),
         site_url: legacyPayload.site_url || null,
         canonical_domain: payload.canonical_domain || null,
         schema_mode: 'legacy',
         error: serializeSupabaseError(legacyError)
       });
       logger.error('[siteQuota] Legacy site creation failed', {
-        site_hash: legacyPayload.site_hash,
+        ...siteRefForLog(legacyPayload.site_hash),
         site_url: legacyPayload.site_url || null,
         error: serializeSupabaseError(legacyError)
       });
@@ -1074,7 +1076,7 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
 
     logger.info('[site] canonical_site_created', {
       site_id: legacyData?.id || null,
-      site_hash: legacyPayload.site_hash,
+      ...siteRefForLog(legacyPayload.site_hash),
       site_url: legacyPayload.site_url || null,
       canonical_domain: payload.canonical_domain || null,
       schema_mode: 'legacy'
@@ -1082,7 +1084,7 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
 
     logger.info('[siteQuota] Legacy site created', {
       site_id: legacyData?.id || null,
-      site_hash: legacyPayload.site_hash,
+      ...siteRefForLog(legacyPayload.site_hash),
       site_url: legacyPayload.site_url || null,
       has_license: !!legacyPayload.license_key
     });
@@ -1101,7 +1103,7 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
       createDiagnostics.reused_existing = true;
     }
     logger.info('[siteQuota] Site create reused existing row after unique race', {
-      site_hash: payload.site_hash,
+      ...siteRefForLog(payload.site_hash),
       site_url: payload.site_url || null,
       canonical_domain: payload.canonical_domain || null
     });
@@ -1116,13 +1118,13 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
       createDiagnostics.reused_existing = false;
     }
     logger.error('[site] canonical_site_create_failed', {
-      site_hash: payload.site_hash,
+      ...siteRefForLog(payload.site_hash),
       site_url: payload.site_url || null,
       canonical_domain: payload.canonical_domain || null,
       error: serializeSupabaseError(error)
     });
     logger.error('[siteQuota] Site creation failed', {
-      site_hash: payload.site_hash,
+      ...siteRefForLog(payload.site_hash),
       site_url: payload.site_url || null,
       canonical_domain: payload.canonical_domain || null,
       error: serializeSupabaseError(error)
@@ -1139,14 +1141,14 @@ async function createCanonicalSite(supabase, identity, { legacyLicenseKey = null
 
   logger.info('[site] canonical_site_created', {
     site_id: data?.id || null,
-    site_hash: payload.site_hash,
+    ...siteRefForLog(payload.site_hash),
     site_url: payload.site_url || null,
     canonical_domain: payload.canonical_domain || null
   });
 
   logger.info('[siteQuota] Site created', {
     site_id: data?.id || null,
-    site_hash: payload.site_hash,
+    ...siteRefForLog(payload.site_hash),
     site_url: payload.site_url || null,
     canonical_domain: payload.canonical_domain || null,
     environment: payload.environment,
@@ -1561,7 +1563,7 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
   if (site) {
     logger.info('[siteQuota] Existing site reused', {
       site_id: site.id,
-      site_hash: site.site_hash,
+      ...siteRefForLog(site.site_hash),
       site_url: site.site_url || identity.siteUrl || null,
       matched_by: matchedBy,
       canonical_domain: site.canonical_domain || null
@@ -1637,7 +1639,7 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
 
         logger.info('[siteQuota] Site creation short-circuited to existing site', {
           site_id: preInsertReconciledSite?.id || preInsertMatch.site.id,
-          site_hash: preInsertReconciledSite?.site_hash || preInsertMatch.site.site_hash,
+          ...siteRefForLog(preInsertReconciledSite?.site_hash || preInsertMatch.site.site_hash),
           site_url: preInsertReconciledSite?.site_url || preInsertMatch.site.site_url || identity.siteUrl || null
         });
         return {
@@ -1697,7 +1699,7 @@ async function resolveCanonicalSite(supabase, rawIdentity, {
     };
   } catch (error) {
     logger.error('[siteQuota] canonical site create failed', {
-      site_hash: identity.siteHash || identity.syntheticSiteHash || null,
+      ...siteRefForLog(identity.siteHash || identity.syntheticSiteHash || null),
       site_url: identity.siteUrl || identity.normalizedSiteUrl || null,
       error: serializeSupabaseError(error)
     });
@@ -2238,7 +2240,7 @@ async function reserveSiteCredits(supabase, {
 
     logger.error('[siteQuota] reserve rpc failed', {
       siteId: resolved.site.id,
-      site_hash: resolved.site.site_hash || null,
+      ...siteRefForLog(resolved.site.site_hash || null),
       quota_mode: rpcPayload.p_quota_mode,
       error: serializeSupabaseError(error)
     });
@@ -2252,7 +2254,7 @@ async function reserveSiteCredits(supabase, {
   if (!data?.ok) {
     logger.warn('[siteQuota] reserve rpc rejected request', {
       site_id: resolved.site.id,
-      site_hash: resolved.site.site_hash || null,
+      ...siteRefForLog(resolved.site.site_hash || null),
       quota_mode: rpcPayload.p_quota_mode,
       generation_request_id: data?.generation_request_id || null,
       response_code: data?.code || 'QUOTA_EXCEEDED',
@@ -2272,7 +2274,7 @@ async function reserveSiteCredits(supabase, {
 
   logger.info('[siteQuota] reserve rpc succeeded', {
     site_id: resolved.site.id,
-    site_hash: resolved.site.site_hash || null,
+    ...siteRefForLog(resolved.site.site_hash || null),
     quota_mode: rpcPayload.p_quota_mode,
     generation_request_id: data?.generation_request_id || null,
     quota_source: data?.quota_source || null,
@@ -2432,7 +2434,7 @@ async function syncLegacySitePointers(supabase, {
       }
       logger.info('[site] legacy_site_pointer_sync_succeeded', {
         site_id: site.id,
-        site_hash: site.site_hash || null,
+        ...siteRefForLog(site.site_hash || null),
         account_id: account.id || null
       });
     } catch (error) {
@@ -2463,7 +2465,7 @@ async function syncLegacySitePointers(supabase, {
           }
           logger.info('[site] legacy_site_pointer_sync_succeeded', {
             site_id: site.id,
-            site_hash: site.site_hash || null,
+            ...siteRefForLog(site.site_hash || null),
             account_id: account.id || null,
             schema_mode: 'legacy'
           });
@@ -2476,7 +2478,7 @@ async function syncLegacySitePointers(supabase, {
           }
           logger.error('[site] legacy_site_pointer_sync_failed', {
             site_id: site.id,
-            site_hash: site.site_hash || null,
+            ...siteRefForLog(site.site_hash || null),
             account_id: account.id || null,
             schema_mode: 'legacy',
             error: serializeSupabaseError(legacyError)
@@ -2490,7 +2492,7 @@ async function syncLegacySitePointers(supabase, {
       }
       logger.error('[site] legacy_site_pointer_sync_failed', {
         site_id: site.id,
-        site_hash: site.site_hash || null,
+        ...siteRefForLog(site.site_hash || null),
         account_id: account.id || null,
         error: serializeSupabaseError(error)
       });
@@ -2499,9 +2501,33 @@ async function syncLegacySitePointers(supabase, {
 
   if (!account?.id) return;
 
+  // The licence keeps the Stripe customer and subscription it already has;
+  // incoming ids only fill an empty slot (same rule as persistStripeMappings).
+  // The site_subscriptions row keeps its own ids.
+  const existingCustomerId = account.stripe_customer_id || null;
+  const incomingCustomerId = subscription?.stripe_customer_id || null;
+  const existingSubscriptionId = account.stripe_subscription_id || null;
+  const incomingSubscriptionId = subscription?.stripe_subscription_id || null;
+  if (existingCustomerId && incomingCustomerId && existingCustomerId !== incomingCustomerId) {
+    logger.warn('[billing] customer_mismatch', redactStripeIds({
+      account_id: account.id,
+      site_id: site.id,
+      kept_customer: existingCustomerId,
+      incoming_customer: incomingCustomerId
+    }));
+  }
+  if (existingSubscriptionId && incomingSubscriptionId && existingSubscriptionId !== incomingSubscriptionId) {
+    logger.warn('[billing] subscription_mismatch', redactStripeIds({
+      account_id: account.id,
+      site_id: site.id,
+      kept_subscription: existingSubscriptionId,
+      incoming_subscription: incomingSubscriptionId
+    }));
+  }
+
   const licenseUpdates = {
-    stripe_customer_id: subscription?.stripe_customer_id || account.stripe_customer_id || null,
-    stripe_subscription_id: subscription?.stripe_subscription_id || account.stripe_subscription_id || null,
+    stripe_customer_id: existingCustomerId || incomingCustomerId,
+    stripe_subscription_id: existingSubscriptionId || incomingSubscriptionId,
     billing_cycle: subscription?.billing_interval === 'year' ? 'yearly' : subscription?.billing_interval === 'month' ? 'monthly' : account.billing_cycle || null
   };
 

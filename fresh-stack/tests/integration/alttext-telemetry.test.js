@@ -176,9 +176,9 @@ describe('alt-text generation telemetry', () => {
       generation_mode: 'single',
       retry_count: 0,
       provider: 'openai',
-      is_terminal: true,
-      site_hash: 'site-hash-1'
+      is_terminal: true
     });
+    expect(terminals[0].properties).not.toHaveProperty('site_hash');
     expect(terminals[0].properties.duration_ms).toEqual(expect.any(Number));
     assertNoSensitiveProperties(terminals[0]);
   });
@@ -421,6 +421,28 @@ describe('alt-text generation telemetry', () => {
     await flushAsyncEvents();
     expect(res.status).toBe(200);
     expect(captureServerEvent).not.toHaveBeenCalled();
+  });
+
+  test('generation events never carry the site URL, domain or host', async () => {
+    const res = await request(buildApp())
+      .post('/api/alt-text')
+      .set('X-Site-Key', 'site-hash-1')
+      .set('X-Site-URL', 'https://shop.customer-brand.co.uk/')
+      .send({
+        site_url: 'https://shop.customer-brand.co.uk/',
+        image: { url: 'https://example.com/img.jpg', width: 1, height: 1 }
+      });
+    await flushAsyncEvents();
+    expect(res.status).toBe(200);
+    const events = capturedEvents();
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) {
+      for (const key of ['site_url', 'domain', 'host', 'site_host', 'website', 'site_hash']) {
+        expect(event.properties).not.toHaveProperty(key);
+      }
+      expect(event.properties.$set).toBeUndefined();
+      expect(JSON.stringify(event)).not.toContain('customer-brand.co.uk');
+    }
   });
 
 });

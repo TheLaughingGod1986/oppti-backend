@@ -959,8 +959,6 @@ async function runImageSeoAudit({
   try {
     await trackImageSeoAuditRequested({
       email: normalizedEmail,
-      websiteUrl: url.toString(),
-      normalizedDomain,
       auditId,
       source
     });
@@ -1001,8 +999,6 @@ async function runImageSeoAudit({
     try {
       await trackImageSeoAuditCompleted({
         email: normalizedEmail,
-        websiteUrl: audit.siteUrl,
-        normalizedDomain: audit.normalizedDomain,
         auditId,
         auditScore: audit.summary.score,
         pagesScanned: audit.summary.pagesScanned,
@@ -1036,8 +1032,6 @@ async function runImageSeoAudit({
     try {
       await trackImageSeoAuditFailed({
         email: normalizedEmail,
-        websiteUrl: url.toString(),
-        normalizedDomain,
         auditId,
         errorCode,
         source

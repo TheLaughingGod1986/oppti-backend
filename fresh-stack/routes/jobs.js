@@ -1,6 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { enforceQuota, getQuotaStatus } = require('../services/quota');
 const { buildEntitlementState } = require('../services/entitlementState');
 const { extractUserInfo } = require('../middleware/auth');
@@ -86,7 +87,7 @@ function createJobsRouter({ supabase, checkRateLimit, getSiteFromHeaders, create
       logger.warn('[image-state] auto_sync_skipped', {
         trigger_source: 'jobs.bulk_submit',
         request_id: requestId || null,
-        site_hash: siteHash || null,
+        ...siteRefForLog(siteHash || null),
         site_url: siteUrl || null,
         error: resolved.error || 'SITE_NOT_FOUND'
       });
@@ -107,7 +108,7 @@ function createJobsRouter({ supabase, checkRateLimit, getSiteFromHeaders, create
       trigger_source: 'jobs.bulk_submit',
       request_id: requestId || null,
       site_id: resolved.site.id,
-      site_hash: resolved.site.site_hash || siteHash || null,
+      ...siteRefForLog(resolved.site.site_hash || siteHash || null),
       scope,
       inserted: Number(result.inserted || 0),
       updated: Number(result.updated || 0),
@@ -191,7 +192,7 @@ function createJobsRouter({ supabase, checkRateLimit, getSiteFromHeaders, create
     logger.info('[jobs] bulk_job_accepted', {
       job_id: jobId,
       total_images: images.length,
-      site_key: siteKey,
+      has_site_key: Boolean(rawSiteKey),
       validation_ms: validationCompleteMs - requestReceivedMs,
       dispatch: process.env.BULK_JOB_DISPATCH || 'immediate'
     });
@@ -210,7 +211,7 @@ function createJobsRouter({ supabase, checkRateLimit, getSiteFromHeaders, create
         logger.error('[image-state] auto_sync_failed', {
           trigger_source: 'jobs.bulk_submit',
           request_id: req.id || null,
-          site_hash: rawSiteKey || null,
+          ...siteRefForLog(rawSiteKey || null, req),
           error: error?.message || String(error)
         });
       });

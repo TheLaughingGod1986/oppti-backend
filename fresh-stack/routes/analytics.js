@@ -1,6 +1,59 @@
 const express = require('express');
 const logger = require('../lib/logger');
-const { captureServerEvent } = require('../lib/posthog');
+const { captureServerEvent, stripSiteIdentifiers } = require('../lib/posthog');
+
+// Website events may only carry these properties. Strings are short labels;
+// page_path keeps the path only (no query string or fragment). Anything else,
+// including emails, keys, URLs and nested objects, is dropped.
+const ALLOWED_EVENT_PROPERTIES = Object.freeze([
+  'page_path',
+  'section',
+  'tab',
+  'cta',
+  'button',
+  'plan',
+  'target_plan',
+  'plugin',
+  'billing_interval',
+  'step',
+  'status',
+  'error_code',
+  'variant',
+  'count',
+  'value'
+]);
+const MAX_PROPERTY_LENGTH = 120;
+// Event names are snake_case words: lower-case letter first, then lower-case
+// letters, digits or '_', 64 characters at most. This rules out PostHog's
+// reserved $ names ($identify, $set, ...) and free text such as an email.
+const EVENT_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+
+function isValidEventName(name) {
+  return typeof name === 'string' && EVENT_NAME_PATTERN.test(name);
+}
+
+function sanitizeEventProperties(properties = {}) {
+  const out = {};
+  for (const key of ALLOWED_EVENT_PROPERTIES) {
+    let value = properties[key];
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      if (typeof value !== 'number' || Number.isFinite(value)) out[key] = value;
+      continue;
+    }
+    if (typeof value !== 'string') continue;
+    value = value.trim();
+    if (key === 'page_path') {
+      value = value.split(/[?#]/)[0];
+      if (!value.startsWith('/') || value.startsWith('//')) continue;
+    } else if (/[@:/]/.test(value)) {
+      // Labels never contain emails, URLs or paths.
+      continue;
+    }
+    if (value.includes('@')) continue;
+    if (value) out[key] = value.slice(0, MAX_PROPERTY_LENGTH);
+  }
+  return out;
+}
 
 function createAnalyticsRouter({ capture = captureServerEvent } = {}) {
   const router = express.Router();
@@ -25,14 +78,31 @@ function createAnalyticsRouter({ capture = captureServerEvent } = {}) {
       });
     }
 
+    if (!isValidEventName(event)) {
+      // Fixed label only: the rejected name itself is never logged.
+      logger.warn('[analytics] rejected_event_name', {
+        route: 'analytics.event',
+        reason: 'invalid_event_name',
+        request_id: req.id || null
+      });
+      return res.status(400).json({
+        error: 'VALIDATION_ERROR',
+        code: 'VALIDATION_ERROR',
+        message: 'Event names must be lower-case letters, digits or underscores'
+      });
+    }
+
     const result = await capture({
       event,
       distinctId: account.id,
-      properties: {
-        ...(properties || {}),
-        source: req.body?.source || 'website',
+      // Allowlist first, then the same strip every server capture uses, so
+      // the pass-through can never forward a licence key or site identifier
+      // even if a caller's capture function skips lib/posthog.
+      properties: stripSiteIdentifiers({
+        ...sanitizeEventProperties(properties || {}),
+        source: req.body?.source === 'app' ? 'app' : 'website',
         request_id: req.id || undefined
-      }
+      })
     });
 
     if (!result?.ok) {
@@ -64,4 +134,4 @@ function createAnalyticsRouter({ capture = captureServerEvent } = {}) {
   return router;
 }
 
-module.exports = { createAnalyticsRouter };
+module.exports = { createAnalyticsRouter, sanitizeEventProperties, isValidEventName, ALLOWED_EVENT_PROPERTIES, EVENT_NAME_PATTERN };

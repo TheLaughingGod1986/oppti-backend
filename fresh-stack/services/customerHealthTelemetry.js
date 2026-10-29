@@ -7,6 +7,7 @@
 
 const logger = require('../lib/logger');
 const { captureServerEvent } = require('../lib/posthog');
+const { installIdFromSiteKey } = require('../lib/installId');
 
 const INACTIVITY_THRESHOLDS = [
   { days: 14, event: 'customer_inactive_14_days' },
@@ -82,7 +83,9 @@ async function emitCustomerHealthEvents(supabase) {
   let emitted = 0;
 
   for (const site of sites) {
-    const distinctId = site.site_hash || site.id;
+    // Hashed install id, never the stored site_hash (it replays as X-Site-Key).
+    const installId = installIdFromSiteKey(site.site_hash);
+    const distinctId = installId || site.id;
     if (!distinctId) continue;
 
     const inactiveDays = daysBetween(site.updated_at || site.created_at);
@@ -90,14 +93,7 @@ async function emitCustomerHealthEvents(supabase) {
 
     const baseProps = {
       site_id: site.id,
-      site_install_id: site.site_hash || site.id,
-      host: (() => {
-        try {
-          return site.site_url ? new URL(site.site_url).hostname.toLowerCase() : null;
-        } catch (_error) {
-          return null;
-        }
-      })(),
+      site_install_id: installId || site.id,
       inactive_days: inactiveDays,
       event_source: 'backend_cron',
       telemetry_version: '1'

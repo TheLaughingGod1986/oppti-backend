@@ -141,7 +141,7 @@ describe('findOrCreateTrialSite', () => {
     expect(logger.info).toHaveBeenCalledWith(
       '[Site] Trial site created',
       expect.objectContaining({
-        site_hash: 'abc123',
+        has_site_key: true,
         site_url: 'https://example.com',
         created: true
       })
@@ -278,7 +278,7 @@ describe('findOrCreateTrialSite', () => {
     expect(logger.error).toHaveBeenCalledWith(
       '[Site] Trial site resolve failed',
       expect.objectContaining({
-        site_hash: 'cannot-persist',
+        has_site_key: true,
         site_url: 'https://example.com',
         error: 'SITE_CREATE_FAILED'
       })

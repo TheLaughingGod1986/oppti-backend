@@ -6,6 +6,7 @@
 // Stripe errors can echo customer emails: mask them in every billing log line.
 const logger = require('../lib/logger').withEmailRedaction();
 const { captureServerEvent, identifyServerUser, aliasServerUser } = require('../lib/posthog');
+const { installIdFromSiteKey, siteHashForAnalytics } = require('../lib/installId');
 
 const TELEMETRY_VERSION = '1';
 const PAYMENT_PROVIDER = 'stripe';
@@ -79,13 +80,6 @@ function calculateArrDelta(mrrDelta) {
   return roundMoney(mrrDelta * 12);
 }
 
-function inferAcquisitionChannel(attribution = {}) {
-  if (attribution.acquisition_channel) return attribution.acquisition_channel;
-  if (attribution.utm_source) return String(attribution.utm_source).toLowerCase();
-  if (attribution.referrer) return 'referral';
-  return null;
-}
-
 function resolveAttributionFromMetadata(metadata = {}) {
   const read = (keys) => {
     for (const key of keys) {
@@ -107,6 +101,96 @@ function resolveAttributionFromMetadata(metadata = {}) {
     landing_page: read(['landing_page', 'landingPage']),
     acquisition_channel: read(['acquisition_channel', 'acquisitionChannel', 'signup_source', 'signupSource'])
   };
+}
+
+// Referrers become a bucket only: an allowed search, social, directory or
+// Oppti host; 'wp_admin' for any WordPress admin page (no host, since that is
+// usually the customer's own site); otherwise 'other'. Full referrer, landing
+// page and source page URLs, paths and query strings never reach PostHog.
+const REFERRER_HOST_ALLOWLIST = Object.freeze([
+  'bing.com',
+  'duckduckgo.com',
+  'wordpress.org',
+  'x.com',
+  't.co',
+  'facebook.com',
+  'l.facebook.com',
+  'm.facebook.com',
+  'linkedin.com',
+  'lnkd.in',
+  'youtube.com',
+  'm.youtube.com',
+  'reddit.com',
+  'out.reddit.com',
+  'dev.to',
+  'producthunt.com',
+  'alternativeto.net',
+  'saashub.com'
+]);
+// oppti.dev and its subdomains; google.* and yahoo.* on any country domain.
+const REFERRER_HOST_PATTERNS = Object.freeze([
+  /(^|\.)oppti\.dev$/,
+  /(^|\.)google\.(com|[a-z]{2,3})(\.[a-z]{2})?$/,
+  /(^|\.)yahoo\.(com|[a-z]{2,3})(\.[a-z]{2})?$/
+]);
+const MAX_LABEL_LENGTH = 100;
+
+function classifyReferrerHost(referrer) {
+  if (typeof referrer !== 'string' || !referrer.trim()) return null;
+  let url;
+  try {
+    url = new URL(referrer.trim());
+  } catch (_error) {
+    return 'other';
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) return 'other';
+  if (/\/wp-admin(\/|$)/i.test(url.pathname)) return 'wp_admin';
+  const host = url.hostname.toLowerCase().replace(/\.$/, '').replace(/^www\./, '');
+  if (!host) return 'other';
+  if (REFERRER_HOST_ALLOWLIST.includes(host) || REFERRER_HOST_PATTERNS.some((pattern) => pattern.test(host))) {
+    return host;
+  }
+  return 'other';
+}
+
+// Short label for PostHog: never an email, URL or path.
+function sanitizeLabel(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || /[@/:?#]/.test(trimmed)) return null;
+  return trimmed.slice(0, MAX_LABEL_LENGTH);
+}
+
+// Attribution as sent to PostHog: utm_source, utm_medium, utm_campaign and the
+// referrer bucket. Nothing else (no utm_content/utm_term, no URLs).
+function buildAnalyticsAttribution(attribution = {}) {
+  return {
+    utm_source: sanitizeLabel(attribution.utm_source),
+    utm_medium: sanitizeLabel(attribution.utm_medium),
+    utm_campaign: sanitizeLabel(attribution.utm_campaign),
+    referrer_host: classifyReferrerHost(attribution.referrer)
+  };
+}
+
+// The raw site key behind a billing event: the stored site_hash of the
+// resolved site, else the site_hash carried in the event. Metadata or client
+// site_install_id values are never used: they may already be hashed.
+function rawSiteKeyFor({ site = null, eventProperties = {} } = {}) {
+  const value = site?.site_hash || eventProperties.site_hash || null;
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+// A distinct id must never be a raw site key, stored site_hash or licence key.
+// A site-key distinct id becomes the hashed install id; a licence key is
+// replaced by the account id when there is one, else dropped.
+function safeDistinctId(distinctId, { site = null, eventProperties = {}, account = null } = {}) {
+  if (!distinctId) return distinctId;
+  const value = String(distinctId);
+  const siteKeys = [site?.site_hash, eventProperties.site_hash].filter(Boolean).map(String);
+  if (siteKeys.includes(value)) return installIdFromSiteKey(value);
+  const licenceKeys = [eventProperties.license_key, account?.license_key, site?.license_key].filter(Boolean).map(String);
+  if (licenceKeys.includes(value)) return account?.id || eventProperties.account_id || null;
+  return distinctId;
 }
 
 function buildCanonicalProperties({
@@ -145,21 +229,8 @@ function buildCanonicalProperties({
     ...resolveAttributionFromMetadata(eventProperties)
   };
 
-  const siteInstallId = eventProperties.site_install_id
-    || metadata.site_install_id
-    || metadata.siteInstallId
-    || site?.site_hash
-    || eventProperties.site_hash
-    || null;
-
-  let host = eventProperties.host || metadata.host || null;
-  if (!host && (site?.site_url || metadata.site_url)) {
-    try {
-      host = new URL(site.site_url || metadata.site_url).hostname.toLowerCase();
-    } catch (_error) {
-      host = null;
-    }
-  }
+  const rawSiteKey = rawSiteKeyFor({ site, eventProperties });
+  const siteInstallId = installIdFromSiteKey(rawSiteKey);
 
   const properties = {
     customer_id: eventProperties.stripe_customer_id || null,
@@ -177,7 +248,6 @@ function buildCanonicalProperties({
     country: eventProperties.country || metadata.country || null,
     plugin_version: eventProperties.plugin_version || metadata.plugin_version || metadata.pluginVersion || null,
     site_install_id: siteInstallId,
-    host,
     telemetry_version: TELEMETRY_VERSION,
     event_source: EVENT_SOURCE,
     expansion_mrr: mrrDelta > 0 ? mrrDelta : 0,
@@ -190,18 +260,16 @@ function buildCanonicalProperties({
     account_id: eventProperties.account_id || account?.id || null,
     user_id: eventProperties.user_id || account?.id || null,
     site_id: eventProperties.site_id || site?.id || null,
-    site_hash: eventProperties.site_hash || site?.site_hash || null,
+    site_hash: siteHashForAnalytics(rawSiteKey),
     license_key_present: Boolean(eventProperties.license_key_present || eventProperties.license_key),
     purchase_type: eventProperties.purchase_type || null,
     billing_reason: eventProperties.billing_reason || null,
     stripe_event_id: stripeEventId,
     stripe_event_type: eventProperties.stripe_event_type || null,
     $insert_id: stripeEventId,
-    ...attribution,
-    acquisition_channel: inferAcquisitionChannel(attribution),
-    trigger_feature: eventProperties.trigger_feature || null,
-    trigger_location: eventProperties.trigger_location || null,
-    source_page: eventProperties.source_page || attribution.landing_page || null,
+    ...buildAnalyticsAttribution(attribution),
+    trigger_feature: sanitizeLabel(eventProperties.trigger_feature),
+    trigger_location: sanitizeLabel(eventProperties.trigger_location),
     target_plan: eventProperties.target_plan || null,
     identity_path: eventProperties.identity_path || null
   };
@@ -209,6 +277,58 @@ function buildCanonicalProperties({
   return Object.fromEntries(
     Object.entries(properties).filter(([, value]) => value !== undefined)
   );
+}
+
+// Legacy payment_succeeded carries an explicit allowed list only. Never email,
+// licence key, names, addresses, URLs or any other field from the payment.
+const LEGACY_PAYMENT_SUCCEEDED_KEYS = Object.freeze([
+  'amount',
+  'currency',
+  'plan',
+  'price_id',
+  'plugin',
+  'billing_interval',
+  'account_id',
+  'site_install_id',
+  'checkout_session_id',
+  'is_test',
+  'livemode'
+]);
+
+function buildLegacyPaymentSucceededProperties({
+  eventProperties = {},
+  metadata = {},
+  site = null,
+  account = null,
+  stripeEventId
+}) {
+  const livemode = typeof eventProperties.livemode === 'boolean' ? eventProperties.livemode : null;
+  const scalar = (value) => (typeof value === 'string' || typeof value === 'number' ? value : null);
+  const properties = {
+    amount: typeof eventProperties.amount === 'number' ? eventProperties.amount : null,
+    currency: scalar(eventProperties.currency),
+    plan: scalar(eventProperties.plan),
+    price_id: scalar(eventProperties.price_id),
+    plugin: scalar(eventProperties.plugin || eventProperties.plugin_id || metadata.plugin || metadata.plugin_id || metadata.pluginId),
+    billing_interval: normalizeBillingInterval(
+      eventProperties.billing_interval
+      || eventProperties.billing_period
+      || metadata.billing_interval
+      || metadata.billingInterval
+    ),
+    account_id: scalar(eventProperties.account_id || account?.id),
+    site_install_id: installIdFromSiteKey(rawSiteKeyFor({ site, eventProperties })),
+    checkout_session_id: scalar(eventProperties.checkout_session_id),
+    is_test: typeof eventProperties.is_test === 'boolean' ? eventProperties.is_test : livemode === false,
+    livemode
+  };
+  const out = {};
+  for (const key of LEGACY_PAYMENT_SUCCEEDED_KEYS) {
+    if (properties[key] !== null && properties[key] !== undefined) out[key] = properties[key];
+  }
+  // PostHog's dedupe key (not a property): the Stripe event id, as before.
+  if (stripeEventId) out.$insert_id = stripeEventId;
+  return out;
 }
 
 function resolveCanonicalEvents({
@@ -315,9 +435,9 @@ function resolveCanonicalEvents({
   return [];
 }
 
-async function emitIdentityLinks({ distinctId, eventProperties = {}, account = null }) {
+async function emitIdentityLinks({ distinctId, eventProperties = {}, account = null, site = null }) {
   const accountId = eventProperties.account_id || account?.id || null;
-  const siteInstallId = eventProperties.site_install_id || eventProperties.site_hash || null;
+  const siteInstallId = installIdFromSiteKey(rawSiteKeyFor({ site, eventProperties }));
 
   if (accountId && siteInstallId && accountId !== siteInstallId) {
     await aliasServerUser({
@@ -326,11 +446,11 @@ async function emitIdentityLinks({ distinctId, eventProperties = {}, account = n
     });
   }
 
-  if (accountId && (account?.email || eventProperties.email)) {
+  if (accountId) {
+    // Person properties stay pseudonymous: no email and no licence key.
     await identifyServerUser({
       distinctId: accountId,
       properties: {
-        email: account?.email || eventProperties.email || null,
         stripe_customer_id: eventProperties.stripe_customer_id || null,
         stripe_subscription_id: eventProperties.stripe_subscription_id || null,
         plan: eventProperties.plan || account?.plan || null,
@@ -351,6 +471,7 @@ async function emitCanonicalBillingEvents({
   subscriptionStatus = null,
   includeLegacyPaymentSucceeded = false
 }) {
+  distinctId = safeDistinctId(distinctId, { site, eventProperties, account });
   if (!distinctId || !stripeEventId) {
     return { emitted: [], skipped: true };
   }
@@ -409,13 +530,7 @@ async function emitCanonicalBillingEvents({
     const legacyResult = await captureServerEvent({
       event: 'payment_succeeded',
       distinctId,
-      properties: {
-        ...eventProperties,
-        stripe_event_id: stripeEventId,
-        $insert_id: stripeEventId,
-        telemetry_version: TELEMETRY_VERSION,
-        event_source: EVENT_SOURCE
-      }
+      properties: buildLegacyPaymentSucceededProperties({ eventProperties, metadata, site, account, stripeEventId })
     });
     emitted.push({
       event: 'payment_succeeded',
@@ -425,7 +540,7 @@ async function emitCanonicalBillingEvents({
     });
   }
 
-  await emitIdentityLinks({ distinctId, eventProperties, account });
+  await emitIdentityLinks({ distinctId, eventProperties, account, site });
 
   return { emitted, skipped: false };
 }
@@ -461,5 +576,10 @@ module.exports = {
   buildCanonicalProperties,
   resolveCanonicalEvents,
   emitCanonicalBillingEvents,
+  emitIdentityLinks,
+  buildLegacyPaymentSucceededProperties,
+  buildAnalyticsAttribution,
+  classifyReferrerHost,
+  LEGACY_PAYMENT_SUCCEEDED_KEYS,
   emitPaymentFailedEvent
 };

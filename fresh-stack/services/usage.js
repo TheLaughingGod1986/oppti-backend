@@ -1,6 +1,7 @@
 const { computePeriodStart } = require('./quota');
 const { trackGenerationMilestone, trackCreditsExhausted } = require('../../src/services/loops');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { isInternalTelemetryHost } = require('../lib/siteIdentity');
 const { pluginIdFromFeatureType } = require('../../src/services/pluginIdentity');
@@ -72,7 +73,7 @@ async function recordUsage(supabase, {
       }
     } catch (lookupErr) {
       logger.debug('[usage] license_id_lookup_failed', {
-        license_key: licenseKey ? `${licenseKey.substring(0, 8)}...` : null,
+        has_license_key: Boolean(licenseKey),
         error: lookupErr?.message || String(lookupErr)
       });
     }
@@ -128,10 +129,10 @@ async function recordUsage(supabase, {
   };
 
   logger.debug('[usage] Inserting usage log', { 
-    license_key: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
+    has_license_key: Boolean(licenseKey),
     license_id: validatedLicenseId ? `${validatedLicenseId.substring(0, 8)}...` : 'null (invalid or missing)',
     user_id: validatedUserId ? `${validatedUserId.substring(0, 8)}...` : `null (original: ${userId || 'missing'}, valid UUID: ${userId ? isValidUUID(userId) : false})`,
-    site_hash: siteHash,
+    ...siteRefForLog(siteHash),
     credits_used: creditsUsed 
   });
   
@@ -177,7 +178,7 @@ async function recordUsage(supabase, {
     logger.error('[usage] usage_log_write', {
       table: 'usage_logs',
       success: false,
-      site_hash: payload.site_hash || null,
+      ...siteRefForLog(payload.site_hash || null),
       endpoint: payload.endpoint,
       status: payload.status,
       schema_fallback_used: schemaFallbackUsed,
@@ -186,26 +187,30 @@ async function recordUsage(supabase, {
     logger.error('[usage] Failed to insert usage log', { 
       operation: 'usage_logs_insert',
       error: serializeSupabaseError(error),
-      payload: {
-        ...payload,
-        license_key: payload.license_key ? `${payload.license_key.substring(0, 8)}...` : null,
-        user_id: payload.user_id || null,
-        license_id: payload.license_id || null
-      }
+      // No key characters, email, site URL, domain or image URL in the log.
+      payload: (({ license_key: key, user_email: userEmailValue, site_url: siteUrlValue, domain: domainValue, image_url: imageUrlValue, ...rest }) => ({
+        ...rest,
+        has_license_key: Boolean(key),
+        has_user_email: Boolean(userEmailValue),
+        has_site_url: Boolean(siteUrlValue || domainValue),
+        has_image_url: Boolean(imageUrlValue),
+        user_id: rest.user_id || null,
+        license_id: rest.license_id || null
+      }))(payload)
     });
   } else {
     logger.info('[usage] usage_log_write', {
       table: 'usage_logs',
       success: true,
       inserted_id: data?.[0]?.id || null,
-      site_hash: payload.site_hash || null,
+      ...siteRefForLog(payload.site_hash || null),
       endpoint: payload.endpoint,
       status: payload.status
     });
     logger.info('[usage] Usage log inserted successfully', {
       operation: 'usage_logs_insert',
       inserted_id: data?.[0]?.id || null,
-      site_hash: payload.site_hash,
+      ...siteRefForLog(payload.site_hash),
       endpoint: payload.endpoint,
       status: payload.status,
       schema_fallback_used: schemaFallbackUsed,
@@ -302,7 +307,7 @@ async function updateQuotaSummary(supabase, licenseKey, creditsUsed, siteHash) {
     }
     
     logger.debug('[usage] Quota summary updated', {
-      licenseKey: `${licenseKey.substring(0, 8)}...`,
+      has_license_key: Boolean(licenseKey),
       newTotalCredits,
       siteUsage
     });
@@ -326,7 +331,7 @@ async function updateQuotaSummary(supabase, licenseKey, creditsUsed, siteHash) {
     }
     
     logger.debug('[usage] Quota summary created', {
-      licenseKey: `${licenseKey.substring(0, 8)}...`,
+      has_license_key: Boolean(licenseKey),
       creditsUsed,
       siteUsage
     });
@@ -380,7 +385,8 @@ async function getSiteUsage(supabase, { licenseKey, periodStart, periodEnd }) {
     .from('usage_logs')
     .select('site_hash, credits_used, created_at')
     .gte('created_at', periodStart.toISOString())
-    .lt('created_at', periodEnd.toISOString());
+    .lt('created_at', periodEnd.toISOString())
+    .or('is_trial.is.null,is_trial.eq.false');
 
   if (licenseId) query.eq('license_id', licenseId);
 

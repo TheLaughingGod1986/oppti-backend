@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
 const { captureServerEvent } = require('../lib/posthog');
 const { pluginTelemetryContext } = require('../lib/pluginTelemetryContext');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
@@ -32,6 +33,7 @@ const { buildSiteIdentity, normalizeDomain } = require('../lib/siteIdentity');
 const { hashRequestFingerprint } = require('../services/siteQuota');
 const { extractUserInfo } = require('../middleware/auth');
 const { resolveUsageAttributionUserId } = require('../services/usageAttribution');
+const { AUTH_STATE_FREE, authStateForPlan } = require('../lib/authState');
 const { buildTrialGenerationForSingleRequest } = require('../lib/trialGenerationContract');
 const { buildEntitlementState } = require('../services/entitlementState');
 const { GENERATION_ERROR_CODES, publicMessageFor } = require('../lib/generationErrors');
@@ -233,13 +235,13 @@ async function recordLegacyTrialUsage(supabase, payload) {
       table: 'trial_usage',
       success: true,
       schema_mode: schemaMode,
-      site_hash: payload.site_hash || null,
+      ...siteRefForLog(payload.site_hash || null),
       anon_id: payload.anon_id || null
     });
     logger.info('[altText] trial_usage insert succeeded', {
       operation: 'trial_usage_insert',
       schema_mode: 'observability',
-      site_hash: payload.site_hash || null,
+      ...siteRefForLog(payload.site_hash || null),
       site_url: payload.site_url || null,
       anon_id: payload.anon_id || null
     });
@@ -251,14 +253,14 @@ async function recordLegacyTrialUsage(supabase, payload) {
       table: 'trial_usage',
       success: false,
       schema_mode: schemaMode,
-      site_hash: payload.site_hash || null,
+      ...siteRefForLog(payload.site_hash || null),
       anon_id: payload.anon_id || null,
       error: serializeSupabaseError(insertResult.error)
     });
     logger.error('[altText] trial_usage insert failed', {
       operation: 'trial_usage_insert',
       schema_mode: 'observability',
-      site_hash: payload.site_hash || null,
+      ...siteRefForLog(payload.site_hash || null),
       site_url: payload.site_url || null,
       anon_id: payload.anon_id || null,
       error: serializeSupabaseError(insertResult.error)
@@ -267,7 +269,7 @@ async function recordLegacyTrialUsage(supabase, payload) {
   }
 
   logger.warn('[LEGACY_SCHEMA_FALLBACK] trial_usage observability columns unavailable; retrying legacy payload insert', {
-    site_hash: payload.site_hash || null,
+    ...siteRefForLog(payload.site_hash || null),
     site_url: payload.site_url || null,
     anon_id: payload.anon_id || null,
     error: serializeSupabaseError(insertResult.error)
@@ -280,14 +282,14 @@ async function recordLegacyTrialUsage(supabase, payload) {
       table: 'trial_usage',
       success: false,
       schema_mode: schemaMode,
-      site_hash: payload.site_hash || null,
+      ...siteRefForLog(payload.site_hash || null),
       anon_id: payload.anon_id || null,
       error: serializeSupabaseError(insertResult.error)
     });
     logger.error('[altText] trial_usage insert failed', {
       operation: 'trial_usage_insert',
       schema_mode: 'legacy',
-      site_hash: payload.site_hash || null,
+      ...siteRefForLog(payload.site_hash || null),
       site_url: payload.site_url || null,
       anon_id: payload.anon_id || null,
       error: serializeSupabaseError(insertResult.error)
@@ -297,13 +299,13 @@ async function recordLegacyTrialUsage(supabase, payload) {
       table: 'trial_usage',
       success: true,
       schema_mode: schemaMode,
-      site_hash: payload.site_hash || null,
+      ...siteRefForLog(payload.site_hash || null),
       anon_id: payload.anon_id || null
     });
     logger.info('[altText] trial_usage insert succeeded', {
       operation: 'trial_usage_insert',
       schema_mode: 'legacy',
-      site_hash: payload.site_hash || null,
+      ...siteRefForLog(payload.site_hash || null),
       site_url: payload.site_url || null,
       anon_id: payload.anon_id || null
     });
@@ -399,7 +401,6 @@ function createGenerationTelemetry({
   startedAt
 }) {
   let terminalEmitted = false;
-  let siteIdentityRef = null;
   let requestTelemetry = null;
   let imageMeta = null;
 
@@ -414,7 +415,6 @@ function createGenerationTelemetry({
     const context = pluginTelemetryContext(req, { pluginSlug: 'beepbeep-ai-alt-text-generator', product: 'alt_text', operationId: generationRunId });
     const distinctId = context?.site_install_id;
     if (!distinctId) return;
-    const siteUrl = siteIdentityRef?.siteUrl || req?.header?.('X-Site-URL') || null;
 
     captureServerEvent({
       event,
@@ -422,8 +422,6 @@ function createGenerationTelemetry({
       properties: {
         generation_run_id: generationRunId,
         request_id: req?.id || null,
-        site_url: siteUrl,
-        domain: normalizeDomain(siteUrl),
         auth_state: req?.trialMode ? 'guest_trial' : 'authenticated',
         plan: entitlementState?.plan || null,
         quota_state: entitlementState?.quota_state || null,
@@ -447,7 +445,7 @@ function createGenerationTelemetry({
         environment: requestTelemetry?.environment || process.env.NODE_ENV || null,
         request_source: requestTelemetry?.request_source || 'wordpress_plugin',
         is_terminal: isTerminal,
-        site_hash: siteIdentityRef?.siteHash || null,
+        // No site_hash: it can be derived from the site URL. site_install_id identifies the install.
         ...context,
         $insert_id: crypto.createHash('sha256').update([event, distinctId, generationRunId].join(':')).digest('hex')
       }
@@ -465,7 +463,6 @@ function createGenerationTelemetry({
 
   return {
     bindContext({ siteIdentity = null, telemetry = null, imageMeta: nextImageMeta = null } = {}) {
-      if (siteIdentity) siteIdentityRef = siteIdentity;
       if (telemetry) requestTelemetry = telemetry;
       if (nextImageMeta) imageMeta = nextImageMeta;
     },
@@ -520,9 +517,9 @@ function logGenerationAccountingTrace({
     final_result_state: finalResultState,
     user_id: userInfo?.user_id || null,
     user_email: userInfo?.user_email || null,
-    license_key_prefix: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : null,
+    has_license_key: Boolean(effectiveLicenseKey),
     site_id: effectiveSite?.id || reservation?.site?.id || null,
-    site_hash: effectiveSite?.site_hash || reservation?.site?.site_hash || null,
+    ...siteRefForLog(effectiveSite?.site_hash || reservation?.site?.site_hash || null),
     quota_path: resolveQuotaPathLabel(reservation),
     quota_source: reservation?.reservation?.quota_source || null,
     generation_request_id: reservation?.reservation?.generation_request_id || null,
@@ -675,7 +672,7 @@ function createAltTextRouter({
 
     if (req.trialMode) {
       logger.info('[altText] Anonymous identity resolved', {
-        site_hash: siteIdentity.siteHash,
+        ...siteRefForLog(siteIdentity.siteHash, req),
         anon_id: anonymousContext.anonId || null,
         anon_id_source: anonymousContext.source || null,
         risk_key: anonymousContext.riskKey || null,
@@ -688,7 +685,7 @@ function createAltTextRouter({
       generation_run_id: generationRunId,
       retry_count: retryCount,
       mode: req.trialMode ? 'trial' : (req.authMethod || 'unknown'),
-      site_hash: req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || null),
+      ...siteRefForLog(req.trialMode ? req.trialSiteHash : (req.header('X-Site-Key') || req.header('X-Site-Hash') || null), req),
       site_fingerprint: req.header('X-Site-Fingerprint') ? 'present' : 'absent',
       site_url: req.header('X-Site-URL') || null,
       hasImage: !!(parsed.data?.image),
@@ -702,7 +699,7 @@ function createAltTextRouter({
 
     if (siteIdentity.error === 'DEVELOPMENT_SITE_NOT_ALLOWED') {
       logger.warn('[altText] Request rejected: development site not allowed', {
-        site_hash: siteIdentity.siteHash || null,
+        ...siteRefForLog(siteIdentity.siteHash || null, req),
         site_url: siteIdentity.siteUrl || null,
         request_id: req.id || null,
         mode: req.trialMode ? 'trial' : (req.authMethod || 'unknown')
@@ -727,7 +724,7 @@ function createAltTextRouter({
     // Rate limit per site/license
     if (!(await checkRateLimit(rateLimitKey))) {
       logger.warn('[altText] Request rejected: rate limit exceeded', {
-        site_hash: siteIdentity.siteHash || null,
+        ...siteRefForLog(siteIdentity.siteHash || null, req),
         anon_id: anonymousContext.anonId || null,
         request_id: req.id || null,
         mode: req.trialMode ? 'trial' : (req.authMethod || 'unknown')
@@ -919,21 +916,21 @@ function createAltTextRouter({
         if (trialSiteResult.error) {
           logger.error('[altText] Trial site creation/lookup failed', {
             error: trialSiteResult.error.message || trialSiteResult.error,
-            site_hash: siteIdentity.siteHash,
+            ...siteRefForLog(siteIdentity.siteHash, req),
             site_url: siteIdentity.siteUrl || null,
             anon_id: anonymousContext.anonId || null
           });
         } else {
           logger.info('[altText] Anonymous trial site resolved', {
             site_id: trialSiteResult.data?.id || null,
-            site_hash: trialSiteResult.data?.site_hash || siteIdentity.siteHash,
+            ...siteRefForLog(trialSiteResult.data?.site_hash || siteIdentity.siteHash, req),
             anon_id: anonymousContext.anonId || null
           });
         }
       } catch (err) {
         logger.error('[altText] Trial site upsert threw unexpectedly', {
           error: err.message,
-          site_hash: siteIdentity.siteHash,
+          ...siteRefForLog(siteIdentity.siteHash, req),
           anon_id: anonymousContext.anonId || null
         });
       }
@@ -963,7 +960,7 @@ function createAltTextRouter({
           request_id: req.id || null,
           error_code: error.errorCode,
           http_status: error.httpStatus,
-          site_hash: siteIdentity.siteHash || null,
+          ...siteRefForLog(siteIdentity.siteHash || null, req),
           error: error.message
         });
         telemetry.emitTerminal('generation_failed', {
@@ -1051,7 +1048,7 @@ function createAltTextRouter({
     let trialAtRequestStart = null;
     if (req.trialMode) {
       logger.info('[altText] Anonymous quota check', {
-        site_hash: siteIdentity.siteHash,
+        ...siteRefForLog(siteIdentity.siteHash, req),
         anon_id: anonymousContext.anonId || null,
         risk_key: anonymousContext.riskKey || null,
         request_id: req.id || null
@@ -1077,7 +1074,7 @@ function createAltTextRouter({
         });
 
       logger.info('[altText] trial_quota_checkpoint', {
-        site_hash: siteIdentity.siteHash,
+        ...siteRefForLog(siteIdentity.siteHash, req),
         anon_id: anonymousContext.anonId || null,
         requested_count: 1,
         processable_count: trialAtRequestStart.trial_remaining > 0 ? 1 : 0,
@@ -1113,7 +1110,7 @@ function createAltTextRouter({
       if (trialInfo?.trial_exhausted) {
         const anonymousResponseFields = buildAnonymousResponseFields(anonymousContext, trialInfo);
         logger.warn('[altText] Request rejected: anonymous trial exhausted during legacy fallback', {
-          site_hash: siteIdentity.siteHash,
+          ...siteRefForLog(siteIdentity.siteHash, req),
           anon_id: anonymousContext.anonId || null,
           quota_source: reservation.reservation?.quota_source || null,
           credits_used: anonymousResponseFields.credits_used,
@@ -1144,7 +1141,7 @@ function createAltTextRouter({
 
     if (!reservation.error && req.trialMode) {
       logger.info('[altText] Anonymous quota granted', {
-        site_hash: siteIdentity.siteHash,
+        ...siteRefForLog(siteIdentity.siteHash, req),
         anon_id: anonymousContext.anonId || null,
         quota_source: reservation.reservation?.quota_source || null,
         generation_request_id: reservation.reservation?.generation_request_id || null
@@ -1194,7 +1191,7 @@ function createAltTextRouter({
 
       if (req.trialMode) {
         logger.warn('[altText] Request rejected: anonymous quota denied', {
-          site_hash: siteIdentity.siteHash,
+          ...siteRefForLog(siteIdentity.siteHash, req),
           anon_id: anonymousContext.anonId || null,
           code: reservation.error,
           credits_used: anonymousResponseFields?.credits_used ?? null,
@@ -1206,12 +1203,12 @@ function createAltTextRouter({
 
       if (!req.trialMode) {
         logger.warn('[altText] Request rejected: quota denied', {
-          site_hash: siteIdentity.siteHash || null,
+          ...siteRefForLog(siteIdentity.siteHash || null, req),
           request_id: req.id || null,
           code: reservation.error,
           message: reservation.message || null,
           auth_method: req.authMethod || null,
-          license_key_prefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null
+          has_license_key: Boolean(licenseKey)
         });
       }
 
@@ -1229,7 +1226,7 @@ function createAltTextRouter({
 
       if (req.trialMode && trialGenerationDenied) {
         logger.info('[altText] trial_generation_quota_denied', {
-          site_hash: siteIdentity.siteHash,
+          ...siteRefForLog(siteIdentity.siteHash, req),
           anon_id: anonymousContext.anonId || null,
           skipped_due_to_limit: trialGenerationDenied.skipped_due_to_limit,
           trial_used_before: trialGenerationDenied.trial_used_before,
@@ -1285,7 +1282,7 @@ function createAltTextRouter({
       generation_run_id: generationRunId,
       mode: req.trialMode ? 'trial' : 'site',
       quota_source: reservation.reservation?.quota_source || 'unknown',
-      site_hash: siteIdentity.siteHash,
+      ...siteRefForLog(siteIdentity.siteHash, req),
       generation_request_id: reservation.reservation?.generation_request_id || null
     });
     const startTime = Date.now();
@@ -1340,7 +1337,7 @@ function createAltTextRouter({
         generation_run_id: generationRunId,
         retry_count: retryCount,
         requestId: req.id || null,
-        siteHash: siteKey,
+        ...siteRefForLog(siteKey, req),
         generation_request_id: reservation.reservation?.generation_request_id || null,
         quota_source: reservation.reservation?.quota_source || null,
         anon_id: anonymousContext.anonId || null
@@ -1495,7 +1492,7 @@ function createAltTextRouter({
           image_filename: normalized.filename || null
         };
         logger.warn('[altText] Recording anonymous trial usage via legacy fallback', {
-          site_hash: trialPayload.site_hash,
+          ...siteRefForLog(trialPayload.site_hash, req),
           anon_id: anonymousContext.anonId || null,
           risk_key: anonymousContext.riskKey || null,
           quota_source: reservation.reservation?.quota_source || null
@@ -1503,7 +1500,7 @@ function createAltTextRouter({
         const { error } = await recordLegacyTrialUsage(supabase, trialPayload);
         if (error) {
           logger.error('[altText] Failed to record anonymous trial usage', {
-            site_hash: trialPayload.site_hash,
+            ...siteRefForLog(trialPayload.site_hash, req),
             anon_id: anonymousContext.anonId || null,
             error: serializeSupabaseError(error)
           });
@@ -1513,14 +1510,14 @@ function createAltTextRouter({
         const trialUsageLog = await recordUsage(supabase, trialUsageLogPayload);
         if (trialUsageLog.error) {
           logger.warn('[usage] anonymous_trial_usage_logs_write_failed', {
-            site_hash: trialUsageLogPayload.siteHash || null,
+            ...siteRefForLog(trialUsageLogPayload.siteHash || null, req),
             request_id: req.id || null,
             error: serializeSupabaseError(trialUsageLog.error)
           });
         }
       } else {
         logger.info('[altText] Anonymous trial usage recorded by V2 site_trials', {
-          site_hash: effectiveSite?.site_hash || siteIdentity.siteHash || req.trialSiteHash,
+          ...siteRefForLog(effectiveSite?.site_hash || siteIdentity.siteHash || req.trialSiteHash, req),
           site_id: effectiveSite?.id || reservation.site?.id || null,
           anon_id: anonymousContext.anonId || null,
           quota_source: reservation.reservation?.quota_source || null,
@@ -1529,7 +1526,7 @@ function createAltTextRouter({
         const trialUsageLog = await recordUsage(supabase, trialUsageLogPayload);
         if (trialUsageLog.error) {
           logger.warn('[usage] anonymous_trial_usage_logs_write_failed', {
-            site_hash: trialUsageLogPayload.siteHash || null,
+            ...siteRefForLog(trialUsageLogPayload.siteHash || null, req),
             request_id: req.id || null,
             error: serializeSupabaseError(trialUsageLog.error)
           });
@@ -1551,14 +1548,16 @@ function createAltTextRouter({
     } else {
       // Normal flow: record in usage_logs with license tracking.
       let licenseId = null;
+      let licensePlan = null;
       if (effectiveLicenseKey) {
         try {
           const { data: licenseData } = await supabase
             .from('licenses')
-            .select('id')
+            .select('id, plan')
             .eq('license_key', effectiveLicenseKey)
             .maybeSingle();
           licenseId = licenseData?.id || null;
+          licensePlan = licenseData?.plan || null;
         } catch (err) {
           logger.warn('[altText] Failed to look up license_id', { error: err.message });
         }
@@ -1582,9 +1581,10 @@ function createAltTextRouter({
       }
 
       logger.info('[altText] Recording usage', {
-        licenseKey: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : 'missing',
+        has_license_key: Boolean(effectiveLicenseKey),
         licenseId: licenseId ? `${licenseId.substring(0, 8)}...` : 'missing',
-        siteKey: effectiveSite?.site_hash || siteKey,
+        ...siteRefForLog(effectiveSite?.site_hash || siteKey, req),
+        has_site_key: Boolean(effectiveSite?.site_hash || siteIdentity.siteHash),
         userId: attribution.userId || null,
         creditsUsed: 1
       });
@@ -1601,7 +1601,9 @@ function createAltTextRouter({
         siteUrl: requestTelemetry.site_url || siteIdentity.siteUrl,
         domain: requestTelemetry.domain || normalizeDomain(siteIdentity.siteUrl),
         installHash: requestTelemetry.install_hash,
-        authState: requestTelemetry.auth_state || (licenseId ? 'authenticated_paid' : 'authenticated_free'),
+        authState: licenseId
+          ? authStateForPlan(licensePlan)
+          : (requestTelemetry.auth_state || AUTH_STATE_FREE),
         planKey: requestTelemetry.plan_key,
         requestSource: requestTelemetry.request_source || 'wordpress_plugin',
         pluginChannel: requestTelemetry.plugin_channel,
@@ -1650,13 +1652,13 @@ function createAltTextRouter({
     
     if (usageResult.error) {
       logger.error('[altText] Failed to record usage', {
-        site_hash: effectiveSite?.site_hash || siteKey || null,
+        ...siteRefForLog(effectiveSite?.site_hash || siteKey || null, req),
         request_id: req.id || null,
         error: serializeSupabaseError(usageResult.error)
       });
     } else {
       logger.info('[altText] Usage recorded successfully', {
-        site_hash: effectiveSite?.site_hash || siteKey || null,
+        ...siteRefForLog(effectiveSite?.site_hash || siteKey || null, req),
         request_id: req.id || null,
         mode: req.trialMode ? 'trial' : 'site'
       });
@@ -1674,7 +1676,7 @@ function createAltTextRouter({
     } else {
       logger.warn('[image-state] ledger_write_skipped', {
         site_id: null,
-        site_hash: effectiveSite?.site_hash || siteKey || null,
+        ...siteRefForLog(effectiveSite?.site_hash || siteKey || null, req),
         request_id: req.id || null,
         error: 'SITE_ID_UNAVAILABLE_AFTER_GENERATION'
       });
@@ -1720,8 +1722,9 @@ function createAltTextRouter({
         credits_remaining: creditsRemaining,
         total_limit: totalLimit,
         credits_used: creditsUsed,
-        licenseKey: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : 'missing',
-        siteKey: effectiveSite?.site_hash || siteKey
+        has_license_key: Boolean(effectiveLicenseKey),
+        ...siteRefForLog(effectiveSite?.site_hash || siteKey, req),
+        has_site_key: Boolean(effectiveSite?.site_hash || siteIdentity.siteHash)
       });
     } else if (reservation.reservation) {
       creditsRemaining = reservation.reservation.remaining_credits ?? creditsRemaining;
@@ -1842,13 +1845,13 @@ function createAltTextRouter({
       trial_exhausted: response.trial_exhausted ?? null,
       signup_required: response.signup_required ?? null,
       anon_id: anonymousContext.anonId || null,
-      site_hash: siteIdentity.siteHash,
+      ...siteRefForLog(siteIdentity.siteHash, req),
       quota_source: reservation.reservation?.quota_source || 'unknown'
     });
 
     if (req.trialMode && response.signup_required !== undefined) {
       logger.info('[altText] Anonymous signup_required state returned', {
-        site_hash: siteIdentity.siteHash,
+        ...siteRefForLog(siteIdentity.siteHash, req),
         anon_id: anonymousContext.anonId || null,
         signup_required: response.signup_required,
         quota_state: response.quota_state || null,

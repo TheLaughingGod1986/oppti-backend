@@ -1,6 +1,9 @@
 const express = require('express');
+const { requireAccountCredential } = require('../lib/accountCredential');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { siteRefForLog } = require('../lib/logIdentity');
+const { installIdFromSiteKey } = require('../lib/installId');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const { buildTrialGenerationForBatchPlan } = require('../lib/trialGenerationContract');
 const {
@@ -102,7 +105,7 @@ function createUsageRouter({ supabase }) {
     });
 
     logger.info('[usage] trial_batch_plan', {
-      site_hash: siteKey,
+      ...siteRefForLog(siteKey, req),
       anon_id: anonymousContext.anonId || null,
       requested_count: trialGeneration.requested_count,
       processable_count: trialGeneration.processable_count,
@@ -167,7 +170,7 @@ function createUsageRouter({ supabase }) {
       });
 
       logger.info('[usage] Anonymous identity resolved', {
-        site_hash: siteKey,
+        ...siteRefForLog(siteKey, req),
         anon_id: anonymousContext.anonId || null,
         anon_id_source: anonymousContext.source || null,
         risk_key: anonymousContext.riskKey || null,
@@ -175,7 +178,7 @@ function createUsageRouter({ supabase }) {
         site_fingerprint: siteFingerprint ? 'present' : 'absent'
       });
       logger.info('[usage] Anonymous quota check', {
-        site_hash: siteKey,
+        ...siteRefForLog(siteKey, req),
         anon_id: trialInfo.anon_id || null,
         credits_used: trialInfo.credits_used,
         credits_total: trialInfo.credits_total,
@@ -184,7 +187,7 @@ function createUsageRouter({ supabase }) {
         quota_source: status?.trial ? 'site_trials' : 'trial_usage'
       });
       logger.info('[usage] Anonymous signup_required state returned', {
-        site_hash: siteKey,
+        ...siteRefForLog(siteKey, req),
         anon_id: trialInfo.anon_id || null,
         signup_required: trialInfo.signup_required,
         quota_state: trialInfo.quota_state,
@@ -283,7 +286,8 @@ function createUsageRouter({ supabase }) {
   });
 
   // GET /usage/users - per-user breakdown
-  router.get('/users', async (req, res) => {
+  // Per-user emails and per-site licence breakdowns: account credential only.
+  router.get('/users', requireAccountCredential, async (req, res) => {
     const licenseKey = req.header('X-License-Key') || req.license?.license_key;
     const siteKey = req.header('X-Site-Key') || req.header('X-Site-Hash');
     if (!siteKey) return res.status(400).json({ error: 'INVALID_REQUEST', message: 'X-Site-Key or X-Site-Hash required' });
@@ -293,7 +297,7 @@ function createUsageRouter({ supabase }) {
     if (result.error) return res.status(500).json({ error: 'SERVER_ERROR', message: result.error.message });
 
     return res.json({
-      site_id: siteKey,
+      site_install_id: installIdFromSiteKey(siteKey),
       period_start: periodStart.toISOString(),
       period_end: periodEnd.toISOString(),
       total_credits_used: (result.users || []).reduce((s, u) => s + (u.credits_used || 0), 0),
@@ -302,7 +306,7 @@ function createUsageRouter({ supabase }) {
   });
 
   // GET /usage/sites - per-site breakdown (agency)
-  router.get('/sites', async (req, res) => {
+  router.get('/sites', requireAccountCredential, async (req, res) => {
     const licenseKey = req.header('X-License-Key') || req.license?.license_key;
     if (!licenseKey) return res.status(401).json({ error: 'INVALID_LICENSE', message: 'License key or JWT token required' });
 
@@ -336,7 +340,10 @@ function createUsageRouter({ supabase }) {
       total_limit: 10000,
       credits_remaining: Math.max(10000 - totals.total, 0),
       reset_date: periodEnd.toISOString(),
-      sites: result.sites || []
+      sites: (result.sites || []).map(({ site_hash: siteHash, ...rest }) => ({
+        ...rest,
+        site_install_id: installIdFromSiteKey(siteHash === 'unknown' ? null : siteHash)
+      }))
     });
   });
 

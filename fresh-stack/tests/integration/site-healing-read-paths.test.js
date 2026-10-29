@@ -1,3 +1,4 @@
+const { installIdFromSiteKey } = require('../../lib/installId');
 jest.mock('../../lib/logger', () => ({
   info: jest.fn(),
   warn: jest.fn(),
@@ -504,8 +505,8 @@ describe('authenticated site healing on read paths', () => {
       selected_source: 'fallback/default path',
       checked_sources: ['quota_summaries', 'usage_logs'],
       site_id: null,
-      site_hash: null,
-      license_key_prefix: 'lic-heal...'
+      has_site_key: false,
+      license_key_prefix: 'present'
     }));
   });
 
@@ -638,9 +639,10 @@ describe('authenticated site healing on read paths', () => {
     expect(result.success).toBe(true);
     expect(result.site).toEqual(expect.objectContaining({
       site_id: expect.any(String),
-      site_hash: 'site-dashboard-heal',
+      site_install_id: installIdFromSiteKey('site-dashboard-heal'),
       linked: true
     }));
+    expect(result.site).not.toHaveProperty('site_hash');
   });
 
   test('quota status prefers legacy usage logs when site_quotas is a stale zero row', async () => {
@@ -848,9 +850,10 @@ describe('authenticated site healing on read paths', () => {
     expect(result.resolution.credit_source).toBe('getQuotaStatus');
     expect(result.site).toEqual(expect.objectContaining({
       site_id: 'site_existing',
-      site_hash: 'site-legacy-credits',
+      site_install_id: installIdFromSiteKey('site-legacy-credits'),
       linked: true
     }));
+    expect(result.site).not.toHaveProperty('site_hash');
   });
 
   test('image state site context self-heals for authenticated requests even when createIfMissing is false', async () => {
@@ -879,5 +882,23 @@ describe('authenticated site healing on read paths', () => {
         user_id: account.id
       })
     ]));
+  });
+  test('quota audit and healing logs carry no licence key characters, only presence and the account id', async () => {
+    const { expectNoCredentialSlices } = require('../helpers/credentialSlices');
+    const supabase = createSupabaseMock();
+    const account = supabase._state.licenses[0];
+    await getQuotaStatus(supabase, { licenseKey: account.license_key, requestId: 'req-no-key-chars' });
+    await getQuotaStatus(supabase, { licenseKey: account.license_key, account, siteHash: 'site-hash-x', siteUrl: 'https://healing.example', requestId: 'req-no-key-chars-2' });
+    const calls = ['info', 'warn', 'error', 'debug'].flatMap((level) => logger[level].mock.calls);
+    expect(calls.length).toBeGreaterThan(0);
+    expectNoCredentialSlices(calls, [account.license_key]);
+    const keyFields = calls
+      .map(([, payload]) => payload || {})
+      .flatMap((payload) => ['license_key_prefix', 'licenseKeyPrefix', 'requested_license', 'site_license'].map((k) => payload[k]))
+      .filter((value) => value !== undefined && value !== null);
+    expect(keyFields.length).toBeGreaterThan(0);
+    for (const value of keyFields) expect(value).toBe('present');
+    const ids = calls.map(([, payload]) => payload || {}).filter((payload) => 'license_id' in payload).map((payload) => payload.license_id);
+    for (const id of ids) expect([account.id, null]).toContain(id);
   });
 });
