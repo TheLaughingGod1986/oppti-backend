@@ -165,6 +165,31 @@ async function updateSiteActivity(supabase, { siteHash }) {
   return { error };
 }
 
+async function rowsByColumn(supabase, column, value) {
+  if (!value) return [];
+  try {
+    const { data, error } = await supabase.from('sites').select('*').eq(column, value);
+    if (error) return [];
+    if (Array.isArray(data)) return data;
+    return data ? [data] : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
+// A site the caller may disconnect: matched exactly by stored site_hash or
+// install uuid, and on the caller's licence or owned by the caller's account.
+async function findOwnSiteByKey(supabase, key, { licenseKey, account } = {}) {
+  if (!supabase || !key) return null;
+  for (const column of ['site_hash', 'wp_install_uuid']) {
+    const rows = await rowsByColumn(supabase, column, key);
+    const own = rows.find((row) => row
+      && ((licenseKey && row.license_key === licenseKey) || (account?.id && row.owner_user_id === account.id)));
+    if (own) return own;
+  }
+  return null;
+}
+
 /**
  * Deactivate a site (disconnect from license).
  * Sets status to 'deactivated' and deactivated_at timestamp.
@@ -174,18 +199,15 @@ async function deactivateSite(supabase, { licenseKey, siteHash }) {
     return { error: 'INVALID_REQUEST', status: 400, message: 'License key and site hash required' };
   }
   const account = await fetchAccountByLicenseKey(supabase, licenseKey);
-  const resolved = await resolveCanonicalSite(supabase, buildSiteIdentity({
-    siteHash,
-    installUuid: siteHash
-  }), {
-    createIfMissing: false,
-    legacyLicenseKey: licenseKey,
-    account
-  });
-
-  if (resolved.error || !resolved.site) {
+  // Exact match on the caller's own site only: the key must be the stored
+  // site_hash (or install uuid) of a site on this licence or owned by this
+  // account. No URL, fingerprint or single-site licence fallback, so an
+  // unknown id or another licence's key or row is a 404 and nothing changes.
+  const site = await findOwnSiteByKey(supabase, siteHash, { licenseKey, account });
+  if (!site) {
     return { error: 'SITE_NOT_FOUND', status: 404, message: 'Site not found or not under this license' };
   }
+  const resolved = { site };
 
   if (account?.id) {
     try {

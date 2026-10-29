@@ -32,6 +32,7 @@ function buildApp({ license = ACCOUNT, session } = {}) {
   app.use(express.json());
   app.use((req, _res, next) => {
     req.license = license;
+    req.authMethod = license ? 'license' : undefined;
     next();
   });
   app.use('/billing', createBillingRouter({ supabase: null, getStripe: () => stripeClient, priceIds: { starter: 'price_starter' } }));

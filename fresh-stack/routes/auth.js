@@ -3,7 +3,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { z } = require('zod');
 const crypto = require('crypto');
-const logger = require('../lib/logger');
+// Every auth log line has its email addresses masked (j***@example.com).
+const logger = require('../lib/logger').withEmailRedaction();
 const { siteRefForLog } = require('../lib/logIdentity');
 const { publicSite } = require('../lib/publicSite');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
@@ -26,6 +27,7 @@ const { trackAccountCreated, trackPluginConnected, isLoopsSkippedEmail } = requi
 const { PLUGIN_IDS } = require('../../src/services/pluginIdentity');
 const { recordPluginConnection } = require('../services/pluginConnections');
 const { recordSignupAttribution } = require('../services/auditorAttribution');
+const { linkGuestTrialRowsOnSignup } = require('../services/guestTrialLink');
 const { normalizeSignupSource } = require('../lib/signupSource');
 const { normalizeProductEmailsOptOut, isProductEmailsOptedOut } = require('../lib/productEmailOptOut');
 const { identifyServerUser } = require('../lib/posthog');
@@ -563,7 +565,7 @@ async function recordProductEmailsOptOut({ supabase, user, body, requestId }) {
   return optOut === true;
 }
 
-const resetLogger = logger.withEmailRedaction();
+const resetLogger = logger;
 
 // One body for every valid forgot-password request: never the link or token.
 const FORGOT_PASSWORD_RESPONSE = Object.freeze({
@@ -571,17 +573,26 @@ const FORGOT_PASSWORD_RESPONSE = Object.freeze({
   message: 'If an account exists with this email, you will receive password reset instructions',
 });
 
-function tokensMatch(stored, provided) {
-  if (typeof stored !== 'string' || typeof provided !== 'string' || !stored || !provided) {
+// Reset tokens are stored as sha256 hex digests, never in plain text. The
+// emailed link carries the raw token; the database only ever sees its hash.
+function hashResetToken(token) {
+  return crypto.createHash('sha256').update(String(token), 'utf8').digest('hex');
+}
+
+// Constant-time compare of the stored digest with the digest of the provided
+// token. Both sides are fixed-length hex, so lengths only differ for a
+// malformed stored value, which never matches.
+function tokensMatch(storedHash, providedToken) {
+  if (typeof storedHash !== 'string' || typeof providedToken !== 'string' || !storedHash || !providedToken) {
     return false;
   }
-  const a = Buffer.from(stored);
-  const b = Buffer.from(provided);
+  const a = Buffer.from(storedHash);
+  const b = Buffer.from(hashResetToken(providedToken));
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// Store a fresh token and email the link to the account's address on file.
-// Runs after the response is sent; failures are logged (email masked) only.
+// Store a fresh token (hashed) and email the link to the account's address on
+// file. Runs after the response is sent; failures are logged (email masked) only.
 async function issuePasswordReset({ supabase, account, email }) {
   const resetToken = crypto.randomUUID();
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -589,7 +600,7 @@ async function issuePasswordReset({ supabase, account, email }) {
   const { error: updateError } = await supabase
     .from('licenses')
     .update({
-      password_reset_token: resetToken,
+      password_reset_token: hashResetToken(resetToken),
       password_reset_expires: expiresAt
     })
     .eq('id', account.id);
@@ -896,6 +907,14 @@ function createAuthRouter({ supabase }) {
           requestId: req.id || null,
           connectionSource: 'register',
           anonymousContext
+        });
+        await linkGuestTrialRowsOnSignup({
+          supabase,
+          account: user,
+          site: siteLink.site,
+          sharedSite: siteLink.sharedSite,
+          connectionSource: 'register',
+          requestId: req.id || null
         });
       }
 
@@ -1435,7 +1454,7 @@ function createAuthRouter({ supabase }) {
       let lookup = supabase
         .from('licenses')
         .select('id, email, password_reset_token, password_reset_expires');
-      lookup = email ? lookup.eq('email', email) : lookup.eq('password_reset_token', token);
+      lookup = email ? lookup.eq('email', email) : lookup.eq('password_reset_token', hashResetToken(token));
       const { data: user, error: userError } = await lookup.maybeSingle();
 
       if (userError || !user || !tokensMatch(user.password_reset_token, token)) {
@@ -1450,25 +1469,25 @@ function createAuthRouter({ supabase }) {
         });
       }
 
-      // Check if token has expired
-      if (user.password_reset_expires) {
-        const expiresAt = new Date(user.password_reset_expires);
-        const now = new Date();
-        if (now > expiresAt) {
-          resetLogger.warn('[Auth] Expired reset token', { email: user.email, expiresAt });
-          return res.status(400).json({
-            error: 'TOKEN_EXPIRED',
-            code: 'TOKEN_EXPIRED',
-            message: 'Reset token has expired. Please request a new password reset.',
-          });
-        }
+      // Check if token has expired. A token row with no (or an unreadable)
+      // expiry is treated as expired: tokens are always issued with one.
+      const expiresAt = user.password_reset_expires ? new Date(user.password_reset_expires) : null;
+      if (!expiresAt || Number.isNaN(expiresAt.getTime()) || new Date() > expiresAt) {
+        resetLogger.warn('[Auth] Expired reset token', { email: user.email, expiresAt: user.password_reset_expires || null });
+        return res.status(400).json({
+          error: 'TOKEN_EXPIRED',
+          code: 'TOKEN_EXPIRED',
+          message: 'Reset token has expired. Please request a new password reset.',
+        });
       }
 
       // Hash the new password
       const password_hash = await bcrypt.hash(newPassword, 10);
 
-      // Update password and clear reset token
-      const { error: updateError } = await supabase
+      // Update password and clear reset token. The update is conditional on
+      // the token hash still being stored, so of two concurrent resets with
+      // the same token only the first one to write succeeds.
+      const { data: updatedRows, error: updateError } = await supabase
         .from('licenses')
         .update({ 
           password_hash,
@@ -1476,7 +1495,9 @@ function createAuthRouter({ supabase }) {
           password_reset_expires: null,
           updated_at: new Date().toISOString()
         })
-        .eq('id', user.id);
+        .eq('id', user.id)
+        .eq('password_reset_token', user.password_reset_token)
+        .select('id');
 
       if (updateError) {
         resetLogger.error('[Auth] Failed to update password', {
@@ -1487,6 +1508,16 @@ function createAuthRouter({ supabase }) {
           error: 'UPDATE_FAILED',
           code: 'UPDATE_FAILED',
           message: 'Failed to update password. Please try again.',
+        });
+      }
+
+      if (!Array.isArray(updatedRows) || updatedRows.length === 0) {
+        // No email (raw or masked): the account id is enough to correlate.
+        resetLogger.warn('[Auth] Reset token already used', { userId: user.id });
+        return res.status(400).json({
+          error: 'INVALID_TOKEN',
+          code: 'INVALID_TOKEN',
+          message: 'Invalid or expired reset token',
         });
       }
 
@@ -1510,4 +1541,4 @@ function createAuthRouter({ supabase }) {
   return router;
 }
 
-module.exports = { createAuthRouter };
+module.exports = { createAuthRouter, hashResetToken };

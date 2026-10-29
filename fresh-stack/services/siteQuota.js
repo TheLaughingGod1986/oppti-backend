@@ -5,6 +5,7 @@ const { isMissingSchemaError, serializeSupabaseError } = require('../lib/supabas
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { getAnonymousTrialLimit } = require('./anonymousTrial');
 const { getLimits } = require('./planLimits');
+const { redactStripeIds } = require('../lib/redact');
 
 const SITE_SELECT = [
   'id',
@@ -2500,9 +2501,33 @@ async function syncLegacySitePointers(supabase, {
 
   if (!account?.id) return;
 
+  // The licence keeps the Stripe customer and subscription it already has;
+  // incoming ids only fill an empty slot (same rule as persistStripeMappings).
+  // The site_subscriptions row keeps its own ids.
+  const existingCustomerId = account.stripe_customer_id || null;
+  const incomingCustomerId = subscription?.stripe_customer_id || null;
+  const existingSubscriptionId = account.stripe_subscription_id || null;
+  const incomingSubscriptionId = subscription?.stripe_subscription_id || null;
+  if (existingCustomerId && incomingCustomerId && existingCustomerId !== incomingCustomerId) {
+    logger.warn('[billing] customer_mismatch', redactStripeIds({
+      account_id: account.id,
+      site_id: site.id,
+      kept_customer: existingCustomerId,
+      incoming_customer: incomingCustomerId
+    }));
+  }
+  if (existingSubscriptionId && incomingSubscriptionId && existingSubscriptionId !== incomingSubscriptionId) {
+    logger.warn('[billing] subscription_mismatch', redactStripeIds({
+      account_id: account.id,
+      site_id: site.id,
+      kept_subscription: existingSubscriptionId,
+      incoming_subscription: incomingSubscriptionId
+    }));
+  }
+
   const licenseUpdates = {
-    stripe_customer_id: subscription?.stripe_customer_id || account.stripe_customer_id || null,
-    stripe_subscription_id: subscription?.stripe_subscription_id || account.stripe_subscription_id || null,
+    stripe_customer_id: existingCustomerId || incomingCustomerId,
+    stripe_subscription_id: existingSubscriptionId || incomingSubscriptionId,
     billing_cycle: subscription?.billing_interval === 'year' ? 'yearly' : subscription?.billing_interval === 'month' ? 'monthly' : account.billing_cycle || null
   };
 

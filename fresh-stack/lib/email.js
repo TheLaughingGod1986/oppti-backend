@@ -307,8 +307,8 @@ This is an automated message from the OpptiAI contact form. You can reply direct
       logger.error('[Email] Failed to send contact form email', { 
         to: recipientEmails,
         sender: fromEmail,
-        replyTo: email,
-        error: error.message 
+        replyTo: redactEmailsInString(String(email ?? '')),
+        error: redactEmailsInString(String(error?.message ?? ''))
       });
       return {
         success: false,
@@ -320,8 +320,8 @@ This is an automated message from the OpptiAI contact form. You can reply direct
       to: recipientEmail,
       recipients: recipientEmails,
       sender: fromEmail,
-      replyTo: email,
-      subject,
+      replyTo: redactEmailsInString(String(email ?? '')),
+      subject: redactEmailsInString(String(subject ?? '')),
       messageId: data?.id 
     });
 
@@ -335,8 +335,8 @@ This is an automated message from the OpptiAI contact form. You can reply direct
     logger.error('[Email] Error sending contact form email', { 
       to: recipientEmails,
       sender: fromEmail,
-      replyTo: email,
-      error: error.message 
+      replyTo: redactEmailsInString(String(email ?? '')),
+      error: redactEmailsInString(String(error?.message ?? ''))
     });
     return {
       success: false,

@@ -52,4 +52,32 @@ function redactEmails(value, depth = 0, seen = new WeakSet()) {
   return out;
 }
 
-module.exports = { redactEmails, redactEmailsInString };
+// Stripe customer / subscription / checkout-session ids: keep the prefix and
+// the last 4 characters so log lines can still be correlated.
+const STRIPE_ID_RE = /\b(cus|sub|cs)_((?:live|test)_)?([A-Za-z0-9]+)/g;
+
+function redactStripeIdsInString(value) {
+  if (typeof value !== 'string' || value.indexOf('_') === -1) return value;
+  return value.replace(STRIPE_ID_RE, (_m, prefix, mode = '', rest) => `${prefix}_${mode || ''}***${rest.length > 8 ? rest.slice(-4) : ''}`);
+}
+
+function mapStrings(value, fn, depth = 0, seen = new WeakSet()) {
+  if (typeof value === 'string') return fn(value);
+  if (value === null || typeof value !== 'object') return value;
+  if (depth >= MAX_DEPTH) return value;
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((entry) => mapStrings(entry, fn, depth + 1, seen));
+  if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) return value;
+  const out = {};
+  for (const [key, entry] of Object.entries(value)) {
+    out[key] = mapStrings(entry, fn, depth + 1, seen);
+  }
+  return out;
+}
+
+function redactStripeIds(value) {
+  return mapStrings(value, redactStripeIdsInString);
+}
+
+module.exports = { redactEmails, redactEmailsInString, redactStripeIds, redactStripeIdsInString };

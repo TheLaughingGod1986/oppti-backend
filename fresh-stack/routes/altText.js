@@ -33,6 +33,7 @@ const { buildSiteIdentity, normalizeDomain } = require('../lib/siteIdentity');
 const { hashRequestFingerprint } = require('../services/siteQuota');
 const { extractUserInfo } = require('../middleware/auth');
 const { resolveUsageAttributionUserId } = require('../services/usageAttribution');
+const { AUTH_STATE_FREE, authStateForPlan } = require('../lib/authState');
 const { buildTrialGenerationForSingleRequest } = require('../lib/trialGenerationContract');
 const { buildEntitlementState } = require('../services/entitlementState');
 const { GENERATION_ERROR_CODES, publicMessageFor } = require('../lib/generationErrors');
@@ -1547,14 +1548,16 @@ function createAltTextRouter({
     } else {
       // Normal flow: record in usage_logs with license tracking.
       let licenseId = null;
+      let licensePlan = null;
       if (effectiveLicenseKey) {
         try {
           const { data: licenseData } = await supabase
             .from('licenses')
-            .select('id')
+            .select('id, plan')
             .eq('license_key', effectiveLicenseKey)
             .maybeSingle();
           licenseId = licenseData?.id || null;
+          licensePlan = licenseData?.plan || null;
         } catch (err) {
           logger.warn('[altText] Failed to look up license_id', { error: err.message });
         }
@@ -1598,7 +1601,9 @@ function createAltTextRouter({
         siteUrl: requestTelemetry.site_url || siteIdentity.siteUrl,
         domain: requestTelemetry.domain || normalizeDomain(siteIdentity.siteUrl),
         installHash: requestTelemetry.install_hash,
-        authState: requestTelemetry.auth_state || (licenseId ? 'authenticated_paid' : 'authenticated_free'),
+        authState: licenseId
+          ? authStateForPlan(licensePlan)
+          : (requestTelemetry.auth_state || AUTH_STATE_FREE),
         planKey: requestTelemetry.plan_key,
         requestSource: requestTelemetry.request_source || 'wordpress_plugin',
         pluginChannel: requestTelemetry.plugin_channel,

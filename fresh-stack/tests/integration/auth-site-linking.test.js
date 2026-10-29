@@ -26,6 +26,7 @@ jest.mock('../../services/quota', () => ({
 }));
 
 const { createAuthRouter } = require('../../routes/auth');
+const { createGuestRowsTables } = require('../helpers/guestRowsMock');
 const { createLicenseRouter } = require('../../routes/license');
 
 const LEGACY_UNSUPPORTED_SITE_COLUMNS = [
@@ -76,8 +77,10 @@ function stripToLegacySitePayload(payload = {}) {
 function createSupabaseMock({
   legacySiteSchema = false,
   missingSiteMembershipsTable = false,
-  pluginConnectionInsertError = null
+  pluginConnectionInsertError = null,
+  guestRows = null
 } = {}) {
+  const guestTables = guestRows ? createGuestRowsTables(guestRows) : null;
   const licenses = [];
   const sites = [];
   const siteMemberships = [];
@@ -136,6 +139,7 @@ function createSupabaseMock({
   }
 
   return {
+    _guest: guestTables,
     _state: {
       licenses,
       sites,
@@ -384,6 +388,10 @@ function createSupabaseMock({
         };
       }
 
+      if (guestTables && guestTables.handles(table)) {
+        return guestTables.from(table);
+      }
+
       throw new Error(`Unexpected table: ${table}`);
     }
   };
@@ -394,6 +402,19 @@ function createApp(supabase, { includeLicenseRoutes = false } = {}) {
   app.use(express.json());
   app.use('/auth', createAuthRouter({ supabase }));
   if (includeLicenseRoutes) {
+    // Stands in for the auth middleware: an X-License-Key caller is an
+    // account credential (authMethod 'license').
+    app.use((req, _res, next) => {
+      const key = req.header('X-License-Key');
+      if (!key) return next();
+      return require('../../services/siteQuota').fetchAccountByLicenseKey(supabase, key).then((account) => {
+        if (account) {
+          req.license = account;
+          req.authMethod = 'license';
+        }
+        next();
+      }, next);
+    });
     app.use('/api/license', createLicenseRouter({ supabase }));
     app.use('/api/licenses', createLicenseRouter({ supabase }));
   }
@@ -1067,5 +1088,140 @@ describe('responses never carry the raw site key; licence key only for account c
     expect(withLicence.status).toBe(200);
     expect(withLicence.body.license_key).toBe(licence);
     expect(JSON.stringify(withLicence.body)).not.toContain(RAW);
+  });
+});
+
+describe('register links the site\'s earlier guest-trial rows', () => {
+  const PAST = '2020-01-01T00:00:00.000Z';
+  const sitePayload = {
+    site_id: 'wp-install-guest',
+    install_uuid: 'wp-install-guest',
+    site_url: 'https://guest-site.example.com',
+    site_fingerprint: 'fingerprint-guest'
+  };
+  const existingSite = () => ({
+    id: 'site_guest_existing',
+    license_key: null,
+    site_hash: 'wp-install-guest',
+    wp_install_uuid: 'wp-install-guest',
+    site_fingerprint: 'fingerprint-guest',
+    site_url: 'https://guest-site.example.com',
+    normalized_site_url: 'guest-site.example.com',
+    canonical_domain: 'guest-site.example.com',
+    status: 'active',
+    created_at: PAST,
+    updated_at: PAST
+  });
+  const guestRows = () => ({
+    usageLogs: [
+      { id: 'ul_guest_1', site_hash: 'wp-install-guest', is_trial: true, auth_state: 'guest_trial', license_id: null, user_id: null, created_at: PAST },
+      { id: 'ul_guest_2', site_hash: 'wp-install-guest', is_trial: true, auth_state: 'guest_trial', license_id: null, user_id: null, created_at: PAST },
+      { id: 'ul_other_site', site_hash: 'wp-install-elsewhere', is_trial: true, auth_state: 'guest_trial', license_id: null, user_id: null, created_at: PAST }
+    ],
+    generationRequests: [
+      { id: 'gr_guest_1', site_id: 'site_guest_existing', quota_source: 'trial', user_id: null, created_at: PAST },
+      { id: 'gr_other_site', site_id: 'site_elsewhere', quota_source: 'trial', user_id: null, created_at: PAST }
+    ]
+  });
+  const ORIGINAL = process.env.LINK_GUEST_TRIAL_ON_SIGNUP;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.LINK_GUEST_TRIAL_ON_SIGNUP;
+    else process.env.LINK_GUEST_TRIAL_ON_SIGNUP = ORIGINAL;
+  });
+
+  test('with the flag off (default) nothing is written', async () => {
+    delete process.env.LINK_GUEST_TRIAL_ON_SIGNUP;
+    const supabase = createSupabaseMock({ guestRows: guestRows() });
+    supabase._state.sites.push(existingSite());
+    const logger = require('../../lib/logger');
+    const info = jest.spyOn(logger, 'info');
+    try {
+      const res = await request(createApp(supabase))
+        .post('/auth/register')
+        .send({ email: 'guest-off@qa.oppti.dev', password: 'Password123!', ...sitePayload });
+
+      expect(res.body.success).toBe(true);
+      expect(supabase._guest.updates).toHaveLength(0);
+      const line = info.mock.calls.find(([message]) => message === '[Auth] guest_trial_link');
+      expect(line[1]).toEqual(expect.objectContaining({
+        mode: 'dry_run', would_link_usage_logs: 2, would_link_generation_requests: 1
+      }));
+      expect(JSON.stringify(line[1])).not.toContain('guest-off@');
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  test('with the flag on only the registering site\'s guest rows are linked to the new account', async () => {
+    process.env.LINK_GUEST_TRIAL_ON_SIGNUP = 'true';
+    const supabase = createSupabaseMock({ guestRows: guestRows() });
+    supabase._state.sites.push(existingSite());
+
+    const res = await request(createApp(supabase))
+      .post('/auth/register')
+      .send({ email: 'guest-on@qa.oppti.dev', password: 'Password123!', ...sitePayload });
+
+    expect(res.body.success).toBe(true);
+    const accountId = supabase._state.licenses[0].id;
+    const usage = Object.fromEntries(supabase._guest.tables.usage_logs.map((row) => [row.id, row]));
+    expect(usage.ul_guest_1).toEqual(expect.objectContaining({ license_id: accountId, is_trial: true, auth_state: 'guest_trial' }));
+    expect(usage.ul_guest_2.license_id).toBe(accountId);
+    expect(usage.ul_other_site.license_id).toBeNull();
+    const requests = Object.fromEntries(supabase._guest.tables.generation_requests.map((row) => [row.id, row]));
+    expect(requests.gr_guest_1).toEqual(expect.objectContaining({ user_id: accountId, quota_source: 'trial' }));
+    expect(requests.gr_other_site.user_id).toBeNull();
+    expect(supabase._state.siteAuditLogs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event_type: 'guest_trial_rows_linked',
+        site_id: 'site_guest_existing',
+        actor_user_id: accountId,
+        metadata: expect.objectContaining({
+          usage_log_ids: ['ul_guest_1', 'ul_guest_2'],
+          generation_request_ids: ['gr_guest_1']
+        })
+      })
+    ]));
+  });
+
+  test('a second account joining an owned site links nothing', async () => {
+    process.env.LINK_GUEST_TRIAL_ON_SIGNUP = 'true';
+    const supabase = createSupabaseMock({ guestRows: guestRows() });
+    supabase._state.sites.push({ ...existingSite(), license_key: 'lic-someone-else' });
+
+    const res = await request(createApp(supabase))
+      .post('/auth/register')
+      .send({ email: 'guest-joiner@qa.oppti.dev', password: 'Password123!', ...sitePayload });
+
+    expect(res.body.success).toBe(true);
+    expect(res.body.shared_site).toBe(true);
+    expect(supabase._guest.updates).toHaveLength(0);
+  });
+});
+
+describe('auth log lines mask email addresses', () => {
+  const EMAIL = 'masking-check@qa.oppti.dev';
+  const loggedText = (spies) => JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
+
+  test('register, duplicate register and login never log the full email', async () => {
+    const logger = require('../../lib/logger');
+    const spies = ['info', 'warn', 'error', 'debug'].map((level) => jest.spyOn(logger, level));
+    try {
+      const app = createApp(createSupabaseMock());
+      const credentials = { email: EMAIL, password: 'Password123!' };
+      expect((await request(app).post('/auth/register').send(credentials)).body.success).toBe(true);
+      expect((await request(app).post('/auth/register').send(credentials)).body.code).toBe('USER_EXISTS');
+      expect((await request(app).post('/auth/login').send(credentials)).body.success).toBe(true);
+
+      expect(loggedText(spies)).not.toContain(EMAIL);
+      const success = spies[0].mock.calls.find(([message]) => message === '[Auth] Register successful');
+      expect(success[1].email).toBe('m***@qa.oppti.dev');
+      const exists = spies[0].mock.calls.find(([message]) => message === '[Auth] Register rejected: user exists');
+      expect(exists[1].email).toBe('m***@qa.oppti.dev');
+      const login = spies[0].mock.calls.find(([message]) => message === '[Auth] Login successful');
+      expect(login[1].email).toBe('m***@qa.oppti.dev');
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
   });
 });

@@ -3,6 +3,7 @@ const logger = require('../lib/logger');
 const { siteRefForLog } = require('../lib/logIdentity');
 const jwt = require('jsonwebtoken');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
+const { sendSignInRequired } = require('../lib/signInRequired');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -26,6 +27,34 @@ function logPathLabel(path = '') {
 function isPublicJobPollRequest(req) {
   return req?.method === 'GET'
     && /^\/api\/(jobs|optimizer\/audit)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req?.path || '');
+}
+
+// Billing and account-billing paths answer unrecognised credentials with the
+// same sign-in reply the billing routes use for site-header-only callers.
+const BILLING_ACCOUNT_PATHS = new Set(['/dashboard', '/me/invoices', '/me/subscriptions', '/v1/account']);
+const BILLING_CHECKOUT_PATHS = new Set(['/billing/checkout', '/api/billing/checkout']);
+
+function normalizeRoutePath(path = '') {
+  const lower = String(path).toLowerCase();
+  return lower.length > 1 ? lower.replace(/\/+$/, '') : lower;
+}
+
+function isBillingPath(path) {
+  const normalized = normalizeRoutePath(path);
+  return normalized.startsWith('/billing/')
+    || normalized.startsWith('/api/billing/')
+    || BILLING_ACCOUNT_PATHS.has(normalized);
+}
+
+function rejectCredentials(req, res, next, fallback) {
+  // Checkout decides itself, after its own request validation, so a refusal
+  // here looks and counts the same as one from the route.
+  if (req.method === 'POST' && BILLING_CHECKOUT_PATHS.has(normalizeRoutePath(req.path))) {
+    req.billingCredentialRejected = true;
+    return next();
+  }
+  if (isBillingPath(req.path)) return sendSignInRequired(req, res);
+  return fallback();
 }
 
 function authMiddleware({ supabase }) {
@@ -300,7 +329,7 @@ function authMiddleware({ supabase }) {
         req.authMethod = 'api_token';
         return next();
       }
-      return res.status(401).json({ error: 'INVALID_API_TOKEN', code: 'INVALID_API_TOKEN', message: 'Invalid or missing API token' });
+      return rejectCredentials(req, res, next, () => res.status(401).json({ error: 'INVALID_API_TOKEN', code: 'INVALID_API_TOKEN', message: 'Invalid or missing API token' }));
     }
 
     // A stale bearer without valid independent credentials needs sign-in,
@@ -324,12 +353,12 @@ function authMiddleware({ supabase }) {
       hasInstallUuid: Boolean(installUuid),
       hasSiteFingerprint: Boolean(siteFingerprint)
     });
-    return res.status(401).json({
+    return rejectCredentials(req, res, next, () => res.status(401).json({
       error: 'INVALID_LICENSE',
       code: 'INVALID_LICENSE',
       message: 'License key required. Please send X-License-Key header with your license key.',
       hint: 'Check your plugin settings to ensure the license key is configured correctly.'
-    });
+    }));
   };
 }
 

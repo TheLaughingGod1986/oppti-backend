@@ -2,6 +2,7 @@ const express = require('express');
 // Account/billing errors can carry Stripe messages that echo the customer email.
 const logger = require('../lib/logger').withEmailRedaction();
 const { createAccountDashboardService } = require('../services/accountDashboard');
+const { sendSignInRequired } = require('../lib/signInRequired');
 
 function createAccountDashboardRouter({ supabase, getStripe, service } = {}) {
   const router = express.Router();
@@ -46,27 +47,38 @@ function createAccountDashboardRouter({ supabase, getStripe, service } = {}) {
     };
   }
 
-  router.get('/dashboard', accountRoute('dashboard', async (req) => accountService.getDashboard(req)));
-  router.get('/me/subscriptions', accountRoute('me.subscriptions', async (req) => ({
+  // Billing views need a signed-in account (JWT) or the account's own licence
+  // key; site headers alone are not enough.
+  function requireAccountCredential(req, res, next) {
+    if (!['jwt', 'license'].includes(req.authMethod) || (!req.user && !req.license)) {
+      return sendSignInRequired(req, res);
+    }
+    return next();
+  }
+
+  router.get('/dashboard', requireAccountCredential, accountRoute('dashboard', async (req) => accountService.getDashboard(req)));
+  router.get('/me/subscriptions', requireAccountCredential, accountRoute('me.subscriptions', async (req) => ({
     ok: true,
     subscriptions: await accountService.getSubscriptions(req)
   })));
-  router.get('/me/sites', accountRoute('me.sites', async (req) => ({
+  // Site list (domains, site ids) and licence keys: account credential only.
+  router.get('/me/sites', requireAccountCredential, accountRoute('me.sites', async (req) => ({
     ok: true,
     sites: await accountService.getSites(req)
   })));
-  router.post('/me/sites/detach', accountRoute('me.sites.detach', async (req) => (
+  // Detach changes the account's sites: account credential only.
+  router.post('/me/sites/detach', requireAccountCredential, accountRoute('me.sites.detach', async (req) => (
     accountService.detachSite(req)
   )));
   router.get('/me/plugins/stats', accountRoute('me.plugins.stats', async (req) => accountService.getPluginStats(req)));
   router.get('/me/plugins/:pluginName/stats', accountRoute('me.plugins.stats.by_plugin', async (req) => (
     accountService.getPluginStats(req, req.params.pluginName)
   )));
-  router.get('/me/licenses', accountRoute('me.licenses', async (req) => ({
+  router.get('/me/licenses', requireAccountCredential, accountRoute('me.licenses', async (req) => ({
     ok: true,
     licenses: await accountService.getLicenses(req)
   })));
-  router.get('/me/invoices', accountRoute('me.invoices', async (req) => ({
+  router.get('/me/invoices', requireAccountCredential, accountRoute('me.invoices', async (req) => ({
     ok: true,
     invoices: await accountService.getInvoices(req)
   })));

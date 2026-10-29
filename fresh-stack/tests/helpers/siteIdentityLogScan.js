@@ -21,7 +21,7 @@ const HEADER_NAME = /^x-(site-key|site-hash|trial-site-hash|install-hash|install
 const SAFE_CALL = /^(Boolean|siteRefForLog|installRefForLog|fingerprintRefForLog|maskSecret|isValidUUID)$/;
 const LOGGER_OBJECT = /^(logger|resetLogger|billingLogger|console)$/;
 const LOG_WRAPPER = /^(logCreditsAudit|logV2Fallback|logCheckoutOutcome|emitAuthWriteTrace)$/;
-const LOG_VAR = /(Trace|LogData|logData|logContext|LogContext|auditContext)$/;
+const LOG_VAR = /(Trace|^trace|LogData|logData|logContext|LogContext|auditContext)$/;
 const PASS = new Set(['ObjectExpression', 'ObjectProperty', 'ArrayExpression', 'ConditionalExpression', 'LogicalExpression', 'SpreadElement', 'TemplateLiteral', 'BinaryExpression']);
 
 function listSourceFiles(root, { exclude = [] } = {}) {
@@ -54,6 +54,48 @@ function inLogFunction(p) {
   return false;
 }
 
+// Names of variables whose value reaches a log call in the file being
+// scanned: passed to a log call, spread into a logged object, or assigned
+// or spread into such a variable (fixpoint). Set per file by scanFile.
+let loggedNames = new Set();
+const isLoggedName = (name) => LOG_VAR.test(name) || loggedNames.has(name);
+
+function collectLoggedNames(ast) {
+  const names = new Set();
+  const addFrom = (node) => {
+    if (!node) return;
+    if (node.type === 'Identifier') names.add(node.name);
+    else if (node.type === 'ObjectExpression') {
+      for (const prop of node.properties) {
+        if (prop.type === 'SpreadElement' && prop.argument.type === 'Identifier') names.add(prop.argument.name);
+      }
+    } else if (node.type === 'LogicalExpression' || node.type === 'ConditionalExpression') {
+      addFrom(node.left || node.consequent); addFrom(node.right || node.alternate);
+    }
+  };
+  traverse(ast, {
+    'CallExpression|OptionalCallExpression'(p) {
+      if (calleeIsLog(p.node.callee)) p.node.arguments.forEach(addFrom);
+    }
+  });
+  const flows = [];
+  traverse(ast, {
+    VariableDeclarator(p) {
+      if (p.node.id.type === 'Identifier' && p.node.init) flows.push([p.node.id.name, p.node.init]);
+    },
+    AssignmentExpression(p) {
+      if (p.node.left.type === 'Identifier') flows.push([p.node.left.name, p.node.right]);
+    }
+  });
+  for (let size = -1; size !== names.size;) {
+    size = names.size;
+    for (const [name, value] of flows) {
+      if (names.has(name) || LOG_VAR.test(name)) addFrom(value);
+    }
+  }
+  return names;
+}
+
 // Is this node part of a value that ends up in a log call?
 function logSink(p) {
   let cur = p;
@@ -73,12 +115,14 @@ function logSink(p) {
     return null;
   }
   if (parent.type === 'VariableDeclarator' && parent.init === cur.node && parent.id.type === 'Identifier') {
-    if (LOG_VAR.test(parent.id.name)) return `var ${parent.id.name}`;
+    if (isLoggedName(parent.id.name)) return `var ${parent.id.name}`;
     if (/^(payload|entry)$/.test(parent.id.name) && inLogFunction(cur)) return `var ${parent.id.name}`;
   }
   if (parent.type === 'AssignmentExpression' && parent.right === cur.node) {
     const left = parent.left;
-    if (left.type === 'MemberExpression' && left.object.type === 'Identifier' && LOG_VAR.test(left.object.name)) return `assign ${left.object.name}`;
+    if (left.type === 'MemberExpression' && left.object.type === 'Identifier' && isLoggedName(left.object.name)) return `assign ${left.object.name}`;
+    // Whole-object reassignment: trace = { ...trace, site_hash }.
+    if (left.type === 'Identifier' && isLoggedName(left.name)) return `assign ${left.name}`;
   }
   return null;
 }
@@ -124,6 +168,7 @@ function scanFile(file, root) {
   const rel = path.relative(root, file);
   const hits = [];
   const seen = new Set();
+  loggedNames = collectLoggedNames(ast);
   const add = (node, what) => {
     const key = `${node.loc.start.line}:${node.start}`;
     if (seen.has(key)) return;

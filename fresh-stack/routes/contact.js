@@ -1,6 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { redactEmailsInString } = require('../lib/redact');
 const { sendContactEmail, getContactRecipientEmail, isAvailable: isEmailAvailable } = require('../lib/email');
 
 /**
@@ -162,7 +163,7 @@ function createContactRouter({ redis }) {
 
       if (!emailResult.success) {
         logger.error('[Contact] Failed to send email', {
-          error: emailResult.error,
+          error: redactEmailsInString(String(emailResult.error ?? '')),
           recipient,
           has_site_hash: Boolean(siteHash)
         });
@@ -173,8 +174,8 @@ function createContactRouter({ redis }) {
       }
 
       logger.info('[Contact] Contact form submitted successfully', {
-        email,
-        subject,
+        email: redactEmailsInString(String(email ?? '')),
+        subject: redactEmailsInString(String(subject ?? '')),
         recipient: emailResult.recipientEmail || recipient,
         recipients: emailResult.recipientEmails || [recipient],
         messageId: emailResult.messageId,
@@ -194,8 +195,8 @@ function createContactRouter({ redis }) {
 
     } catch (error) {
       logger.error('[Contact] Unexpected error processing contact form', {
-        error: error.message,
-        stack: error.stack
+        error: redactEmailsInString(String(error?.message ?? '')),
+        stack: redactEmailsInString(String(error?.stack ?? ''))
       });
       return res.status(500).json({
         error: 'INTERNAL_ERROR',

@@ -154,12 +154,13 @@ function createSupabaseMock({ siteRecord = null, siteSubscriptions = [], license
   };
 }
 
-function createApp({ supabase, stripeClient, license, user }) {
+function createApp({ supabase, stripeClient, license, user, authMethod }) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     req.license = license || null;
     req.user = user || null;
+    req.authMethod = authMethod || (user ? 'jwt' : license ? 'license' : undefined);
     next();
   });
   app.use('/billing', createBillingRouter({
@@ -243,8 +244,7 @@ describe('POST /billing/checkout', () => {
         account_id: 'account_123',
         license_key: 'lic_123',
         site_id: 'site_123',
-        site_hash: 'site_hash_123',
-        user_id: 'user_987',
+        user_id: 'account_123',
         email: 'buyer@example.com',
         plan: 'agency',
         current_plan: 'free',
@@ -261,8 +261,7 @@ describe('POST /billing/checkout', () => {
           account_id: 'account_123',
           license_key: 'lic_123',
           site_id: 'site_123',
-          site_hash: 'site_hash_123',
-          user_id: 'user_987',
+          user_id: 'account_123',
           email: 'buyer@example.com',
           plan: 'agency',
           current_plan: 'free',
@@ -327,7 +326,6 @@ describe('POST /billing/checkout', () => {
         account_id: 'account_credits',
         license_key: 'lic_credits',
         site_id: 'site_credits',
-        site_hash: 'site_hash_credits',
         user_id: 'account_credits',
         email: 'credits@example.com',
         plan: 'credits',
@@ -341,7 +339,6 @@ describe('POST /billing/checkout', () => {
           account_id: 'account_credits',
           license_key: 'lic_credits',
           site_id: 'site_credits',
-          site_hash: 'site_hash_credits',
           user_id: 'account_credits',
           email: 'credits@example.com',
           plan: 'credits',
@@ -458,6 +455,7 @@ describe('POST /billing/checkout', () => {
       expect(res.status).toBe(200);
     }
 
+    const warnSpy = jest.spyOn(logger, 'warn');
     const limited = await request(app)
       .post('/billing/checkout')
       .set('X-Site-Key', 'site_hash_credits_limited')
@@ -470,6 +468,11 @@ describe('POST /billing/checkout', () => {
       retry_after: 900
     }));
     expect(stripeClient.checkout.sessions.create).toHaveBeenCalledTimes(3);
+    const blocked = warnSpy.mock.calls.filter(([message]) => message === '[rate-limit] blocked');
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0][1]).toEqual({ limiter: 'checkout-credits', limit: 3, count: 4, window_seconds: 900 });
+    expect(JSON.stringify(blocked[0])).not.toMatch(/203\.0\.113\.10|credits-limited@example\.com|lic_credits_limited|site_hash_credits_limited|account_credits_limited/);
+    warnSpy.mockRestore();
   });
 
   test('uses the Starter Stripe price and starter plan metadata', async () => {
@@ -529,7 +532,6 @@ describe('POST /billing/checkout', () => {
         account_id: 'account_starter',
         license_key: 'lic_starter',
         site_id: 'site_starter',
-        site_hash: 'site_hash_starter',
         plan: 'starter',
         current_plan: 'free',
         billing_interval: 'month',
@@ -724,8 +726,8 @@ describe('POST /billing/checkout', () => {
       success: true,
       url: 'https://stripe.test/portal',
       portal: true,
-      customerId: 'cus_paid',
-      subscriptionId: 'sub_paid'
+      customerId: 'cus_***',
+      subscriptionId: 'sub_***'
     }));
     expect(stripeClient.billingPortal.sessions.create).toHaveBeenCalledWith({
       customer: 'cus_paid',
@@ -791,8 +793,8 @@ describe('POST /billing/portal', () => {
     expect(res.body).toEqual(expect.objectContaining({
       success: true,
       url: 'https://stripe.test/portal',
-      customerId: 'cus_paid',
-      subscriptionId: 'sub_paid',
+      customerId: 'cus_***',
+      subscriptionId: 'sub_***',
       source: 'site_subscriptions:license_sites'
     }));
     expect(stripeClient.billingPortal.sessions.create).toHaveBeenCalledWith({
@@ -1190,7 +1192,7 @@ describe('POST /billing/checkout USD allowlist + geo', () => {
     expect(outcomeCall[1]).toEqual(expect.objectContaining({
       status: 200,
       outcome: 'session_reused',
-      session_id: 'cs_existing',
+      session_id: 'cs_***',
       idempotent_replayed: true,
       country: 'GB',
       country_source: 'body.admin_country',
