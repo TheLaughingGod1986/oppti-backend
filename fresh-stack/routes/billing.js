@@ -3457,9 +3457,13 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
           || sanitizeStripeMetadataValue(siteRecord?.license_key)
           || bodyIdentity.licenseKey,
         site_id: sanitizeStripeMetadataValue(siteRecord?.id) || bodyIdentity.siteId,
-        site_hash: sanitizeStripeMetadataValue(siteRecord?.site_hash)
-          || sanitizeStripeMetadataValue(metadataSiteKey)
-          || bodyIdentity.siteHash,
+        // The raw site key replays as X-Site-Key, so it goes to Stripe only
+        // when there is no site row: webhooks and renewals find the site by
+        // site_id (the sites row id) first, and old objects that only carry
+        // site_hash still resolve through the site_hash fallback.
+        site_hash: siteRecord?.id
+          ? undefined
+          : (sanitizeStripeMetadataValue(metadataSiteKey) || bodyIdentity.siteHash),
         // Hashed here from the raw X-Site-Key (or the stored site_hash), the
         // plugin formula. Never the body site_install_id: newer plugins send it
         // hashed, older ones raw.

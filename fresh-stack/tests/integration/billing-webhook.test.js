@@ -1024,6 +1024,20 @@ describe('POST /billing/webhook', () => {
     });
   });
 
+  test('renewal for an old Stripe object that only carries metadata site_hash still finds the site', async () => {
+    const supabase = createSupabaseMock({
+      sites: [{ id: 'site_old_meta', site_hash: 'site_hash_old_meta' }]
+    });
+    verifyWebhookSignature.mockReturnValue({
+      id: 'evt_checkout_old_meta',
+      type: 'checkout.session.completed',
+      data: { object: { id: 'cs_old_meta', mode: 'payment', payment_status: 'paid', amount_total: 500, currency: 'usd', customer: 'cus_old_meta', livemode: false, metadata: { site_hash: 'site_hash_old_meta' } } }
+    });
+    const res = await sendWebhook(createApp({ supabase }), 'evt_checkout_old_meta');
+    expect(res.status).toBe(200);
+    expect(captureServerEvent).toHaveBeenCalledWith(expect.objectContaining({ event: 'payment_succeeded', distinctId: 'site_old_meta' }));
+  });
+
   test('uses metadata account_id as the highest-priority identity path', async () => {
     const supabase = createSupabaseMock({
       accounts: [

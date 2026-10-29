@@ -280,7 +280,10 @@ describe('site-header-only checkout', () => {
     expect(res.body.sessionId).toBe('cs_test_SessionAbcdef9876');
     expect(stripe.checkout.sessions.create).toHaveBeenCalledTimes(1);
     const { metadata } = stripe.checkout.sessions.create.mock.calls[0][0];
-    expect(metadata).toMatchObject({ license_key: N.license_key, site_id: 'site-n', site_hash: 'hash-nnnnnnnnnnnnnnnn' });
+    expect(metadata).toMatchObject({ license_key: N.license_key, site_id: 'site-n' });
+    // The site row id replaces the raw site key in Stripe metadata.
+    expect(metadata).not.toHaveProperty('site_hash');
+    expect(JSON.stringify(metadata)).not.toContain('hash-nnnnnnnnnnnnnnnn');
   });
 
   test('logged-out Alt Text one-off credits checkout still works on a site with no subscription', async () => {
@@ -462,7 +465,8 @@ describe('checkout prefill', () => {
     const [params] = createParams(stripe);
     expect(params).not.toHaveProperty('customer');
     expect(params).not.toHaveProperty('customer_email');
-    expect(params.metadata).toMatchObject({ account_id: N.id, license_key: N.license_key, site_id: 'site-n', site_hash: 'hash-nnnnnnnnnnnnnnnn' });
+    expect(params.metadata).toMatchObject({ account_id: N.id, license_key: N.license_key, site_id: 'site-n' });
+    expect(params.metadata).not.toHaveProperty('site_hash');
     expect(params.client_reference_id).toBe(N.id);
   });
 
