@@ -2146,7 +2146,8 @@ async function reconcileSubscriptionStatus({
     stripe_event_type: eventProperties?.stripe_event_type || null,
     account_id: account?.id || null,
     site_id: site?.id || null,
-    site_hash: site?.site_hash || eventProperties?.site_hash || null,
+    // Traces feed webhook_write_trace log lines: presence only, never the raw key.
+    ...siteRefForLog(site?.site_hash || eventProperties?.site_hash || null),
     plan: eventProperties?.plan || null,
     subscription_status: status,
     subscriptions_written: false,
@@ -2265,7 +2266,8 @@ async function reconcileSiteEntitlement({
     stripe_event_id: stripeEventId,
     stripe_event_type: eventProperties?.stripe_event_type || null,
     site_id: site?.id || null,
-    site_hash: site?.site_hash || eventProperties?.site_hash || null,
+    // Traces feed webhook_write_trace log lines: presence only, never the raw key.
+    ...siteRefForLog(site?.site_hash || eventProperties?.site_hash || null),
     plan: eventProperties?.plan || null,
     purchase_type: eventProperties?.purchase_type || null,
     licenses_updated: false,
@@ -2690,7 +2692,8 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               license_key_present: Boolean(payload.eventProperties.license_key),
               license_key_prefix: maskSecret(payload.eventProperties.license_key || null),
               site_id: payload.site?.id || null,
-              site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
+              // Presence only: the stored site_hash is the raw site key.
+              ...siteRefForLog(payload.site?.site_hash || payload.eventProperties.site_hash || null)
             };
             await emitPaymentSucceeded({
               stripeEventId: event.id,
@@ -2732,7 +2735,8 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               license_key_present: Boolean(payload.eventProperties.license_key),
               license_key_prefix: maskSecret(payload.eventProperties.license_key || null),
               site_id: payload.site?.id || null,
-              site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
+              // Presence only: the stored site_hash is the raw site key.
+              ...siteRefForLog(payload.site?.site_hash || payload.eventProperties.site_hash || null)
             };
             await emitCanonicalBillingEvents({
               stripeEventId: event.id,
@@ -2786,7 +2790,8 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               license_key_present: Boolean(payload.eventProperties.license_key),
               license_key_prefix: maskSecret(payload.eventProperties.license_key || null),
               site_id: payload.site?.id || null,
-              site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
+              // Presence only: the stored site_hash is the raw site key.
+              ...siteRefForLog(payload.site?.site_hash || payload.eventProperties.site_hash || null)
             };
             const invoiceMetadata = await resolveInvoiceMetadata(stripeClient, invoice);
             await emitPaymentSucceeded({
@@ -2973,7 +2978,8 @@ function createBillingWebhookHandler({ supabase, getStripe, priceIds = {}, webho
               license_key_present: Boolean(payload.eventProperties.license_key),
               license_key_prefix: maskSecret(payload.eventProperties.license_key || null),
               site_id: payload.site?.id || null,
-              site_hash: payload.site?.site_hash || payload.eventProperties.site_hash || null
+              // Presence only: the stored site_hash is the raw site key.
+              ...siteRefForLog(payload.site?.site_hash || payload.eventProperties.site_hash || null)
             };
             const { distinctId } = resolveDistinctIdFromStripeEvent({
               account: payload.account,

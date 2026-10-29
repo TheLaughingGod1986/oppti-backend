@@ -2617,3 +2617,97 @@ describe('POST /billing/webhook', () => {
     });
   });
 });
+
+// QA P1-1 (29 Oct): the [billing] webhook_write_trace log line carried the
+// stored site_hash, which is the raw site key. Every webhook write shape is
+// driven here with a captured logger and console; the raw keys must appear
+// 0 times in all log output.
+describe('webhook log lines never carry the raw site key', () => {
+  const RAW = {
+    checkout: 'qa-raw-site-key-webhook-checkout-0001',
+    invoice: 'qa-raw-site-key-webhook-invoice-0002',
+    updated: 'qa-raw-site-key-webhook-subupdate-0003',
+    renewal: 'qa-raw-site-key-webhook-renewal-0004'
+  };
+  let captured;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.STRIPE_SECRET_KEY = 'sk_test_mock';
+    captured = [];
+    for (const level of ['info', 'warn', 'error', 'debug']) {
+      jest.spyOn(logger, level).mockImplementation((...args) => { captured.push(args); });
+    }
+    for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+      jest.spyOn(console, level).mockImplementation((...args) => { captured.push(args); });
+    }
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  const allLogText = () => JSON.stringify(captured);
+  const count = (text, needle) => text.split(needle).length - 1;
+  const writeTraces = () => captured.filter(([msg]) => msg === '[billing] webhook_write_trace').map(([, fields]) => fields);
+
+  function supabaseWithSites() {
+    return createSupabaseMock({
+      enableBillingRpc: true,
+      accounts: [{ id: 'account_raw_log', email: 'raw-log@example.com', license_key: 'lic_raw_log', stripe_customer_id: 'cus_raw_log', stripe_subscription_id: 'sub_raw_log', plan: 'free' }],
+      sites: [
+        { id: 'site_raw_checkout', site_hash: RAW.checkout, license_key: 'lic_raw_log' },
+        { id: 'site_raw_invoice', site_hash: RAW.invoice, license_key: 'lic_raw_log' },
+        { id: 'site_raw_updated', site_hash: RAW.updated, license_key: 'lic_raw_log' },
+        { id: 'site_raw_renewal', site_hash: RAW.renewal }
+      ]
+    });
+  }
+  const stripeClient = {
+    checkout: { sessions: { listLineItems: jest.fn().mockResolvedValue({ data: [{ price: { id: 'price_credits', product: 'prod_credits' } }] }) } },
+    subscriptions: { retrieve: jest.fn().mockResolvedValue({ id: 'sub_raw_log', metadata: { site_id: 'site_raw_invoice' } }) }
+  };
+
+  const EVENTS = {
+    'checkout.session.completed (payment_succeeded)': {
+      id: 'evt_raw_checkout',
+      type: 'checkout.session.completed',
+      data: { object: { id: 'cs_raw_checkout', mode: 'payment', payment_status: 'paid', amount_total: 500, currency: 'usd', customer: 'cus_raw_log', livemode: false, metadata: { account_id: 'account_raw_log', site_id: 'site_raw_checkout', plan: 'credits' } } }
+    },
+    'invoice.payment_succeeded (subscription payment_succeeded)': {
+      id: 'evt_raw_invoice',
+      type: 'invoice.payment_succeeded',
+      data: { object: { id: 'in_raw_invoice', amount_paid: 1499, currency: 'usd', customer: 'cus_raw_log', subscription: 'sub_raw_log', billing_reason: 'subscription_cycle', livemode: false, metadata: { account_id: 'account_raw_log', site_id: 'site_raw_invoice' }, lines: { data: [{ price: { id: 'price_pro', product: 'prod_pro', recurring: { interval: 'month' } } }] } } }
+    },
+    'customer.subscription.updated': {
+      id: 'evt_raw_updated',
+      type: 'customer.subscription.updated',
+      data: { object: { id: 'sub_raw_log', status: 'active', customer: 'cus_raw_log', livemode: false, current_period_start: 1780272000, current_period_end: 1782864000, cancel_at_period_end: false, metadata: { account_id: 'account_raw_log', site_id: 'site_raw_updated' }, items: { data: [{ price: { id: 'price_pro', product: 'prod_pro', recurring: { interval: 'month' } } }] } } }
+    },
+    'renewal fallback, old metadata {site_hash} only': {
+      id: 'evt_raw_renewal',
+      type: 'checkout.session.completed',
+      data: { object: { id: 'cs_raw_renewal', mode: 'payment', payment_status: 'paid', amount_total: 500, currency: 'usd', customer: 'cus_raw_renewal', livemode: false, metadata: { site_hash: RAW.renewal } } }
+    }
+  };
+
+  test.each(Object.keys(EVENTS))('%s: 200, a write trace is logged, raw keys appear 0 times in log output', async (name) => {
+    const event = EVENTS[name];
+    verifyWebhookSignature.mockReturnValue(event);
+    const res = await sendWebhook(createApp({ supabase: supabaseWithSites(), stripeClient }), event.id);
+    expect(res.status).toBe(200);
+    const traces = writeTraces();
+    expect(traces.length).toBeGreaterThan(0);
+    expect(traces.some((t) => t.has_site_key === true)).toBe(true);
+    const text = allLogText();
+    for (const raw of Object.values(RAW)) expect(count(text, raw)).toBe(0);
+    for (const trace of traces) expect(trace).not.toHaveProperty('site_hash');
+  });
+
+  test('all four shapes in one run: 0 raw keys in all log output', async () => {
+    for (const event of Object.values(EVENTS)) {
+      verifyWebhookSignature.mockReturnValue(event);
+      const res = await sendWebhook(createApp({ supabase: supabaseWithSites(), stripeClient }), event.id);
+      expect(res.status).toBe(200);
+    }
+    const text = allLogText();
+    expect(writeTraces().length).toBeGreaterThanOrEqual(4);
+    expect(Object.values(RAW).reduce((n, raw) => n + count(text, raw), 0)).toBe(0);
+  });
+});

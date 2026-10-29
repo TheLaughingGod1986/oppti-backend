@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const logger = require('../lib/logger');
+const { installRefForLog, siteRefForLog } = require('../lib/logIdentity');
 const { isMissingSchemaError, serializeSupabaseError } = require('../lib/supabaseErrors');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { getAnonymousTrialLimit } = require('./anonymousTrial');
@@ -2433,7 +2434,7 @@ async function syncLegacySitePointers(supabase, {
       }
       logger.info('[site] legacy_site_pointer_sync_succeeded', {
         site_id: site.id,
-        site_hash: site.site_hash || null,
+        ...siteRefForLog(site.site_hash || null),
         account_id: account.id || null
       });
     } catch (error) {
@@ -2464,7 +2465,7 @@ async function syncLegacySitePointers(supabase, {
           }
           logger.info('[site] legacy_site_pointer_sync_succeeded', {
             site_id: site.id,
-            site_hash: site.site_hash || null,
+            ...siteRefForLog(site.site_hash || null),
             account_id: account.id || null,
             schema_mode: 'legacy'
           });
