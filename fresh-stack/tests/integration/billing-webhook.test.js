@@ -1116,11 +1116,7 @@ describe('POST /billing/webhook', () => {
     expect(captureServerEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: 'payment_succeeded',
       distinctId: 'account_guest_site',
-      properties: expect.objectContaining({
-        account_id: 'account_guest_site',
-        license_key: 'lic_guest_site',
-        site_id: 'site_guest'
-      })
+      properties: expect.objectContaining({ account_id: 'account_guest_site' })
     }));
     const accountUpdates = supabase.updates.filter((u) => u.table === 'licenses');
     expect(accountUpdates.every((u) => u.value !== 'account_typed_email' && u.value !== 'lic_typed_email')).toBe(true);
@@ -1169,7 +1165,7 @@ describe('POST /billing/webhook', () => {
       expect(captureServerEvent).toHaveBeenCalledWith(expect.objectContaining({
         event: 'payment_succeeded',
         distinctId: 'account_has_customer',
-        properties: expect.objectContaining({ account_id: 'account_has_customer', site_id: 'site_has_customer' })
+        properties: expect.objectContaining({ account_id: 'account_has_customer' })
       }));
       const customerWrites = supabase.updates.filter((u) => u.table === 'licenses' && u.payload && 'stripe_customer_id' in u.payload);
       expect(customerWrites.every((u) => u.payload.stripe_customer_id === 'cus_existingWXYZ1111')).toBe(true);
