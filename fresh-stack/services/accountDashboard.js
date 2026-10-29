@@ -2,6 +2,7 @@ const { getSites, deactivateSite } = require('./site');
 const { getQuotaStatus, computePeriodStart } = require('./quota');
 const { getLimits } = require('./planLimits');
 const { recordPluginConnection } = require('./pluginConnections');
+const { installIdFromSiteKey } = require('../lib/installId');
 
 const FEATURE_LABELS = {
   alt_text: 'OpptiAI Alt Text',
@@ -398,8 +399,9 @@ function createAccountDashboardService({ supabase, getStripe }) {
           id: site.id,
           domain: toDomain(site.site_url),
           status: site.status === 'deactivated' ? 'suspended' : (site.status || 'active'),
-          site_hash: site.site_hash || null,
-          license_ids: account?.id ? [account.id] : (site.license_key ? [site.license_key] : []),
+          // Hashed install id, never the raw site key; never a licence key.
+          site_install_id: installIdFromSiteKey(site.site_hash || null),
+          license_ids: account?.id ? [account.id] : [],
           plugins,
           credits_used: creditsUsed,
           created_at: site.created_at || site.activated_at,
@@ -445,7 +447,7 @@ function createAccountDashboardService({ supabase, getStripe }) {
       return {
         ok: true,
         site_id: siteId,
-        site_hash: site.site_hash
+        site_install_id: installIdFromSiteKey(site.site_hash)
       };
     },
 

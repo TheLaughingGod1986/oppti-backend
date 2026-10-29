@@ -5,6 +5,7 @@ const { z } = require('zod');
 const crypto = require('crypto');
 const logger = require('../lib/logger');
 const { siteRefForLog } = require('../lib/logIdentity');
+const { publicSite } = require('../lib/publicSite');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { sendPasswordResetEmail, isAvailable: isEmailAvailable } = require('../lib/email');
 const { buildPasswordResetLink } = require('../lib/passwordReset');
@@ -102,7 +103,7 @@ function buildAuthWriteTrace({
     email: maskEmail(email),
     site_identity: {
       is_valid: Boolean(siteIdentity?.isValid),
-      site_hash: siteIdentity?.siteHash || null,
+      has_site_key: Boolean(siteIdentity?.siteHash),
       site_url: siteIdentity?.siteUrl || null,
       site_fingerprint_present: Boolean(siteIdentity?.siteFingerprint)
     },
@@ -959,7 +960,7 @@ function createAuthRouter({ supabase }) {
             plan: user.plan,
             status: user.status,
           },
-          site: siteLink.site || null,
+          site: publicSite(siteLink.site),
           shared_site: siteLink.sharedSite,
           existing_email: maskEmail(siteLink.existingAccount?.email || null),
           ...(entitlementState ? { entitlement_state: entitlementState } : {})
@@ -973,7 +974,7 @@ function createAuthRouter({ supabase }) {
           plan: user.plan,
           status: user.status,
         },
-        site: siteLink.site || null,
+        site: publicSite(siteLink.site),
         shared_site: siteLink.sharedSite,
         existing_email: maskEmail(siteLink.existingAccount?.email || null),
         ...(entitlementState ? { entitlement_state: entitlementState } : {})
@@ -1216,7 +1217,7 @@ function createAuthRouter({ supabase }) {
             plan: user.plan,
             status: user.status,
           },
-          site: siteLink.site || null,
+          site: publicSite(siteLink.site),
           shared_site: siteLink.sharedSite,
           existing_email: maskEmail(siteLink.existingAccount?.email || null),
           ...(entitlementState ? { entitlement_state: entitlementState } : {})
@@ -1230,7 +1231,7 @@ function createAuthRouter({ supabase }) {
           plan: user.plan,
           status: user.status,
         },
-        site: siteLink.site || null,
+        site: publicSite(siteLink.site),
         shared_site: siteLink.sharedSite,
         existing_email: maskEmail(siteLink.existingAccount?.email || null),
         ...(entitlementState ? { entitlement_state: entitlementState } : {})

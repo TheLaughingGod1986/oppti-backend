@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const { z } = require('zod');
 const logger = require('../lib/logger');
 const { siteRefForLog } = require('../lib/logIdentity');
+const { installIdFromSiteKey } = require('../lib/installId');
 const { getQuotaStatus } = require('../services/quota');
 const { buildEntitlementState } = require('../services/entitlementState');
 const { getUsageLogs } = require('../services/usage');
@@ -169,7 +170,7 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
       success: true,
       data: {
         site_id: resolved.site.id,
-        site_hash: resolved.site.site_hash || null,
+        site_install_id: installIdFromSiteKey(resolved.site.site_hash || null),
         updated: Number(result.updated || 0),
         inserted: Number(result.inserted || 0),
         changed: result.count,

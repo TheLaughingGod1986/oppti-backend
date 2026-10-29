@@ -1,3 +1,4 @@
+const { installIdFromSiteKey } = require('../../lib/installId');
 const express = require('express');
 const request = require('supertest');
 
@@ -91,7 +92,7 @@ describe('POST /dashboard/image-states/sync', () => {
       success: true,
       data: {
         site_id: 'site_1',
-        site_hash: 'site-hash-1',
+        site_install_id: installIdFromSiteKey('site-hash-1'),
         updated: 0,
         inserted: 3,
         changed: 3,

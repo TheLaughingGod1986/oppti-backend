@@ -2,6 +2,7 @@ const express = require('express');
 const { z } = require('zod');
 const logger = require('../lib/logger');
 const { siteRefForLog } = require('../lib/logIdentity');
+const { installIdFromSiteKey } = require('../lib/installId');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
 const { buildTrialGenerationForBatchPlan } = require('../lib/trialGenerationContract');
 const {
@@ -294,7 +295,7 @@ function createUsageRouter({ supabase }) {
     if (result.error) return res.status(500).json({ error: 'SERVER_ERROR', message: result.error.message });
 
     return res.json({
-      site_id: siteKey,
+      site_install_id: installIdFromSiteKey(siteKey),
       period_start: periodStart.toISOString(),
       period_end: periodEnd.toISOString(),
       total_credits_used: (result.users || []).reduce((s, u) => s + (u.credits_used || 0), 0),
@@ -337,7 +338,10 @@ function createUsageRouter({ supabase }) {
       total_limit: 10000,
       credits_remaining: Math.max(10000 - totals.total, 0),
       reset_date: periodEnd.toISOString(),
-      sites: result.sites || []
+      sites: (result.sites || []).map(({ site_hash: siteHash, ...rest }) => ({
+        ...rest,
+        site_install_id: installIdFromSiteKey(siteHash === 'unknown' ? null : siteHash)
+      }))
     });
   });
 

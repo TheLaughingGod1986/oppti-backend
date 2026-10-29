@@ -1,6 +1,7 @@
 const express = require('express');
 const logger = require('../lib/logger');
 const { siteRefForLog } = require('../lib/logIdentity');
+const { publicSite, publicSites } = require('../lib/publicSite');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { fetchAccountByLicenseKey, resolveCanonicalSite } = require('../services/siteQuota');
 const { validateLicense, activateLicense, deactivateLicense, transferLicense, sanitizeLicense } = require('../services/license');
@@ -79,9 +80,9 @@ function createLicenseRouter({ supabase }) {
       success: true,
       message: 'License activated successfully',
       license: sanitizeLicense(result.license),
-      site: result.site,
+      site: publicSite(result.site),
       organization,
-      data: { organization, site: result.site }
+      data: { organization, site: publicSite(result.site) }
     });
   });
 
@@ -111,7 +112,7 @@ function createLicenseRouter({ supabase }) {
       delete safe.license;
       return res.status(result.status || 400).json(safe);
     }
-    return res.json({ success: true, message: 'License transferred', license: sanitizeLicense(result.license), site: result.site });
+    return res.json({ success: true, message: 'License transferred', license: sanitizeLicense(result.license), site: publicSite(result.site) });
   });
 
   router.get('/sites', async (req, res) => {
@@ -178,11 +179,14 @@ function createLicenseRouter({ supabase }) {
 
     const result = await getSites(supabase, { licenseKey });
     if (result.error) return res.status(500).json({ error: 'SERVER_ERROR', message: result.error.message });
+    // Site rows never carry the raw site key; the licence key is echoed
+    // only to a caller that authenticated with an account credential.
+    const sites = publicSites(result.data || []);
     return res.json({
       success: true,
-      license_key: licenseKey,
-      sites: result.data || [],
-      data: { sites: result.data || [] }
+      ...((['jwt', 'license'].includes(req.authMethod) || req.header('X-License-Key')) ? { license_key: licenseKey } : {}),
+      sites,
+      data: { sites }
     });
   });
 
@@ -223,7 +227,7 @@ function createLicenseRouter({ supabase }) {
     return res.json({
       success: true,
       message: 'Site quota updated successfully',
-      site: result.data
+      site: publicSite(result.data)
     });
   });
 

@@ -1,5 +1,6 @@
 const express = require('express');
 const request = require('supertest');
+const { installIdFromSiteKey } = require('../../lib/installId');
 
 process.env.JWT_SECRET = 'test-jwt-secret';
 
@@ -525,8 +526,9 @@ describe('site-aware auth linking', () => {
     expect(res.body.code).not.toBe('AMBIGUOUS_SITE_MATCH');
     expect(res.body.site).toEqual(expect.objectContaining({
       id: targetSite.id,
-      site_hash: targetSite.site_hash
+      site_install_id: installIdFromSiteKey(targetSite.site_hash)
     }));
+    expect(res.body.site).not.toHaveProperty('site_hash');
     expect(supabase._state.siteAuditLogs).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ event_type: 'ambiguous_site_match' })
     ]));
@@ -618,9 +620,9 @@ describe('site-aware auth linking', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.site).toEqual(expect.objectContaining({
-      site_hash: 'localhost-new-install',
-      fingerprint: 'localhost-fingerprint-new'
+      site_install_id: installIdFromSiteKey('localhost-new-install')
     }));
+    expect(res.body.site).not.toHaveProperty('fingerprint');
     expect(res.body.site.id).not.toBe('site_existing_localhost');
     expect(supabase._state.sites).toHaveLength(2);
   });
@@ -653,7 +655,7 @@ describe('site-aware auth linking', () => {
     expect(login.status).toBe(200);
     expect(login.body.site).toEqual(expect.objectContaining({
       id: expect.any(String),
-      site_hash: 'wp-login-heal'
+      site_install_id: installIdFromSiteKey('wp-login-heal')
     }));
     expect(login.body.entitlement_state).toEqual(expect.objectContaining({
       plan: 'free',
@@ -695,7 +697,7 @@ describe('site-aware auth linking', () => {
     expect(sitesRes.body.sites).toHaveLength(1);
     expect(sitesRes.body.sites[0]).toEqual(expect.objectContaining({
       id: expect.any(String),
-      site_hash: 'wp-license-heal'
+      site_install_id: installIdFromSiteKey('wp-license-heal')
     }));
 
     const siteId = sitesRes.body.sites[0].id;
@@ -729,11 +731,12 @@ describe('site-aware auth linking', () => {
     expect(register.status).toBe(200);
     expect(register.body.site).toEqual(expect.objectContaining({
       id: expect.any(String),
-      site_hash: 'legacy-install',
-      site_url: 'http://localhost:8080/wp-admin/',
-      fingerprint: 'legacy-fingerprint',
-      license_key: register.body.user.license_key
+      site_install_id: installIdFromSiteKey('legacy-install'),
+      site_url: 'http://localhost:8080/wp-admin/'
     }));
+    // Password register is an account credential: user.license_key stays.
+    expect(register.body.user.license_key).toEqual(expect.any(String));
+    for (const field of ['site_hash', 'fingerprint', 'license_key']) expect(register.body.site).not.toHaveProperty(field);
 
     const login = await request(app)
       .post('/auth/login')
@@ -742,9 +745,9 @@ describe('site-aware auth linking', () => {
     expect(login.status).toBe(200);
     expect(login.body.site).toEqual(expect.objectContaining({
       id: register.body.site.id,
-      site_hash: 'legacy-install',
-      license_key: register.body.user.license_key
+      site_install_id: installIdFromSiteKey('legacy-install')
     }));
+    for (const field of ['site_hash', 'license_key']) expect(login.body.site).not.toHaveProperty(field);
 
     const sitesRes = await request(app)
       .get('/api/license/sites')
@@ -754,9 +757,9 @@ describe('site-aware auth linking', () => {
     expect(sitesRes.body.sites).toHaveLength(1);
     expect(sitesRes.body.sites[0]).toEqual(expect.objectContaining({
       id: register.body.site.id,
-      site_hash: 'legacy-install',
-      license_key: register.body.user.license_key
+      site_install_id: installIdFromSiteKey('legacy-install')
     }));
+    for (const field of ['site_hash', 'license_key']) expect(sitesRes.body.sites[0]).not.toHaveProperty(field);
     expect(supabase._state.siteMemberships).toHaveLength(0);
   });
 });
@@ -989,5 +992,71 @@ describe('register product_emails_opt_out ("Don\'t send me product tips and plan
     expect(res.body.success).toBe(true);
     expect(res.body.token).toBeTruthy();
     expect(trackAccountCreated).toHaveBeenCalledWith(expect.objectContaining({ productEmailsOptOut: true }));
+  });
+});
+
+describe('responses never carry the raw site key; licence key only for account credentials', () => {
+  const RAW = 'qa-raw-site-key-resp-0001';
+  // Sign-in bodies the plugins read the licence from:
+  // Alt Text 4.6.143 class-api-client-v2.php:1345-1346 (login) and 1494-1495
+  // (register) read data.user.license_key / user.license_key; Titles 1.0.30
+  // Api/Client.php:620-621 reads user.license_key; IL 0.1.4 account.php:70
+  // reads the Alt Text stored user data (license_key or data.user.license_key).
+  const plugins = {
+    'alt-text-4.6.143': { site_id: RAW, install_uuid: RAW, site_url: 'https://alt.example.com/', plugin_id: 'alt_text', plugin_version: '4.6.143' },
+    'titles-1.0.30': { site_id: RAW, site_url: 'https://titles.example.com/', plugin_id: 'titles', plugin_version: '1.0.30', blog_id: 1, network_id: 1, is_multisite: false },
+    'internal-linking-0.1.4': { site_id: RAW, site_url: 'https://il.example.com/', plugin_id: 'internal_linking', plugin_version: '0.1.4' }
+  };
+
+  test.each(Object.entries(plugins))('%s register and login: user.license_key kept, no raw site key anywhere', async (_name, siteBody) => {
+    const supabase = createSupabaseMock();
+    const app = createApp(supabase);
+    const email = `resp-${siteBody.plugin_id}@example.com`;
+    const register = await request(app).post('/auth/register').send({ email, password: 'Password123!', ...siteBody });
+    expect(register.status).toBe(200);
+    const login = await request(app).post('/auth/login').send({ email, password: 'Password123!', ...siteBody });
+    expect(login.status).toBe(200);
+    for (const res of [register, login]) {
+      const licence = res.body.user.license_key;
+      expect(licence).toEqual(expect.any(String));
+      expect(res.body.data.user.license_key).toBe(licence);
+      expect(JSON.stringify(res.body)).not.toContain(RAW);
+      for (const site of [res.body.site, res.body.data.site]) {
+        expect(site).toEqual(expect.objectContaining({ id: expect.any(String), site_install_id: installIdFromSiteKey(RAW) }));
+        for (const field of ['site_hash', 'license_key', 'wp_install_uuid', 'fingerprint', 'site_fingerprint']) expect(site).not.toHaveProperty(field);
+        expect(JSON.stringify(site)).not.toContain(licence);
+      }
+    }
+  });
+
+  function siteOnlyApp(supabase, authMethod, licence) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, res, next) => {
+      req.license = { id: 'license_1', license_key: licence };
+      req.authMethod = authMethod;
+      next();
+    });
+    app.use('/api/license', createLicenseRouter({ supabase }));
+    return app;
+  }
+
+  test('/license/sites: a site-key-only caller gets no licence key and no raw site key; a licence caller keeps the echo', async () => {
+    const supabase = createSupabaseMock();
+    const reg = await request(createApp(supabase)).post('/auth/register').send({ email: 'resp-sites@example.com', password: 'Password123!', ...plugins['alt-text-4.6.143'] });
+    const licence = reg.body.user.license_key;
+
+    const siteOnly = await request(siteOnlyApp(supabase, 'site', licence)).get('/api/license/sites').set('X-Site-Key', RAW);
+    expect(siteOnly.status).toBe(200);
+    expect(siteOnly.body.sites.length).toBeGreaterThan(0);
+    expect(siteOnly.body).not.toHaveProperty('license_key');
+    expect(JSON.stringify(siteOnly.body)).not.toContain(RAW);
+    expect(JSON.stringify(siteOnly.body)).not.toContain(licence);
+    for (const site of siteOnly.body.sites) expect(site).not.toHaveProperty('site_hash');
+
+    const withLicence = await request(siteOnlyApp(supabase, 'license', licence)).get('/api/license/sites').set('X-License-Key', licence);
+    expect(withLicence.status).toBe(200);
+    expect(withLicence.body.license_key).toBe(licence);
+    expect(JSON.stringify(withLicence.body)).not.toContain(RAW);
   });
 });

@@ -1,3 +1,4 @@
+const { installIdFromSiteKey } = require('../../lib/installId');
 jest.mock('../../lib/logger', () => ({
   info: jest.fn(),
   warn: jest.fn(),
@@ -638,9 +639,10 @@ describe('authenticated site healing on read paths', () => {
     expect(result.success).toBe(true);
     expect(result.site).toEqual(expect.objectContaining({
       site_id: expect.any(String),
-      site_hash: 'site-dashboard-heal',
+      site_install_id: installIdFromSiteKey('site-dashboard-heal'),
       linked: true
     }));
+    expect(result.site).not.toHaveProperty('site_hash');
   });
 
   test('quota status prefers legacy usage logs when site_quotas is a stale zero row', async () => {
@@ -848,9 +850,10 @@ describe('authenticated site healing on read paths', () => {
     expect(result.resolution.credit_source).toBe('getQuotaStatus');
     expect(result.site).toEqual(expect.objectContaining({
       site_id: 'site_existing',
-      site_hash: 'site-legacy-credits',
+      site_install_id: installIdFromSiteKey('site-legacy-credits'),
       linked: true
     }));
+    expect(result.site).not.toHaveProperty('site_hash');
   });
 
   test('image state site context self-heals for authenticated requests even when createIfMissing is false', async () => {

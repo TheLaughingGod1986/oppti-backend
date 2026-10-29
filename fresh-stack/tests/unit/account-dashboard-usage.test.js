@@ -1,3 +1,4 @@
+const { installIdFromSiteKey } = require('../../lib/installId');
 jest.mock('../../services/site', () => {
   const actual = jest.requireActual('../../services/site');
   return {
@@ -261,7 +262,7 @@ describe('account dashboard usage aggregation', () => {
     })).resolves.toEqual({
       ok: true,
       site_id: 'site-1',
-      site_hash: 'hash-1'
+      site_install_id: installIdFromSiteKey('hash-1')
     });
 
     expect(siteService.deactivateSite).toHaveBeenCalledWith(expect.anything(), {
@@ -330,5 +331,30 @@ describe('account dashboard usage aggregation', () => {
     expect(stats).toHaveLength(2);
     expect(stats.find((row) => row.plugin_name === 'OpptiAI Alt Text')?.credits_used).toBe(1);
     expect(stats.find((row) => row.plugin_name === 'OpptiAI Titles')?.credits_used).toBe(2);
+  });
+});
+
+describe('GET /me/sites body: no raw site key, no licence key', () => {
+  test('sites carry the row id and hashed install id only', async () => {
+    const RAW = 'qa-raw-site-key-me-sites-0001';
+    const LIC = 'QA-FAKE-LICENSE-KEY-ME-0001';
+    const supabase = {
+      from: jest.fn((table) => {
+        if (table === 'sites') {
+          return createThenable({ data: [{ id: 's1', site_hash: RAW, site_url: 'https://a.example', license_key: LIC, status: 'active' }], error: null });
+        }
+        return createThenable({ data: [], error: null });
+      })
+    };
+    const service = createAccountDashboardService({ supabase, getStripe: jest.fn() });
+    for (const user of [{ id: 'acct-1', license_key: LIC }, { id: null, license_key: LIC }]) {
+      const sites = await service.getSites({ user });
+      expect(sites.length).toBeGreaterThan(0);
+      expect(sites[0]).toEqual(expect.objectContaining({ id: 's1', site_install_id: installIdFromSiteKey(RAW) }));
+      expect(sites[0]).not.toHaveProperty('site_hash');
+      const body = JSON.stringify(sites);
+      expect(body).not.toContain(RAW);
+      expect(body).not.toContain(LIC);
+    }
   });
 });
