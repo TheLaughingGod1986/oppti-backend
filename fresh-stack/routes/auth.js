@@ -960,7 +960,7 @@ function createAuthRouter({ supabase }) {
             plan: user.plan,
             status: user.status,
           },
-          site: publicSite(siteLink.site),
+          site: publicSite(siteLink.site, { accountCredential: true }),
           shared_site: siteLink.sharedSite,
           existing_email: maskEmail(siteLink.existingAccount?.email || null),
           ...(entitlementState ? { entitlement_state: entitlementState } : {})
@@ -974,7 +974,7 @@ function createAuthRouter({ supabase }) {
           plan: user.plan,
           status: user.status,
         },
-        site: publicSite(siteLink.site),
+        site: publicSite(siteLink.site, { accountCredential: true }),
         shared_site: siteLink.sharedSite,
         existing_email: maskEmail(siteLink.existingAccount?.email || null),
         ...(entitlementState ? { entitlement_state: entitlementState } : {})
@@ -1217,7 +1217,7 @@ function createAuthRouter({ supabase }) {
             plan: user.plan,
             status: user.status,
           },
-          site: publicSite(siteLink.site),
+          site: publicSite(siteLink.site, { accountCredential: true }),
           shared_site: siteLink.sharedSite,
           existing_email: maskEmail(siteLink.existingAccount?.email || null),
           ...(entitlementState ? { entitlement_state: entitlementState } : {})
@@ -1231,7 +1231,7 @@ function createAuthRouter({ supabase }) {
           plan: user.plan,
           status: user.status,
         },
-        site: publicSite(siteLink.site),
+        site: publicSite(siteLink.site, { accountCredential: true }),
         shared_site: siteLink.sharedSite,
         existing_email: maskEmail(siteLink.existingAccount?.email || null),
         ...(entitlementState ? { entitlement_state: entitlementState } : {})

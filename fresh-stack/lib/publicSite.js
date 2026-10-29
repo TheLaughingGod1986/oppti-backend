@@ -14,19 +14,37 @@ function isSecretField(key) {
   return SECRET_SITE_FIELDS.has(key) || LICENCE_KEY_PATTERN.test(key);
 }
 
-function publicSite(site) {
+// Raw site key fields: removed for every caller.
+const RAW_SITE_KEY_FIELDS = new Set(['site_hash', 'siteHash', 'site_key', 'siteKey', 'trial_site_hash']);
+
+// accountCredential: the caller signed in with a password, JWT or the
+// account's own licence key. Those callers keep the rest of the row (Alt
+// Text's has_active_license() needs the site object); only the raw site key
+// goes. A site-key-only caller also loses the licence key, install uuid and
+// fingerprint.
+function publicSite(site, { accountCredential = false } = {}) {
   if (!site || typeof site !== 'object' || Array.isArray(site)) return site ?? null;
+  const rawKey = typeof site.site_hash === 'string' && site.site_hash ? site.site_hash : null;
   const out = {};
   for (const [key, value] of Object.entries(site)) {
-    if (!isSecretField(key)) out[key] = value;
+    if (RAW_SITE_KEY_FIELDS.has(key)) continue;
+    // The same raw key under another column (wp_install_uuid often equals
+    // it, and auth accepts it as X-Install-UUID) goes too.
+    if (rawKey && value === rawKey) continue;
+    if (!accountCredential && isSecretField(key)) continue;
+    out[key] = value;
   }
   const installId = installIdFromSiteKey(site.site_hash || site.siteHash || null);
   if (installId) out.site_install_id = installId;
   return out;
 }
 
-function publicSites(sites) {
-  return Array.isArray(sites) ? sites.map(publicSite) : sites;
+function publicSites(sites, options) {
+  return Array.isArray(sites) ? sites.map((site) => publicSite(site, options)) : sites;
 }
 
-module.exports = { publicSite, publicSites, isSecretField };
+function isAccountCredential(req) {
+  return ['jwt', 'license'].includes(req?.authMethod) || Boolean(req?.header?.('X-License-Key'));
+}
+
+module.exports = { publicSite, publicSites, isSecretField, isAccountCredential, RAW_SITE_KEY_FIELDS };

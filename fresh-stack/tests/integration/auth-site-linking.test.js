@@ -622,7 +622,7 @@ describe('site-aware auth linking', () => {
     expect(res.body.site).toEqual(expect.objectContaining({
       site_install_id: installIdFromSiteKey('localhost-new-install')
     }));
-    expect(res.body.site).not.toHaveProperty('fingerprint');
+    expect(res.body.site).not.toHaveProperty('site_hash');
     expect(res.body.site.id).not.toBe('site_existing_localhost');
     expect(supabase._state.sites).toHaveLength(2);
   });
@@ -736,7 +736,8 @@ describe('site-aware auth linking', () => {
     }));
     // Password register is an account credential: user.license_key stays.
     expect(register.body.user.license_key).toEqual(expect.any(String));
-    for (const field of ['site_hash', 'fingerprint', 'license_key']) expect(register.body.site).not.toHaveProperty(field);
+    // Password callers keep the site object (Alt Text has_active_license()); only the raw site key goes.
+    expect(register.body.site).not.toHaveProperty('site_hash');
 
     const login = await request(app)
       .post('/auth/login')
@@ -747,7 +748,7 @@ describe('site-aware auth linking', () => {
       id: register.body.site.id,
       site_install_id: installIdFromSiteKey('legacy-install')
     }));
-    for (const field of ['site_hash', 'license_key']) expect(login.body.site).not.toHaveProperty(field);
+    expect(login.body.site).not.toHaveProperty('site_hash');
 
     const sitesRes = await request(app)
       .get('/api/license/sites')
@@ -759,7 +760,7 @@ describe('site-aware auth linking', () => {
       id: register.body.site.id,
       site_install_id: installIdFromSiteKey('legacy-install')
     }));
-    for (const field of ['site_hash', 'license_key']) expect(sitesRes.body.sites[0]).not.toHaveProperty(field);
+    expect(sitesRes.body.sites[0]).not.toHaveProperty('site_hash');
     expect(supabase._state.siteMemberships).toHaveLength(0);
   });
 });
@@ -1008,7 +1009,7 @@ describe('responses never carry the raw site key; licence key only for account c
     'internal-linking-0.1.4': { site_id: RAW, site_url: 'https://il.example.com/', plugin_id: 'internal_linking', plugin_version: '0.1.4' }
   };
 
-  test.each(Object.entries(plugins))('%s register and login: user.license_key kept, no raw site key anywhere', async (_name, siteBody) => {
+  test.each(Object.entries(plugins))('%s register and login: user, user.license_key and site kept, no raw site key anywhere', async (_name, siteBody) => {
     const supabase = createSupabaseMock();
     const app = createApp(supabase);
     const email = `resp-${siteBody.plugin_id}@example.com`;
@@ -1022,9 +1023,11 @@ describe('responses never carry the raw site key; licence key only for account c
       expect(res.body.data.user.license_key).toBe(licence);
       expect(JSON.stringify(res.body)).not.toContain(RAW);
       for (const site of [res.body.site, res.body.data.site]) {
+        // Alt Text stores user (register :1350-1362, login :1496-1511) and
+        // copies user.license_key; the site object stays for sign-in callers.
+        expect(res.body.user).toEqual(expect.objectContaining({ id: expect.any(String), email: expect.any(String), license_key: licence }));
         expect(site).toEqual(expect.objectContaining({ id: expect.any(String), site_install_id: installIdFromSiteKey(RAW) }));
-        for (const field of ['site_hash', 'license_key', 'wp_install_uuid', 'fingerprint', 'site_fingerprint']) expect(site).not.toHaveProperty(field);
-        expect(JSON.stringify(site)).not.toContain(licence);
+        expect(site).not.toHaveProperty('site_hash');
       }
     }
   });
