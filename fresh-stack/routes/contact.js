@@ -164,7 +164,7 @@ function createContactRouter({ redis }) {
         logger.error('[Contact] Failed to send email', {
           error: emailResult.error,
           recipient,
-          siteHash: siteHash.substring(0, 8) + '...'
+          has_site_hash: Boolean(siteHash)
         });
         return res.status(500).json({
           error: 'SEND_FAILED',
@@ -178,7 +178,7 @@ function createContactRouter({ redis }) {
         recipient: emailResult.recipientEmail || recipient,
         recipients: emailResult.recipientEmails || [recipient],
         messageId: emailResult.messageId,
-        siteHash: siteHash.substring(0, 8) + '...',
+        has_site_hash: Boolean(siteHash),
         hasLicense: !!licenseKey
       });
 

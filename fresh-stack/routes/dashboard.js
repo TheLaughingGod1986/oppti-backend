@@ -214,7 +214,7 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
       logger.error('[session] dashboard_session_create_failed', {
         table: 'dashboard_sessions',
         success: false,
-        license_key_prefix: license.license_key ? `${license.license_key.substring(0, 8)}...` : null,
+        has_license_key: Boolean(license.license_key),
         email: license.email || null,
         error: sessionError.message
       });
@@ -227,7 +227,7 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
     logger.info('[session] dashboard_session_create_succeeded', {
       table: 'dashboard_sessions',
       success: true,
-      license_key_prefix: license.license_key ? `${license.license_key.substring(0, 8)}...` : null,
+      has_license_key: Boolean(license.license_key),
       email: license.email || null,
       expires_at: expiresAt.toISOString()
     });
@@ -287,7 +287,7 @@ function createDashboardRouter({ supabase, getJobRecord = null }) {
     const licenseKey = session.data.license_key;
     logger.info('[dashboard] logs_route_deprecated', {
       request_id: req.id || null,
-      license_key_prefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null
+      has_license_key: Boolean(licenseKey)
     });
 
     return res.status(410).json({

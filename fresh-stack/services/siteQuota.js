@@ -59,9 +59,9 @@ const LEGACY_SITE_COLUMN_MAP = {
 };
 
 function maskSecret(value) {
-  if (!value) return null;
-  const stringValue = String(value);
-  return stringValue.length <= 8 ? '[redacted]' : `${stringValue.slice(0, 8)}...`;
+  // Logs record only whether a licence key was present: never any of its
+  // characters. The output only ever goes to log lines.
+  return value ? 'present' : null;
 }
 
 function ensureDiagnosticsBucket(target, key) {
@@ -358,9 +358,9 @@ function truncateMatchValue(value) {
 }
 
 function maskLicenseKeyForCreditAudit(licenseKey) {
-  if (!licenseKey) return null;
-  const normalized = String(licenseKey);
-  return normalized.length > 8 ? `${normalized.substring(0, 8)}...` : '[redacted]';
+  // Logs record only whether a licence key was present: never any of its
+  // characters. The output only ever goes to log lines.
+  return licenseKey ? 'present' : null;
 }
 
 function toCreditAuditIsoString(value) {
@@ -465,7 +465,7 @@ async function selectEffectiveSiteQuotaRead(supabase, {
   const auditContext = {
     request_id: requestId || null,
     account_id: account?.id || null,
-    license_id_prefix: maskLicenseKeyForCreditAudit(account?.id || null),
+    license_id: account?.id || null,
     license_key_prefix: maskLicenseKeyForCreditAudit(licenseKey || account?.license_key || site?.license_key || null),
     site_id: site?.id || null,
     site_hash: site?.site_hash || null,

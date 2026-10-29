@@ -104,7 +104,7 @@ function logBulkGenerationTrace({
     final_result_state: finalResultState,
     user_id: userInfo?.user_id || null,
     user_email: userInfo?.user_email || null,
-    license_key_prefix: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : null,
+    has_license_key: Boolean(effectiveLicenseKey),
     site_id: effectiveSite?.id || reservation?.site?.id || null,
     site_hash: effectiveSite?.site_hash || reservation?.site?.site_hash || null,
     quota_path: resolveQuotaPathLabel(reservation),

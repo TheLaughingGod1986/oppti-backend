@@ -13,9 +13,9 @@ function logV2Fallback(message, details = {}) {
 }
 
 function maskLicenseKeyForAudit(licenseKey) {
-  if (!licenseKey) return null;
-  const normalized = String(licenseKey);
-  return normalized.length > 8 ? `${normalized.substring(0, 8)}...` : '[redacted]';
+  // Logs record only whether a licence key was present: never any of its
+  // characters. The output only ever goes to log lines.
+  return licenseKey ? 'present' : null;
 }
 
 function toAuditIsoString(value) {
@@ -130,7 +130,7 @@ async function getLegacyQuotaStatus(supabase, {
   const auditContext = {
     request_id: requestId || null,
     account_id: accountId || null,
-    license_id_prefix: maskLicenseKeyForAudit(license.id),
+    license_id: license.id || null,
     license_key_prefix: maskLicenseKeyForAudit(license.license_key),
     site_id: null,
     site_hash: siteHash || null,
@@ -355,7 +355,7 @@ async function getQuotaStatus(supabase, {
     logCreditsAudit('fallback_reason', {
       request_id: requestId || null,
       account_id: account?.id || null,
-      license_id_prefix: maskLicenseKeyForAudit(account?.id || null),
+      license_id: account?.id || null,
       license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
       site_id: identity?.siteId || null,
       site_hash: siteHash || identity.siteHash || null,
@@ -410,7 +410,7 @@ async function getQuotaStatus(supabase, {
       checked_sources: ['site_quotas'],
       site_id: identity?.siteId || null,
       site_hash: siteHash || identity?.siteHash || null,
-      license_id_prefix: maskLicenseKeyForAudit(account?.id || null),
+      license_id: account?.id || null,
       license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
       request_id: requestId || null
     });
@@ -429,13 +429,13 @@ async function getQuotaStatus(supabase, {
     checked_sources: ['site_quotas'],
     site_id: identity?.siteId || null,
     site_hash: siteHash || identity?.siteHash || null,
-    license_id_prefix: maskLicenseKeyForAudit(account?.id || null),
+    license_id: account?.id || null,
     license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null)
   });
   logCreditsAudit('fallback_reason', {
     request_id: requestId || null,
     account_id: account?.id || null,
-    license_id_prefix: maskLicenseKeyForAudit(account?.id || null),
+    license_id: account?.id || null,
     license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
     site_id: identity?.siteId || null,
     site_hash: siteHash || identity?.siteHash || null,
@@ -633,7 +633,7 @@ async function reserveGenerationQuota(supabase, {
         checked_sources: ['site_quotas'],
         site_id: result.site?.id || null,
         site_hash: effectiveSiteHash || identity?.siteHash || null,
-        license_id_prefix: maskLicenseKeyForAudit(account?.id || null),
+        license_id: account?.id || null,
         license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
         request_id: requestId || null
       });
@@ -678,7 +678,7 @@ async function reserveGenerationQuota(supabase, {
     checked_sources: ['site_quotas'],
     site_id: result.site?.id || null,
     site_hash: effectiveSiteHash || identity?.siteHash || null,
-    license_id_prefix: maskLicenseKeyForAudit(account?.id || null),
+    license_id: account?.id || null,
     license_key_prefix: maskLicenseKeyForAudit(licenseKey || account?.license_key || null),
     request_id: requestId || null
   });

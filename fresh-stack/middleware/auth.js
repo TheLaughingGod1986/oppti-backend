@@ -2,6 +2,7 @@ const { validateLicense } = require('../services/license');
 const logger = require('../lib/logger');
 const jwt = require('jsonwebtoken');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
+const { storedSiteHashForLog, rawSiteKeysFromRequest } = require('../lib/logPath');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -92,8 +93,13 @@ function authMiddleware({ supabase }) {
       req.anonId = anonymousContext.anonId;
       req.anonymous = anonymousContext;
       req.authMethod = 'trial';
+      // The trial hash is logged only when it came from X-Trial-Site-Hash and
+      // is not also sent as a site key; X-Site-Hash / X-Site-Key are credentials.
+      const trialHashFromTrialHeader = Boolean(req.header('X-Trial-Site-Hash'))
+        && storedSiteHashForLog(trialSiteHash, [req.header('X-Site-Key'), req.header('X-Site-Hash')]) !== null;
       logger.info('[Auth] Anonymous trial request accepted', {
-        site_hash: trialSiteHash,
+        site_hash: trialHashFromTrialHeader ? trialSiteHash : null,
+        has_site_key: Boolean(req.header('X-Site-Key') || req.header('X-Site-Hash')),
         anon_id: anonymousContext.anonId || null,
         anon_id_source: anonymousContext.source || null,
         risk_key: anonymousContext.riskKey || null,
@@ -274,14 +280,16 @@ function authMiddleware({ supabase }) {
             req.authMethod = 'site';
             logger.info('[Auth] Site-based auth resolved', {
               matchedBy,
-              site_hash: site.site_hash || null,
+              site_hash: storedSiteHashForLog(site.site_hash, rawSiteKeysFromRequest(req)),
+              has_site_key: Boolean(siteKey),
               requestId: req.id || null,
               path: logPathLabel(req.path)
             });
             return next();
           }
           logger.warn('[Auth] Site-key resolved license invalid', {
-            site_hash: site.site_hash || siteKey,
+            site_hash: storedSiteHashForLog(site.site_hash, rawSiteKeysFromRequest(req)),
+            has_site_key: Boolean(siteKey),
             error: siteLicense.error
           });
         }

@@ -136,7 +136,7 @@ function createLicenseRouter({ supabase }) {
       logger.info('[site] license_sites_healing_attempted', {
         request_id: req.id || null,
         account_id: account?.id || null,
-        license_key_prefix: `${licenseKey.substring(0, 8)}...`,
+        has_license_key: Boolean(licenseKey),
         site_hash: siteIdentity.siteHash || null,
         site_url: siteIdentity.siteUrl || null,
         site_fingerprint_present: Boolean(siteIdentity.siteFingerprint)
@@ -153,7 +153,7 @@ function createLicenseRouter({ supabase }) {
         logger.error('[site] license_sites_healing_failed', {
           request_id: req.id || null,
           account_id: account?.id || null,
-          license_key_prefix: `${licenseKey.substring(0, 8)}...`,
+          has_license_key: Boolean(licenseKey),
           site_hash: siteIdentity.siteHash || null,
           site_url: siteIdentity.siteUrl || null,
           error: healed.error,
@@ -164,7 +164,7 @@ function createLicenseRouter({ supabase }) {
         logger.info('[site] license_sites_healing_succeeded', {
           request_id: req.id || null,
           account_id: account?.id || null,
-          license_key_prefix: `${licenseKey.substring(0, 8)}...`,
+          has_license_key: Boolean(licenseKey),
           site_id: healed.site?.id || null,
           site_hash: healed.site?.site_hash || siteIdentity.siteHash || null,
           matched_by: healed.matchedBy || null,

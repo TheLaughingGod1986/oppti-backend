@@ -189,9 +189,9 @@ function sanitizeStripeMetadataValue(value, { maxLength = STRIPE_METADATA_MAX_LE
 }
 
 function maskSecret(value) {
-  if (!value) return null;
-  const stringValue = String(value);
-  return stringValue.length <= 8 ? '[redacted]' : `${stringValue.slice(0, 8)}...`;
+  // Logs record only whether a licence key was present: never any of its
+  // characters. The output only ever goes to log lines.
+  return value ? 'present' : null;
 }
 
 function getClientIp(req) {

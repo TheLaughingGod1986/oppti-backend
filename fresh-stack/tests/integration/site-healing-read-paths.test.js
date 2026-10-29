@@ -505,7 +505,7 @@ describe('authenticated site healing on read paths', () => {
       checked_sources: ['quota_summaries', 'usage_logs'],
       site_id: null,
       site_hash: null,
-      license_key_prefix: 'lic-heal...'
+      license_key_prefix: 'present'
     }));
   });
 
@@ -879,5 +879,23 @@ describe('authenticated site healing on read paths', () => {
         user_id: account.id
       })
     ]));
+  });
+  test('quota audit and healing logs carry no licence key characters, only presence and the account id', async () => {
+    const { expectNoCredentialSlices } = require('../helpers/credentialSlices');
+    const supabase = createSupabaseMock();
+    const account = supabase._state.licenses[0];
+    await getQuotaStatus(supabase, { licenseKey: account.license_key, requestId: 'req-no-key-chars' });
+    await getQuotaStatus(supabase, { licenseKey: account.license_key, account, siteHash: 'site-hash-x', siteUrl: 'https://healing.example', requestId: 'req-no-key-chars-2' });
+    const calls = ['info', 'warn', 'error', 'debug'].flatMap((level) => logger[level].mock.calls);
+    expect(calls.length).toBeGreaterThan(0);
+    expectNoCredentialSlices(calls, [account.license_key]);
+    const keyFields = calls
+      .map(([, payload]) => payload || {})
+      .flatMap((payload) => ['license_key_prefix', 'licenseKeyPrefix', 'requested_license', 'site_license'].map((k) => payload[k]))
+      .filter((value) => value !== undefined && value !== null);
+    expect(keyFields.length).toBeGreaterThan(0);
+    for (const value of keyFields) expect(value).toBe('present');
+    const ids = calls.map(([, payload]) => payload || {}).filter((payload) => 'license_id' in payload).map((payload) => payload.license_id);
+    for (const id of ids) expect([account.id, null]).toContain(id);
   });
 });

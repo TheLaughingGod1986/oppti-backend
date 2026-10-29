@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { storedSiteHashForLog, rawSiteKeysFromRequest } = require('../lib/logPath');
 const { captureServerEvent } = require('../lib/posthog');
 const { pluginTelemetryContext } = require('../lib/pluginTelemetryContext');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
@@ -515,7 +516,7 @@ function logGenerationAccountingTrace({
     final_result_state: finalResultState,
     user_id: userInfo?.user_id || null,
     user_email: userInfo?.user_email || null,
-    license_key_prefix: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : null,
+    has_license_key: Boolean(effectiveLicenseKey),
     site_id: effectiveSite?.id || reservation?.site?.id || null,
     site_hash: effectiveSite?.site_hash || reservation?.site?.site_hash || null,
     quota_path: resolveQuotaPathLabel(reservation),
@@ -1206,7 +1207,7 @@ function createAltTextRouter({
           code: reservation.error,
           message: reservation.message || null,
           auth_method: req.authMethod || null,
-          license_key_prefix: licenseKey ? `${licenseKey.substring(0, 8)}...` : null
+          has_license_key: Boolean(licenseKey)
         });
       }
 
@@ -1577,9 +1578,10 @@ function createAltTextRouter({
       }
 
       logger.info('[altText] Recording usage', {
-        licenseKey: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : 'missing',
+        has_license_key: Boolean(effectiveLicenseKey),
         licenseId: licenseId ? `${licenseId.substring(0, 8)}...` : 'missing',
-        siteKey: effectiveSite?.site_hash || siteKey,
+        site_hash: storedSiteHashForLog(effectiveSite?.site_hash, [...rawSiteKeysFromRequest(req), siteKey]),
+        has_site_key: Boolean(effectiveSite?.site_hash || siteIdentity.siteHash),
         userId: attribution.userId || null,
         creditsUsed: 1
       });
@@ -1715,8 +1717,9 @@ function createAltTextRouter({
         credits_remaining: creditsRemaining,
         total_limit: totalLimit,
         credits_used: creditsUsed,
-        licenseKey: effectiveLicenseKey ? `${effectiveLicenseKey.substring(0, 8)}...` : 'missing',
-        siteKey: effectiveSite?.site_hash || siteKey
+        has_license_key: Boolean(effectiveLicenseKey),
+        site_hash: storedSiteHashForLog(effectiveSite?.site_hash, [...rawSiteKeysFromRequest(req), siteKey]),
+        has_site_key: Boolean(effectiveSite?.site_hash || siteIdentity.siteHash)
       });
     } else if (reservation.reservation) {
       creditsRemaining = reservation.reservation.remaining_credits ?? creditsRemaining;

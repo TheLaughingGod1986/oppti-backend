@@ -357,7 +357,7 @@ function createTitlesRouter({
     logger.info('[titles.jobs] bulk_job_accepted', {
       job_id: jobId,
       total_pages: pages.length,
-      site_key: siteKey
+      has_site_key: siteKey !== 'default'
     });
 
     return res.status(202).json({

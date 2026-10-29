@@ -393,4 +393,28 @@ describe('POST /api/jobs bulk pipeline', () => {
       scope: 'full_site'
     }));
   });
+  test('bulk job logs carry no licence key characters and no raw site key', async () => {
+    const { expectNoCredentialSlices } = require('../helpers/credentialSlices');
+    const logger = require('../../lib/logger');
+    const spies = ['info', 'warn', 'error', 'debug'].map((level) => jest.spyOn(logger, level).mockImplementation(() => {}));
+    try {
+      const rawSiteKey = 'qa-raw-site-key-secret-0001';
+      const res = await request(app)
+        .post('/api/jobs')
+        .set('X-License-Key', 'test-bulk-license')
+        .set('X-Site-Key', rawSiteKey)
+        .send({ images: [{ id: 'att-1', image: { url: 'https://example.com/1.jpg', width: 100, height: 100, filename: 'f1.jpg' } }] });
+      expect(res.status).toBe(202);
+      for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setTimeout(r, 50));
+      const calls = spies.flatMap((spy) => spy.mock.calls);
+      const accepted = calls.find(([m]) => m === '[jobs] bulk_job_accepted');
+      expect(accepted[1]).toEqual(expect.objectContaining({ has_site_key: true }));
+      expect(accepted[1]).not.toHaveProperty('site_key');
+      expectNoCredentialSlices([accepted], [rawSiteKey]);
+      expectNoCredentialSlices(calls, ['test-bulk-license']);
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
+  });
 });

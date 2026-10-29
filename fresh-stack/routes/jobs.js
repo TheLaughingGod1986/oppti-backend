@@ -191,7 +191,7 @@ function createJobsRouter({ supabase, checkRateLimit, getSiteFromHeaders, create
     logger.info('[jobs] bulk_job_accepted', {
       job_id: jobId,
       total_images: images.length,
-      site_key: siteKey,
+      has_site_key: Boolean(rawSiteKey),
       validation_ms: validationCompleteMs - requestReceivedMs,
       dispatch: process.env.BULK_JOB_DISPATCH || 'immediate'
     });

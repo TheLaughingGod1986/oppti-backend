@@ -82,8 +82,9 @@ function buildAuthSiteContext(body = {}) {
 }
 
 function redactLicenseKey(licenseKey) {
-  if (!licenseKey) return null;
-  return `${String(licenseKey).slice(0, 8)}...`;
+  // Logs record only whether a licence key was present: never any of its
+  // characters. The output only ever goes to log lines.
+  return licenseKey ? 'present' : null;
 }
 
 function buildAuthWriteTrace({
