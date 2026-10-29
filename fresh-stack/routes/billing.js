@@ -653,9 +653,7 @@ function resolveDistinctIdFromStripeEvent({
   if (userId) {
     return { distinctId: userId, distinctIdSource: 'user_id' };
   }
-  if (licenseKey) {
-    return { distinctId: licenseKey, distinctIdSource: 'license_key' };
-  }
+  // Never the licence key: it is a credential, so it must not become a PostHog id.
   if (site?.id || siteId) {
     return { distinctId: site?.id || siteId, distinctIdSource: 'site_id' };
   }

@@ -18,7 +18,7 @@ jest.mock('../../../src/services/loops', () => ({
 }));
 
 const { verifyWebhookSignature } = require('../../lib/stripe');
-const { captureServerEvent, identifyServerUser } = require('../../lib/posthog');
+const { captureServerEvent, identifyServerUser, aliasServerUser } = require('../../lib/posthog');
 const {
   trackPaymentFailed,
   trackPaymentSucceeded,
@@ -902,7 +902,7 @@ describe('POST /billing/webhook', () => {
     expect(trackPlanUpgraded).not.toHaveBeenCalled();
   });
 
-  test('uses metadata license_key as fallback distinct id before site and Stripe ids when no account is resolved', async () => {
+  test('never uses the metadata license_key as distinct id; falls back to the site id when no account is resolved', async () => {
     const supabase = createSupabaseMock({
       sites: [
         {
@@ -940,12 +940,15 @@ describe('POST /billing/webhook', () => {
     expect(res.status).toBe(200);
     expect(captureServerEvent).toHaveBeenCalledWith({
       event: 'payment_succeeded',
-      distinctId: 'lic_meta',
+      distinctId: 'site_internal_123',
       properties: expect.objectContaining({
         plan: 'credits',
         billing_interval: 'one_time'
       })
     });
+    const posthogCalls = [captureServerEvent, identifyServerUser, aliasServerUser]
+      .flatMap((fn) => (fn && fn.mock ? fn.mock.calls : []));
+    expect(JSON.stringify(posthogCalls)).not.toContain('lic_meta');
     expect(identifyServerUser).not.toHaveBeenCalled();
     expect(supabase.updates).toEqual([]);
   });
