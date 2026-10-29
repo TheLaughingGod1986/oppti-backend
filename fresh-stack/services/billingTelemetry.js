@@ -152,15 +152,6 @@ function buildCanonicalProperties({
     || eventProperties.site_hash
     || null;
 
-  let host = eventProperties.host || metadata.host || null;
-  if (!host && (site?.site_url || metadata.site_url)) {
-    try {
-      host = new URL(site.site_url || metadata.site_url).hostname.toLowerCase();
-    } catch (_error) {
-      host = null;
-    }
-  }
-
   const properties = {
     customer_id: eventProperties.stripe_customer_id || null,
     subscription_id: eventProperties.stripe_subscription_id || null,
@@ -177,7 +168,6 @@ function buildCanonicalProperties({
     country: eventProperties.country || metadata.country || null,
     plugin_version: eventProperties.plugin_version || metadata.plugin_version || metadata.pluginVersion || null,
     site_install_id: siteInstallId,
-    host,
     telemetry_version: TELEMETRY_VERSION,
     event_source: EVENT_SOURCE,
     expansion_mrr: mrrDelta > 0 ? mrrDelta : 0,

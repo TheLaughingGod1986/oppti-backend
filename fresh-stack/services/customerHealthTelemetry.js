@@ -91,13 +91,6 @@ async function emitCustomerHealthEvents(supabase) {
     const baseProps = {
       site_id: site.id,
       site_install_id: site.site_hash || site.id,
-      host: (() => {
-        try {
-          return site.site_url ? new URL(site.site_url).hostname.toLowerCase() : null;
-        } catch (_error) {
-          return null;
-        }
-      })(),
       inactive_days: inactiveDays,
       event_source: 'backend_cron',
       telemetry_version: '1'

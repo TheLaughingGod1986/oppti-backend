@@ -423,4 +423,26 @@ describe('alt-text generation telemetry', () => {
     expect(captureServerEvent).not.toHaveBeenCalled();
   });
 
+  test('generation events never carry the site URL, domain or host', async () => {
+    const res = await request(buildApp())
+      .post('/api/alt-text')
+      .set('X-Site-Key', 'site-hash-1')
+      .set('X-Site-URL', 'https://shop.customer-brand.co.uk/')
+      .send({
+        site_url: 'https://shop.customer-brand.co.uk/',
+        image: { url: 'https://example.com/img.jpg', width: 1, height: 1 }
+      });
+    await flushAsyncEvents();
+    expect(res.status).toBe(200);
+    const events = capturedEvents();
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) {
+      for (const key of ['site_url', 'domain', 'host', 'site_host', 'website']) {
+        expect(event.properties).not.toHaveProperty(key);
+      }
+      expect(event.properties.$set).toBeUndefined();
+      expect(JSON.stringify(event)).not.toContain('customer-brand.co.uk');
+    }
+  });
+
 });

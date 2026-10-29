@@ -414,7 +414,6 @@ function createGenerationTelemetry({
     const context = pluginTelemetryContext(req, { pluginSlug: 'beepbeep-ai-alt-text-generator', product: 'alt_text', operationId: generationRunId });
     const distinctId = context?.site_install_id;
     if (!distinctId) return;
-    const siteUrl = siteIdentityRef?.siteUrl || req?.header?.('X-Site-URL') || null;
 
     captureServerEvent({
       event,
@@ -422,8 +421,6 @@ function createGenerationTelemetry({
       properties: {
         generation_run_id: generationRunId,
         request_id: req?.id || null,
-        site_url: siteUrl,
-        domain: normalizeDomain(siteUrl),
         auth_state: req?.trialMode ? 'guest_trial' : 'authenticated',
         plan: entitlementState?.plan || null,
         quota_state: entitlementState?.quota_state || null,

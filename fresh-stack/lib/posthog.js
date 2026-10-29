@@ -8,18 +8,47 @@ function getPostHogConfig() {
   };
 }
 
-function withWebsitePersonProperties(properties = {}) {
-  const domain = typeof properties.domain === 'string' ? properties.domain.trim() : '';
-  if (!domain) return properties;
+// Site URLs and hostnames are not sent to PostHog. Analytics identity is the
+// pseudonymous install id only (rule 7 of docs/analytics/operating-report.md).
+const SITE_IDENTIFIER_KEYS = [
+  'site_url',
+  'siteUrl',
+  'site_host',
+  'siteHost',
+  'host',
+  'domain',
+  'canonical_domain',
+  'website',
+  'home_url',
+  'page_url',
+  'image_url'
+];
 
-  return {
-    ...properties,
-    $set: {
-      name: domain,
-      website: properties.site_url || domain,
-      ...(properties.$set || {})
+function stripSiteIdentifiers(properties = {}) {
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    return properties;
+  }
+
+  const cleaned = { ...properties };
+  for (const key of SITE_IDENTIFIER_KEYS) {
+    delete cleaned[key];
+  }
+
+  for (const personKey of ['$set', '$set_once']) {
+    if (cleaned[personKey] && typeof cleaned[personKey] === 'object') {
+      const person = { ...cleaned[personKey] };
+      for (const key of SITE_IDENTIFIER_KEYS) {
+        delete person[key];
+      }
+      if (Object.keys(person).length) {
+        cleaned[personKey] = person;
+      } else {
+        delete cleaned[personKey];
+      }
     }
-  };
+  }
+
+  return cleaned;
 }
 
 async function sendPostHogRequest({ path, payload }) {
@@ -69,7 +98,7 @@ async function captureServerEvent({ event, distinctId, properties = {} }) {
     payload: {
       event,
       distinct_id: distinctId,
-      properties: withWebsitePersonProperties(properties)
+      properties: stripSiteIdentifiers(properties)
     }
   });
 }
@@ -83,7 +112,7 @@ async function identifyServerUser({ distinctId, properties = {} }) {
     path: '/identify/',
     payload: {
       distinct_id: distinctId,
-      properties
+      properties: stripSiteIdentifiers(properties)
     }
   });
 }
@@ -110,5 +139,6 @@ module.exports = {
   identifyServerUser,
   aliasServerUser,
   getPostHogConfig,
-  withWebsitePersonProperties
+  stripSiteIdentifiers,
+  SITE_IDENTIFIER_KEYS
 };
