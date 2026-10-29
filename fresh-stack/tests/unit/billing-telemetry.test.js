@@ -1,9 +1,50 @@
+jest.mock('../../lib/posthog', () => ({
+  captureServerEvent: jest.fn().mockResolvedValue({ ok: true }),
+  identifyServerUser: jest.fn().mockResolvedValue({ ok: true }),
+  aliasServerUser: jest.fn().mockResolvedValue({ ok: true })
+}));
+
 const {
   resolveCanonicalEvents,
   buildCanonicalProperties,
   calculateMrrDelta,
-  normalizePlan
+  normalizePlan,
+  emitIdentityLinks
 } = require('../../services/billingTelemetry');
+const { identifyServerUser, aliasServerUser } = require('../../lib/posthog');
+
+describe('billingTelemetry identity links', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('identify keeps the account id and site install id but sends no email or licence key', async () => {
+    await emitIdentityLinks({
+      distinctId: 'acct_1',
+      eventProperties: {
+        account_id: 'acct_1',
+        site_install_id: 'install_abcdef1234567890',
+        email: 'owner@customer-brand.co.uk',
+        license_key: 'lic_secret_1',
+        stripe_customer_id: 'cus_1',
+        plan: 'pro'
+      },
+      account: { id: 'acct_1', email: 'owner@customer-brand.co.uk', license_key: 'lic_secret_1', plan: 'pro' }
+    });
+
+    expect(aliasServerUser).toHaveBeenCalledWith({ distinctId: 'acct_1', alias: 'install_abcdef1234567890' });
+    expect(identifyServerUser).toHaveBeenCalledTimes(1);
+    const [args] = identifyServerUser.mock.calls[0];
+    expect(args.distinctId).toBe('acct_1');
+    expect(args.properties).toEqual(expect.objectContaining({ site_install_id: 'install_abcdef1234567890', plan: 'pro' }));
+    expect(args.properties).not.toHaveProperty('email');
+    expect(args.properties).not.toHaveProperty('license_key');
+    expect(JSON.stringify(args)).not.toMatch(/customer-brand|lic_secret_1/);
+  });
+
+  test('identify still runs for an account with no email on file', async () => {
+    await emitIdentityLinks({ distinctId: 'acct_2', eventProperties: { account_id: 'acct_2' }, account: { id: 'acct_2' } });
+    expect(identifyServerUser).toHaveBeenCalledWith(expect.objectContaining({ distinctId: 'acct_2' }));
+  });
+});
 
 describe('billingTelemetry', () => {
   test('maps subscription_create invoice to subscription_activated', () => {

@@ -496,13 +496,15 @@ describe('POST /billing/webhook', () => {
     expect(identifyServerUser).toHaveBeenCalledWith({
       distinctId: 'account_123',
       properties: {
-        email: 'buyer@example.com',
         stripe_customer_id: 'cus_123',
         stripe_subscription_id: null,
-        license_key: 'lic_123',
         plan: 'free'
       }
     });
+    for (const [args] of identifyServerUser.mock.calls) {
+      expect(args.properties).not.toHaveProperty('email');
+      expect(args.properties).not.toHaveProperty('license_key');
+    }
     expect(trackPaymentSucceeded).toHaveBeenCalledWith({
       email: 'buyer@example.com',
       planName: 'credits',
@@ -1291,13 +1293,15 @@ describe('POST /billing/webhook', () => {
     expect(identifyServerUser).toHaveBeenCalledWith({
       distinctId: 'account_456',
       properties: {
-        email: 'subscriber@example.com',
         stripe_customer_id: 'cus_456',
         stripe_subscription_id: 'sub_456',
-        license_key: 'lic_456',
         plan: 'free'
       }
     });
+    for (const [args] of identifyServerUser.mock.calls) {
+      expect(args.properties).not.toHaveProperty('email');
+      expect(args.properties).not.toHaveProperty('license_key');
+    }
     expect(trackPaymentSucceeded).toHaveBeenCalledWith({
       email: 'subscriber@example.com',
       planName: 'pro',
@@ -2322,13 +2326,15 @@ describe('POST /billing/webhook', () => {
     expect(identifyServerUser).toHaveBeenCalledWith({
       distinctId: 'account_fail_open',
       properties: {
-        email: 'fail-open@example.com',
         stripe_customer_id: 'cus_fail_open',
         stripe_subscription_id: 'sub_fail_open',
-        license_key: 'lic_fail_open',
         plan: 'free'
       }
     });
+    for (const [args] of identifyServerUser.mock.calls) {
+      expect(args.properties).not.toHaveProperty('email');
+      expect(args.properties).not.toHaveProperty('license_key');
+    }
   });
 
   test('falls back to checkout session distinct id after internal and Stripe ids are unavailable', async () => {

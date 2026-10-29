@@ -14,6 +14,7 @@ jest.mock('../../../src/services/loops', () => ({
 }));
 
 const { verifyWebhookSignature } = require('../../lib/stripe');
+const { identifyServerUser } = require('../../lib/posthog');
 const { trackPaymentSucceeded, trackPlanUpgraded } = require('../../../src/services/loops');
 const { createBillingWebhookHandler } = require('../../routes/billing');
 
@@ -355,6 +356,24 @@ describe('dahlia follow-ups', () => {
 
     const loopsKeys = trackPaymentSucceeded.mock.calls.map(([args]) => args.stripeEventId);
     expect(loopsKeys).toEqual(['invoice_paid:in_pack', 'invoice_paid:in_pack']);
+  });
+
+  test('PostHog identify after a paid upgrade sends no email or licence key', async () => {
+    const supabase = createSupabaseStub({ accountPlan: 'starter' });
+    verifyWebhookSignature.mockReturnValue(upgradeInvoiceEvent('dahlia'));
+
+    const res = await send(createApp(supabase));
+
+    expect(res.status).toBe(200);
+    expect(identifyServerUser).toHaveBeenCalled();
+    for (const [args] of identifyServerUser.mock.calls) {
+      expect(args.distinctId).toBe('acct_f2');
+      const raw = JSON.stringify(args);
+      expect(raw).not.toContain('f2@qa.oppti.dev');
+      expect(raw).not.toContain('lic_f2');
+      expect(args.properties).not.toHaveProperty('email');
+      expect(args.properties).not.toHaveProperty('license_key');
+    }
   });
 
   test('P2: both invoice event types for one upgrade send Loops plan_upgraded with one idempotency key', async () => {

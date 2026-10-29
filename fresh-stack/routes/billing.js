@@ -2156,11 +2156,10 @@ async function emitIdentity({ account, stripeCustomerId }) {
 
   const result = await identifyServerUser({
     distinctId: account.id,
+    // Person properties stay pseudonymous: no email and no licence key.
     properties: {
-      email: account.email || null,
       stripe_customer_id: stripeCustomerId || account.stripe_customer_id || null,
       stripe_subscription_id: account.stripe_subscription_id || null,
-      license_key: account.license_key || null,
       plan: account.plan || null
     }
   });

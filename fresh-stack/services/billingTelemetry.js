@@ -316,11 +316,11 @@ async function emitIdentityLinks({ distinctId, eventProperties = {}, account = n
     });
   }
 
-  if (accountId && (account?.email || eventProperties.email)) {
+  if (accountId) {
+    // Person properties stay pseudonymous: no email and no licence key.
     await identifyServerUser({
       distinctId: accountId,
       properties: {
-        email: account?.email || eventProperties.email || null,
         stripe_customer_id: eventProperties.stripe_customer_id || null,
         stripe_subscription_id: eventProperties.stripe_subscription_id || null,
         plan: eventProperties.plan || account?.plan || null,
@@ -451,5 +451,6 @@ module.exports = {
   buildCanonicalProperties,
   resolveCanonicalEvents,
   emitCanonicalBillingEvents,
+  emitIdentityLinks,
   emitPaymentFailedEvent
 };
