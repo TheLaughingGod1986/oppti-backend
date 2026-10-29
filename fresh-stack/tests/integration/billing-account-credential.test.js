@@ -93,7 +93,8 @@ function supabaseMock() {
           const added = commit();
           if (added) return Promise.resolve({ data: added[0], error: null });
           const row = rows()[0] || null;
-          return Promise.resolve({ data: row, error: row ? null : { message: 'not found' } });
+          // PostgREST's real no-row shape for .single(), which validateLicense reads as "not found".
+          return Promise.resolve({ data: row, error: row ? null : { code: 'PGRST116', details: 'The result contains 0 rows', message: 'JSON object requested, multiple (or no) rows returned' } });
         },
         then(resolve, reject) { const added = commit(); return Promise.resolve({ data: added || rows(), error: null }).then(resolve, reject); }
       };
