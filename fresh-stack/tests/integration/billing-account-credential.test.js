@@ -271,28 +271,28 @@ describe('site-header-only checkout', () => {
     site_install_id: 'hash-nnnnnnnnnnnnnnnn'
   });
 
-  test('logged-out Alt Text request still creates a new checkout session for a site with no subscription', async () => {
+  // Chief's ruling: checkout needs an account credential for every licence,
+  // with or without a subscription. Site headers alone get the sign-in reply.
+  test.each(['price_pro', 'price_credits'])('logged-out Alt Text %s checkout for a licensed site with no subscription gets the sign-in reply and no Stripe call', async (priceId) => {
     const { app, stripe } = buildApp();
     const res = await send(request(app).post('/billing/checkout'), loggedOutAltText('hash-nnnnnnnnnnnnnnnn', 'https://november.example'))
+      .send(altTextBody(priceId));
+    expect(res.status).toBe(401);
+    expect(res.text).toBe(SIGN_IN_REQUIRED_TEXT);
+    expect(JSON.stringify(res.body)).not.toContain(N.license_key);
+    expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  test('the same checkout with the licence key still creates a session; metadata carries the site row id, not the site key', async () => {
+    const { app, stripe } = buildApp();
+    const res = await send(request(app).post('/billing/checkout'), { ...loggedOutAltText('hash-nnnnnnnnnnnnnnnn', 'https://november.example'), 'X-License-Key': N.license_key })
       .send(altTextBody('price_pro'));
     expect(res.status).toBe(200);
-    expect(res.body.url).toBe('https://checkout.stripe.test/c/1');
-    expect(res.body.sessionId).toBe('cs_test_SessionAbcdef9876');
     expect(stripe.checkout.sessions.create).toHaveBeenCalledTimes(1);
     const { metadata } = stripe.checkout.sessions.create.mock.calls[0][0];
     expect(metadata).toMatchObject({ license_key: N.license_key, site_id: 'site-n' });
-    // The site row id replaces the raw site key in Stripe metadata.
     expect(metadata).not.toHaveProperty('site_hash');
     expect(JSON.stringify(metadata)).not.toContain('hash-nnnnnnnnnnnnnnnn');
-  });
-
-  test('logged-out Alt Text one-off credits checkout still works on a site with no subscription', async () => {
-    const { app, stripe } = buildApp();
-    const res = await send(request(app).post('/billing/checkout'), loggedOutAltText('hash-nnnnnnnnnnnnnnnn', 'https://november.example'))
-      .send(altTextBody('price_credits'));
-    expect(res.status).toBe(200);
-    expect(res.body.sessionId).toBe('cs_test_SessionAbcdef9876');
-    expect(stripe.checkout.sessions.create).toHaveBeenCalledTimes(1);
   });
 
   test('on a site with a subscription every plan gets the same 401 bytes and makes no Stripe call', async () => {
@@ -333,11 +333,7 @@ describe('one sign-in reply for every refused site-header-only billing call', ()
     for (const headers of headerSets) {
       for (const [name, call] of ROUTES) {
         const res = await call(app, headers);
-        // N's site has no subscription, so its checkout is a guest checkout.
-        if (headers['X-Site-Key'] === 'hash-nnnnnnnnnnnnnnnn' && name.startsWith('POST /billing/checkout')) {
-          expect(res.status).toBe(200);
-          continue;
-        }
+        // N's site has no subscription; its checkout is refused all the same.
         expect(res.status).toBe(401);
         bodies.add(res.text);
       }
@@ -348,7 +344,7 @@ describe('one sign-in reply for every refused site-header-only billing call', ()
     expect(stripe.subscriptions.list).not.toHaveBeenCalled();
     expect(stripe.subscriptions.retrieve).not.toHaveBeenCalled();
     expect(stripe.customers.retrieve).not.toHaveBeenCalled();
-    expect(stripe.checkout.sessions.create).toHaveBeenCalledTimes(2);
+    expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
   });
 
   test('a refused checkout writes no site membership', async () => {
@@ -368,13 +364,15 @@ describe('checkout email-link with a session id', () => {
     jest.spyOn(emailService, 'sendCheckoutLinkEmail').mockResolvedValue({ success: true });
   });
 
-  test('site headers only: the reply carries no email, customer or subscription detail', async () => {
+  test('site headers only: refused like no account, no email sent, no detail in the reply', async () => {
     const { app, stripe } = buildApp();
     stripe.checkout.sessions.retrieve.mockResolvedValue(OPEN);
     const res = await send(request(app).post('/billing/checkout/email-link'), { 'X-Site-Key': 'hash-bbbbbbbbbbbbbbbb' })
       .send({ session_id: OPEN.id });
-    expect(res.status).toBe(200);
-    expect(res.text).toBe(JSON.stringify({ success: true }));
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('AUTH_REQUIRED');
+    expect(res.text).not.toMatch(/@|cus_|sub_/);
+    expect(emailService.sendCheckoutLinkEmail).not.toHaveBeenCalled();
   });
 
   test('no credentials at all: 401', async () => {
@@ -455,29 +453,16 @@ describe('checkout prefill', () => {
   const siteOnly = { 'X-Site-Hash': 'hash-nnnnnnnnnnnnnnnn', 'X-Site-Key': 'hash-nnnnnnnnnnnnnnnn', 'X-Site-URL': 'https://november.example', 'X-Site-Fingerprint': 'fp-qa' };
 
   test.each([
-    ['subscription', 'price_pro'],
-    ['one-off credits', 'price_credits']
-  ])('site headers only (%s): no customer or customer_email, metadata still names the licence and site', async (_label, priceId) => {
-    tables.licenses.find((row) => row.id === N.id).stripe_customer_id = 'cus_NNNNNNNNNNNN3333';
+    ['subscription', 'price_pro', 'cus_NNNNNNNNNNNN3333'],
+    ['one-off credits', 'price_credits', 'cus_NNNNNNNNNNNN3333'],
+    ['subscription, no Stripe customer', 'price_pro', null]
+  ])('site headers only (%s): sign-in reply, no session, no prefill', async (_label, priceId, customerId) => {
+    if (customerId) tables.licenses.find((row) => row.id === N.id).stripe_customer_id = customerId;
     const { app, stripe } = buildApp();
     const res = await send(request(app).post('/billing/checkout'), siteOnly).send({ priceId });
-    expect(res.status).toBe(200);
-    const [params] = createParams(stripe);
-    expect(params).not.toHaveProperty('customer');
-    expect(params).not.toHaveProperty('customer_email');
-    expect(params.metadata).toMatchObject({ account_id: N.id, license_key: N.license_key, site_id: 'site-n' });
-    expect(params.metadata).not.toHaveProperty('site_hash');
-    expect(params.client_reference_id).toBe(N.id);
-  });
-
-  test('site headers only, licence without a Stripe customer: no customer_email', async () => {
-    const { app, stripe } = buildApp();
-    const res = await send(request(app).post('/billing/checkout'), siteOnly).send({ priceId: 'price_pro' });
-    expect(res.status).toBe(200);
-    const [params] = createParams(stripe);
-    expect(params).not.toHaveProperty('customer');
-    expect(params).not.toHaveProperty('customer_email');
-    expect(JSON.stringify(res.body)).not.toContain('@');
+    expect(res.status).toBe(401);
+    expect(res.text).toBe(SIGN_IN_REQUIRED_TEXT);
+    expect(createParams(stripe)).toHaveLength(0);
   });
 
   test('licence key: customer_email still prefilled for an account without a Stripe customer', async () => {
@@ -504,16 +489,19 @@ describe('checkout prefill', () => {
     expect(params.customer_email || params.customer).toBeTruthy();
   });
 
-  test('email-link for a site-only session still works and still replies with no address', async () => {
+  test('email-link: a session made with the licence key cannot be emailed with site headers alone', async () => {
     jest.spyOn(emailService, 'isAvailable').mockReturnValue(true);
     const sendSpy = jest.spyOn(emailService, 'sendCheckoutLinkEmail').mockResolvedValue({ success: true });
     const { app, stripe } = buildApp();
-    const created = await send(request(app).post('/billing/checkout'), siteOnly).send({ priceId: 'price_pro' });
+    const created = await send(request(app).post('/billing/checkout'), { ...siteOnly, 'X-License-Key': N.license_key }).send({ priceId: 'price_pro' });
     const params = createParams(stripe)[0];
     stripe.checkout.sessions.retrieve.mockResolvedValue({ id: created.body.sessionId, status: 'open', url: created.body.url, client_reference_id: params.client_reference_id, metadata: params.metadata });
     const res = await send(request(app).post('/billing/checkout/email-link'), siteOnly).send({ session_id: created.body.sessionId });
-    expect(res.status).toBe(200);
-    expect(res.text).toBe(JSON.stringify({ success: true }));
+    expect(res.status).toBe(401);
+    expect(res.text).not.toContain('@');
+    expect(sendSpy).not.toHaveBeenCalled();
+    const ok = await send(request(app).post('/billing/checkout/email-link'), { ...siteOnly, 'X-License-Key': N.license_key }).send({ session_id: created.body.sessionId });
+    expect(ok.status).toBe(200);
     expect(sendSpy).toHaveBeenCalledTimes(1);
   });
 });
@@ -551,11 +539,13 @@ describe('refused calls count in the rate limiter', () => {
       if (paying.status === 429) limited.push(paying.text);
       if (free.status === 429) limited.push(free.text);
     }
+    // Both licensed sites are refused (no account credential) and both hit
+    // the same checkout limit after the same number of tries.
     expect(statuses.paying).toEqual([401, 401, 401, 429]);
-    expect(statuses.free).toEqual([200, 200, 200, 429]);
+    expect(statuses.free).toEqual([401, 401, 401, 429]);
     expect(new Set(limited).size).toBe(1);
     expect(JSON.parse(limited[0]).code).toBe('CHECKOUT_RATE_LIMIT_EXCEEDED');
-    expect(stripe.checkout.sessions.create).toHaveBeenCalledTimes(3);
+    expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
   });
 
   test('refused reads and portal calls count per IP and then get one fixed 429 on every route', async () => {
@@ -642,8 +632,10 @@ describe('unrecognised site credentials on billing paths', () => {
     expect(unknown.map(([, t]) => t)).toEqual(paying.map(([, t]) => t));
     expect(unknown[0][1]).toBe(SIGN_IN_REQUIRED_TEXT);
     expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+    // A licensed site with no subscription is refused too (account credential needed).
     const free = await send(request(app).post('/billing/checkout'), freeSite).send({ priceId: 'price_pro' });
-    expect(free.status).toBe(200);
+    expect(free.status).toBe(401);
+    expect(free.text).toBe(SIGN_IN_REQUIRED_TEXT);
   });
 
   test('checkout from an unknown site still validates the request first, like a known one', async () => {
@@ -685,7 +677,9 @@ describe('checkout metadata site_install_id is hashed by the backend from X-Site
     'Content-Type': 'application/json',
     'X-Site-Hash': 'hash-nnnnnnnnnnnnnnnn',
     'X-Site-Key': 'hash-nnnnnnnnnnnnnnnn',
-    'X-Site-URL': 'https://november.example'
+    'X-Site-URL': 'https://november.example',
+    // Checkout needs an account credential; the plugin sends its licence key.
+    'X-License-Key': N.license_key
   };
   const body = (pluginVersion, siteInstallId) => ({
     priceId: 'price_pro',

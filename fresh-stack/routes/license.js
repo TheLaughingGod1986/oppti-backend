@@ -1,4 +1,5 @@
 const express = require('express');
+const { requireAccountCredential } = require('../lib/accountCredential');
 const logger = require('../lib/logger');
 const { buildSiteIdentity } = require('../lib/siteIdentity');
 const { fetchAccountByLicenseKey, resolveCanonicalSite } = require('../services/siteQuota');
@@ -113,7 +114,9 @@ function createLicenseRouter({ supabase }) {
     return res.json({ success: true, message: 'License transferred', license: sanitizeLicense(result.license), site: result.site });
   });
 
-  router.get('/sites', async (req, res) => {
+  // The site list (and the licence it belongs to) needs an account
+  // credential; a site key alone gets the sign-in reply.
+  router.get('/sites', requireAccountCredential, async (req, res) => {
     const licenseKey = req.header('X-License-Key') || req.license?.license_key;
     if (!licenseKey) {
       return res.status(401).json({ error: 'INVALID_LICENSE', message: 'X-License-Key header required' });

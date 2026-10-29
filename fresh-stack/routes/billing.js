@@ -3241,36 +3241,25 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       || buildPlansList(catalogPriceIds, { currency: billingCurrency }).find((plan) => plan.priceId === priceId)
       || null;
 
-    // Without an account credential, any checkout for a licence that already
-    // has a subscription gets the sign-in reply: before site resolution (no
-    // writes) and before any Stripe call.
+    // Without an account credential, checkout for any licence (with or
+    // without a subscription) gets the sign-in reply: before site resolution
+    // (no writes) and before any Stripe call. A guest checkout with no
+    // licence at all is unchanged.
     const credentialRejected = req.billingCredentialRejected === true && !account;
-    if (credentialRejected || (supabase && account && !hasAccountCredential(req))) {
-      let existing = { subscription: credentialRejected ? true : null };
-      try {
-        if (!credentialRejected) existing = await selectBillingSiteSubscriptionForLicense(supabase, account);
-      } catch (error) {
-        return reply(500, {
-          error: 'Failed to create checkout session',
-          code: 'CHECKOUT_SESSION_FAILED',
-          message: 'Stripe could not start checkout right now. Please try again in a minute.'
-        }, { outcome: 'error', error_code: 'SUBSCRIPTION_LOOKUP_FAILED', error_message: error?.message });
-      }
-      if (existing.subscription) {
-        // Counted in the same checkout bucket a new session would use, so the
-        // limit is reached after the same number of attempts either way.
-        const checkoutRateLimit = checkCheckoutRateLimit(req, {
-          siteKey,
-          priceId,
-          selectedPlanId: normalizePlanValue(resolvePlanFromPriceId(priceIds, priceId) || selectedPlan?.id || null)
+    if (credentialRejected || (account && !hasAccountCredential(req))) {
+      // Counted in the same checkout bucket a new session would use, so the
+      // limit is reached after the same number of attempts either way.
+      const checkoutRateLimit = checkCheckoutRateLimit(req, {
+        siteKey,
+        priceId,
+        selectedPlanId: normalizePlanValue(resolvePlanFromPriceId(priceIds, priceId) || selectedPlan?.id || null)
+      });
+      if (!checkoutRateLimit.allowed) {
+        return reply(429, checkoutRateLimitedBody(checkoutRateLimit), {
+          outcome: 'rate_limited', error_code: 'CHECKOUT_RATE_LIMIT_EXCEEDED'
         });
-        if (!checkoutRateLimit.allowed) {
-          return reply(429, checkoutRateLimitedBody(checkoutRateLimit), {
-            outcome: 'rate_limited', error_code: 'CHECKOUT_RATE_LIMIT_EXCEEDED'
-          });
-        }
-        return reply(401, SIGN_IN_REQUIRED_BODY, { outcome: 'rejected', error_code: 'SIGN_IN_REQUIRED' });
       }
+      return reply(401, SIGN_IN_REQUIRED_BODY, { outcome: 'rejected', error_code: 'SIGN_IN_REQUIRED' });
     }
 
     let siteRecord = null;
@@ -3592,7 +3581,8 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       }
     }
     const accountEmail = normalizeEmail(account?.email);
-    if (!account?.id || !accountEmail) {
+    // Site headers alone never email the account: same reply as no account.
+    if (!account?.id || !accountEmail || !hasAccountCredential(req)) {
       return reply(401, {
         error: 'AUTH_REQUIRED',
         code: 'AUTH_REQUIRED',

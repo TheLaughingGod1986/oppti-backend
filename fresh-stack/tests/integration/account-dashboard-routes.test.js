@@ -65,10 +65,17 @@ describe('account dashboard route contracts', () => {
   });
 
   test('logged-out account requests return 401 instead of 404', async () => {
-    const response = await request(createApp({ authenticated: false })).get('/me/sites');
+    const response = await request(createApp({ authenticated: false })).get('/me/plugins/stats');
 
     expect(response.status).toBe(401);
     expect(response.body.code).toBe('UNAUTHORIZED');
+  });
+
+  test.each(['/me/sites', '/me/licenses'])('logged-out %s gets the sign-in reply', async (path) => {
+    const response = await request(createApp({ authenticated: false })).get(path);
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({ code: 'SIGN_IN_REQUIRED', message: 'Sign in to manage billing.' });
   });
 
   test.each([

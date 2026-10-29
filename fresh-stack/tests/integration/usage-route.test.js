@@ -46,6 +46,7 @@ describe('GET /usage/sites', () => {
   test('rejects non-agency license', async () => {
     const supabase = createSupabaseMock('pro');
     const app = express();
+    app.use((req, _res, next) => { req.license = { id: 'lic-1', license_key: 'key' }; req.authMethod = 'license'; next(); });
     app.use('/usage', createUsageRouter({ supabase }));
     const res = await request(app).get('/usage/sites').set('X-License-Key', 'key');
     expect(res.status).toBe(403);
@@ -55,6 +56,7 @@ describe('GET /usage/sites', () => {
   test('returns sites for agency license (empty list mocked)', async () => {
     const supabase = createSupabaseMock('agency');
     const app = express();
+    app.use((req, _res, next) => { req.license = { id: 'lic-1', license_key: 'key' }; req.authMethod = 'license'; next(); });
     app.use('/usage', createUsageRouter({ supabase }));
     const res = await request(app).get('/usage/sites').set('X-License-Key', 'key');
     expect(res.status).toBe(200);
@@ -79,6 +81,7 @@ describe('GET /usage/sites excludes trial rows', () => {
         : createChainableMock({ id: 'lic-1', license_key: 'key', plan: 'agency', status: 'active' }))
     };
     const app = express();
+    app.use((req, _res, next) => { req.license = { id: 'lic-1', license_key: 'key' }; req.authMethod = 'license'; next(); });
     app.use('/usage', createUsageRouter({ supabase }));
 
     const res = await request(app).get('/usage/sites').set('X-License-Key', 'key');

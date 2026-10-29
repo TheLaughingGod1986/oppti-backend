@@ -401,6 +401,19 @@ function createApp(supabase, { includeLicenseRoutes = false } = {}) {
   app.use(express.json());
   app.use('/auth', createAuthRouter({ supabase }));
   if (includeLicenseRoutes) {
+    // Stands in for the auth middleware: an X-License-Key caller is an
+    // account credential (authMethod 'license').
+    app.use((req, _res, next) => {
+      const key = req.header('X-License-Key');
+      if (!key) return next();
+      return require('../../services/siteQuota').fetchAccountByLicenseKey(supabase, key).then((account) => {
+        if (account) {
+          req.license = account;
+          req.authMethod = 'license';
+        }
+        next();
+      }, next);
+    });
     app.use('/api/license', createLicenseRouter({ supabase }));
     app.use('/api/licenses', createLicenseRouter({ supabase }));
   }

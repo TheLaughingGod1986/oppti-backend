@@ -61,7 +61,8 @@ function createAccountDashboardRouter({ supabase, getStripe, service } = {}) {
     ok: true,
     subscriptions: await accountService.getSubscriptions(req)
   })));
-  router.get('/me/sites', accountRoute('me.sites', async (req) => ({
+  // Site list (domains, site ids) and licence keys: account credential only.
+  router.get('/me/sites', requireAccountCredential, accountRoute('me.sites', async (req) => ({
     ok: true,
     sites: await accountService.getSites(req)
   })));
@@ -72,7 +73,7 @@ function createAccountDashboardRouter({ supabase, getStripe, service } = {}) {
   router.get('/me/plugins/:pluginName/stats', accountRoute('me.plugins.stats.by_plugin', async (req) => (
     accountService.getPluginStats(req, req.params.pluginName)
   )));
-  router.get('/me/licenses', accountRoute('me.licenses', async (req) => ({
+  router.get('/me/licenses', requireAccountCredential, accountRoute('me.licenses', async (req) => ({
     ok: true,
     licenses: await accountService.getLicenses(req)
   })));

@@ -1,4 +1,5 @@
 const express = require('express');
+const { requireAccountCredential } = require('../lib/accountCredential');
 const { z } = require('zod');
 const logger = require('../lib/logger');
 const { buildAnonymousContext } = require('../lib/anonymousIdentity');
@@ -283,7 +284,8 @@ function createUsageRouter({ supabase }) {
   });
 
   // GET /usage/users - per-user breakdown
-  router.get('/users', async (req, res) => {
+  // Per-user emails and per-site licence breakdowns: account credential only.
+  router.get('/users', requireAccountCredential, async (req, res) => {
     const licenseKey = req.header('X-License-Key') || req.license?.license_key;
     const siteKey = req.header('X-Site-Key') || req.header('X-Site-Hash');
     if (!siteKey) return res.status(400).json({ error: 'INVALID_REQUEST', message: 'X-Site-Key or X-Site-Hash required' });
@@ -302,7 +304,7 @@ function createUsageRouter({ supabase }) {
   });
 
   // GET /usage/sites - per-site breakdown (agency)
-  router.get('/sites', async (req, res) => {
+  router.get('/sites', requireAccountCredential, async (req, res) => {
     const licenseKey = req.header('X-License-Key') || req.license?.license_key;
     if (!licenseKey) return res.status(401).json({ error: 'INVALID_LICENSE', message: 'License key or JWT token required' });
 
