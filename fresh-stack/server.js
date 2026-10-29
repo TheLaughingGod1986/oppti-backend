@@ -45,6 +45,7 @@ const { scheduleCustomerHealthCron } = require('./services/customerHealthTelemet
 const { scheduleGenerationReservationRecovery } = require('./services/generationReservationRecovery');
 const rateLimitMiddleware = require('./middleware/rateLimit');
 const { authMiddleware } = require('./middleware/auth');
+const { safeLogPath } = require('./lib/logPath');
 const requestId = require('./middleware/requestId');
 const errorHandler = require('./middleware/errorHandler');
 const { getStripe } = require('./lib/stripe');
@@ -212,14 +213,14 @@ function createApp({
       res.set('Vary', 'CF-IPCountry, X-Visitor-Country, X-Client-Country, X-Admin-Country, X-Country');
       res.json(body);
       logger.info('[billing/plans] served', {
-        path: req.path,
+        path: safeLogPath(req.path),
         duration_ms: Date.now() - t0,
         source: 'early_route',
         country: country || null,
         currency
       });
     } catch (err) {
-      logger.error('[billing/plans] error', { path: req.path, error: err.message });
+      logger.error('[billing/plans] error', { path: safeLogPath(req.path), error: err.message });
       res.status(500).json({
         success: false,
         error: 'PLANS_UNAVAILABLE',
@@ -240,7 +241,7 @@ function createApp({
       res.set('Cache-Control', 'no-store');
       res.json(health);
     } catch (err) {
-      logger.error('[billing/health] error', { path: req.path, error: err.message });
+      logger.error('[billing/health] error', { path: safeLogPath(req.path), error: err.message });
       res.status(500).json({
         stripe: false, starter: false, pro: false, entitlements: false,
         timestamp: new Date().toISOString()
@@ -286,8 +287,7 @@ function createApp({
     ) {
       logger.warn('[api] unmatched_route', {
         method: req.method,
-        path: req.path,
-        originalUrl: req.originalUrl
+        path: safeLogPath(req.path)
       });
       return res.status(404).json({
         success: false,
@@ -475,8 +475,7 @@ function createApp({
     if (req.path.startsWith('/api')) {
       logger.warn('[api] unmatched_route', {
         method: req.method,
-        path: req.path,
-        originalUrl: req.originalUrl
+        path: safeLogPath(req.path)
       });
       return res.status(404).json({
         success: false,

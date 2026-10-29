@@ -72,7 +72,7 @@ async function recordUsage(supabase, {
       }
     } catch (lookupErr) {
       logger.debug('[usage] license_id_lookup_failed', {
-        license_key: licenseKey ? `${licenseKey.substring(0, 8)}...` : null,
+        has_license_key: Boolean(licenseKey),
         error: lookupErr?.message || String(lookupErr)
       });
     }
@@ -128,7 +128,7 @@ async function recordUsage(supabase, {
   };
 
   logger.debug('[usage] Inserting usage log', { 
-    license_key: licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
+    has_license_key: Boolean(licenseKey),
     license_id: validatedLicenseId ? `${validatedLicenseId.substring(0, 8)}...` : 'null (invalid or missing)',
     user_id: validatedUserId ? `${validatedUserId.substring(0, 8)}...` : `null (original: ${userId || 'missing'}, valid UUID: ${userId ? isValidUUID(userId) : false})`,
     site_hash: siteHash,
@@ -186,12 +186,16 @@ async function recordUsage(supabase, {
     logger.error('[usage] Failed to insert usage log', { 
       operation: 'usage_logs_insert',
       error: serializeSupabaseError(error),
-      payload: {
-        ...payload,
-        license_key: payload.license_key ? `${payload.license_key.substring(0, 8)}...` : null,
-        user_id: payload.user_id || null,
-        license_id: payload.license_id || null
-      }
+      // No key characters, email, site URL, domain or image URL in the log.
+      payload: (({ license_key: key, user_email: userEmailValue, site_url: siteUrlValue, domain: domainValue, image_url: imageUrlValue, ...rest }) => ({
+        ...rest,
+        has_license_key: Boolean(key),
+        has_user_email: Boolean(userEmailValue),
+        has_site_url: Boolean(siteUrlValue || domainValue),
+        has_image_url: Boolean(imageUrlValue),
+        user_id: rest.user_id || null,
+        license_id: rest.license_id || null
+      }))(payload)
     });
   } else {
     logger.info('[usage] usage_log_write', {
@@ -302,7 +306,7 @@ async function updateQuotaSummary(supabase, licenseKey, creditsUsed, siteHash) {
     }
     
     logger.debug('[usage] Quota summary updated', {
-      licenseKey: `${licenseKey.substring(0, 8)}...`,
+      has_license_key: Boolean(licenseKey),
       newTotalCredits,
       siteUsage
     });
@@ -326,7 +330,7 @@ async function updateQuotaSummary(supabase, licenseKey, creditsUsed, siteHash) {
     }
     
     logger.debug('[usage] Quota summary created', {
-      licenseKey: `${licenseKey.substring(0, 8)}...`,
+      has_license_key: Boolean(licenseKey),
       creditsUsed,
       siteUsage
     });

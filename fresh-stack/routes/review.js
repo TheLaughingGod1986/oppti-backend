@@ -1,6 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const logger = require('../lib/logger');
+const { safeLogPath } = require('../lib/logPath');
 const { reviewAltText } = require('../lib/openai');
 const { validateImagePayload } = require('../lib/validation');
 const {
@@ -186,8 +187,7 @@ function createReviewRouter({ supabase } = {}) {
 
   router.post('/', async (req, res) => {
     logger.info('[review] post', {
-      path: req.path,
-      originalUrl: req.originalUrl,
+      path: safeLogPath(`${req.baseUrl || ''}${req.path || ''}`),
       authMethod: req.authMethod || null
     });
     const parsed = requestSchema.safeParse(req.body || {});

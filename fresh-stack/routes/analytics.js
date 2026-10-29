@@ -23,6 +23,14 @@ const ALLOWED_EVENT_PROPERTIES = Object.freeze([
   'value'
 ]);
 const MAX_PROPERTY_LENGTH = 120;
+// Event names are snake_case words: lower-case letter first, then lower-case
+// letters, digits or '_', 64 characters at most. This rules out PostHog's
+// reserved $ names ($identify, $set, ...) and free text such as an email.
+const EVENT_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+
+function isValidEventName(name) {
+  return typeof name === 'string' && EVENT_NAME_PATTERN.test(name);
+}
 
 function sanitizeEventProperties(properties = {}) {
   const out = {};
@@ -70,6 +78,20 @@ function createAnalyticsRouter({ capture = captureServerEvent } = {}) {
       });
     }
 
+    if (!isValidEventName(event)) {
+      // Fixed label only: the rejected name itself is never logged.
+      logger.warn('[analytics] rejected_event_name', {
+        route: 'analytics.event',
+        reason: 'invalid_event_name',
+        request_id: req.id || null
+      });
+      return res.status(400).json({
+        error: 'VALIDATION_ERROR',
+        code: 'VALIDATION_ERROR',
+        message: 'Event names must be lower-case letters, digits or underscores'
+      });
+    }
+
     const result = await capture({
       event,
       distinctId: account.id,
@@ -109,4 +131,4 @@ function createAnalyticsRouter({ capture = captureServerEvent } = {}) {
   return router;
 }
 
-module.exports = { createAnalyticsRouter, sanitizeEventProperties, ALLOWED_EVENT_PROPERTIES };
+module.exports = { createAnalyticsRouter, sanitizeEventProperties, isValidEventName, ALLOWED_EVENT_PROPERTIES, EVENT_NAME_PATTERN };

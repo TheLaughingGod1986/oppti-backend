@@ -99,7 +99,7 @@ function authMiddleware({ supabase }) {
         risk_key: anonymousContext.riskKey || null,
         source: req.header('X-Trial-Site-Hash') ? 'X-Trial-Site-Hash'
           : req.header('X-Site-Hash') ? 'X-Site-Hash' : 'X-Site-Key',
-        site_url: req.header('X-Site-URL') || null,
+        has_site_url: Boolean(req.header('X-Site-URL')),
         site_fingerprint: req.header('X-Site-Fingerprint') ? 'present' : 'absent'
       });
       return next();
@@ -127,7 +127,7 @@ function authMiddleware({ supabase }) {
 
     // Debug logging
     logger.debug('[Auth] Request headers', {
-      'X-License-Key': licenseKey ? `${licenseKey.substring(0, 8)}...` : 'missing',
+      has_license_key: Boolean(licenseKey),
       'X-API-Key': apiKey ? 'present' : 'missing',
       'Authorization': authHeader ? 'present' : 'missing',
       'X-Anon-Id': anonymousContext.anonId ? 'present' : 'missing',
@@ -142,8 +142,7 @@ function authMiddleware({ supabase }) {
       try {
         const decoded = jwt.verify(token, JWT_SECRET);
         logger.debug('[Auth] JWT validated', {
-          user_id: decoded.user_id,
-          email: decoded.email
+          user_id: decoded.user_id
         });
 
         // Fetch user from database
@@ -196,7 +195,7 @@ function authMiddleware({ supabase }) {
         logger.warn('[Auth] License validation failed', {
           error: result.error,
           message: result.message,
-          licenseKeyPrefix: licenseKey.substring(0, 8)
+          has_license_key: true
         });
         return res.status(result.status || 401).json({
           error: result.error,

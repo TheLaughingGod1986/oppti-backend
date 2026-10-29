@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 // Stripe errors can echo customer emails: mask them in every billing log line.
 const logger = require('../lib/logger').withEmailRedaction();
+const { safeLogPath } = require('../lib/logPath');
 const {
   resolveBillingCountry,
   resolveBillingCountryWithSource,
@@ -3032,7 +3033,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       res.set('Vary', 'CF-IPCountry, X-Visitor-Country, X-Client-Country, X-Admin-Country, X-Country');
       res.json(payload);
       logger.info('[billing] GET /plans ok', {
-        path: req.path,
+        path: safeLogPath(`${req.baseUrl || ''}${req.path || ''}`),
         duration_ms: Date.now() - t0,
         plan_count: payload.plans?.length || 0
       });
