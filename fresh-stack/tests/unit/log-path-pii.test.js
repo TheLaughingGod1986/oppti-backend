@@ -47,6 +47,7 @@ describe('server unmatched_route and review post log lines', () => {
   let infoSpy;
   let logger;
   const loggedCalls = () => [...warnSpy.mock.calls, ...infoSpy.mock.calls];
+  const clearCaptured = () => { warnSpy.mockClear(); infoSpy.mockClear(); };
 
   beforeEach(() => {
     jest.resetModules();
@@ -78,6 +79,9 @@ describe('server unmatched_route and review post log lines', () => {
   ])('GET %s logs path %s with no originalUrl or query', async (url, expectedPath) => {
     const { createApp } = require('../../server');
     const app = createApp({ supabaseClient: null, redisClient: null });
+    // Module-init lines (e.g. the email client start-up line when a Resend key
+    // is set, as in CI) are not part of the request under test.
+    clearCaptured();
     const res = await request(app).get(url);
     expect(res.status).toBe(404);
     const lines = unmatched();
@@ -92,6 +96,7 @@ describe('server unmatched_route and review post log lines', () => {
     const app = express();
     app.use(express.json());
     app.use('/api/review', createReviewRouter({ supabase: null }));
+    clearCaptured();
     await request(app).post(`/api/review?email=${encodeURIComponent(EMAIL)}&key=${KEY}`).send({});
     const post = infoSpy.mock.calls.find(([m]) => m === '[review] post');
     expect(post[1]).toEqual({ path: '/api/review', authMethod: null });
