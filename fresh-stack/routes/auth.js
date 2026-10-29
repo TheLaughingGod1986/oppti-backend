@@ -521,9 +521,9 @@ async function recordSignupSource({ supabase, user, body, pluginId, requestId })
     await identifyServerUser({
       distinctId: user.id,
       properties: {
+        // The free-text "other" answer stays in the database only.
         $set: {
           signup_source: source,
-          signup_source_other: other,
           ...(pluginId ? { signup_source_plugin: pluginId } : {})
         }
       }

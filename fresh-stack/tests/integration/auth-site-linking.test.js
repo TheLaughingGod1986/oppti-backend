@@ -896,7 +896,7 @@ describe('register signup_source ("How did you find us?")', () => {
     expect(row.signup_source_other).toBeNull();
     expect(identifyServerUser).toHaveBeenCalledWith({
       distinctId: row.id,
-      properties: { $set: { signup_source: 'wporg', signup_source_other: null, signup_source_plugin: 'alt_text' } }
+      properties: { $set: { signup_source: 'wporg', signup_source_plugin: 'alt_text' } }
     });
   });
 
@@ -925,6 +925,11 @@ describe('register signup_source ("How did you find us?")', () => {
     expect(row.signup_source_other).not.toMatch(/[<>]/);
     expect(row.signup_source_other.startsWith('Podcast')).toBe(true);
     expect(row.signup_source_other.length).toBeLessThanOrEqual(200);
+    // The free text stays in the database; PostHog gets the source only.
+    expect(identifyServerUser).toHaveBeenCalledWith(expect.objectContaining({
+      properties: { $set: expect.objectContaining({ signup_source: 'other' }) }
+    }));
+    expect(JSON.stringify(identifyServerUser.mock.calls)).not.toMatch(/Podcast|signup_source_other/);
   });
 });
 
