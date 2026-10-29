@@ -29,6 +29,8 @@ const {
 } = require('../lib/billingCurrency');
 const { verifyWebhookSignature } = require('../lib/stripe');
 const emailService = require('../lib/email');
+const { siteRefForLog } = require('../lib/logIdentity');
+const { installIdFromSiteKey } = require('../lib/installId');
 const { captureServerEvent, identifyServerUser } = require('../lib/posthog');
 const {
   emitCanonicalBillingEvents,
@@ -711,14 +713,13 @@ function resolveDistinctIdFromStripeEvent({
   if (userId) {
     return { distinctId: userId, distinctIdSource: 'user_id' };
   }
-  if (licenseKey) {
-    return { distinctId: licenseKey, distinctIdSource: 'license_key' };
-  }
+  // Never the licence key: it is a credential, so it must not become a PostHog id.
   if (site?.id || siteId) {
     return { distinctId: site?.id || siteId, distinctIdSource: 'site_id' };
   }
   if (siteHash) {
-    return { distinctId: siteHash, distinctIdSource: 'site_hash' };
+    // The hashed install id, never the site key itself (it replays as X-Site-Key).
+    return { distinctId: installIdFromSiteKey(siteHash), distinctIdSource: 'site_hash' };
   }
   if (stripeCustomerId) {
     return { distinctId: stripeCustomerId, distinctIdSource: 'stripe_customer_id' };
@@ -909,7 +910,7 @@ async function findSiteByHash(supabase, siteHash) {
 
   if (error) {
     logger.warn('[billing] site lookup by hash failed', {
-      siteHash,
+      ...siteRefForLog(siteHash),
       error: error.message
     });
     return null;
@@ -1290,7 +1291,7 @@ async function resolveIdentityContext({
     if (site) {
       resolutionSource = resolutionSource === 'unresolved' ? 'site_hash' : resolutionSource;
     } else {
-      logger.warn('[billing] site not found for metadata site hash', { siteHash });
+      logger.warn('[billing] site not found for metadata site hash', { ...siteRefForLog(siteHash) });
     }
   }
 
@@ -1361,14 +1362,14 @@ async function resolveIdentityContext({
       resolutionSource = resolutionSource === 'unresolved' ? 'site_hash' : resolutionSource;
       logger.info('[billing] canonical billing site resolved', {
         site_id: site.id,
-        site_hash: site.site_hash || siteHash || null,
+        ...siteRefForLog(site.site_hash || siteHash || null),
         matched_by: resolved.matchedBy || null,
         created: Boolean(resolved.created),
         licenseKeyPrefix: maskSecret(licenseKey || account?.license_key || null)
       });
     } else if (resolved?.error) {
       logger.error('[billing] canonical billing site resolution failed', {
-        site_hash: siteHash,
+        ...siteRefForLog(siteHash),
         site_url: siteUrl || null,
         licenseKeyPrefix: maskSecret(licenseKey || account?.license_key || null),
         error: resolved.error,
@@ -1385,7 +1386,7 @@ async function resolveIdentityContext({
       resolutionSource = resolutionSource === 'unresolved' ? 'license_sites' : resolutionSource;
       logger.info('[billing] canonical billing site resolved from license', {
         site_id: site.id,
-        site_hash: site.site_hash || null,
+        ...siteRefForLog(site.site_hash || null),
         licenseKeyPrefix: maskSecret(siteLicenseKey)
       });
     } else if (licenseSites.length > 1) {
@@ -1411,7 +1412,7 @@ async function resolveIdentityContext({
   } else if (licenseKey || siteHash || email || stripeCustomerId || stripeSubscriptionId) {
     logger.warn('[billing] account not resolved for payment event', {
       licenseKeyPrefix: maskSecret(licenseKey),
-      siteHash,
+      ...siteRefForLog(siteHash),
       email: email || null,
       stripeCustomerId: stripeCustomerId || null,
       stripeSubscriptionId: stripeSubscriptionId || null
@@ -2385,7 +2386,7 @@ async function emitPaymentSucceeded({
     accountId: account?.id || null,
     licenseKeyPrefix: maskSecret(eventProperties.license_key || null),
     siteId: eventProperties.site_id || null,
-    siteHash: eventProperties.site_hash || null,
+    ...siteRefForLog(eventProperties.site_hash || null),
     stripeCustomerId: eventProperties.stripe_customer_id || null,
     stripeSubscriptionId: eventProperties.stripe_subscription_id || null
   });
@@ -3061,7 +3062,7 @@ function logCheckoutOutcome(context = {}, fields = {}) {
     idempotent_replayed: fields.idempotent_replayed === true,
     account_id: context.accountId || null,
     site_id: context.siteId || null,
-    site_key: context.siteKey || null,
+    ...(context.siteRef || siteRefForLog(null)),
     license_key_prefix: context.licenseKeyPrefix || null,
     plugin_version: context.pluginVersion || null
   };
@@ -3174,7 +3175,8 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       requestedPriceId,
       priceId: requestedPriceId,
       accountId: account?.id || null,
-      siteKey: siteKey || null,
+      // Presence and source only: logCheckoutOutcome never sees the key.
+      siteRef: siteRefForLog(siteKey || null, req),
       licenseKeyPrefix: maskSecret(account?.license_key || null),
       pluginVersion: sanitizeStripeMetadataValue(req.body?.plugin_version, { maxLength: 32 }) || null
     };
@@ -3299,7 +3301,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         siteRecord = resolved.site || null;
       } catch (error) {
         logger.warn('[billing] checkout site lookup failed', {
-          siteKey,
+          ...siteRefForLog(siteKey, req),
           error: error.message
         });
       }
@@ -3310,7 +3312,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       if (siteRecord && account && !siteOwnedByAccount(siteRecord, account)) {
         logger.warn('[billing] checkout site not owned', {
           account_id: account.id || null,
-          site_hash: maskSecret(siteKey)
+          ...siteRefForLog(siteKey, req)
         });
         siteRecord = null;
         metadataSiteKey = null;
@@ -3355,7 +3357,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       const checkoutRateLimit = checkCheckoutRateLimit(req, { siteKey, priceId, selectedPlanId });
       if (!checkoutRateLimit.allowed) {
         logger.warn('[billing] checkout rate limit exceeded', {
-          siteKey,
+          ...siteRefForLog(siteKey, req),
           selectedPlanId,
           account_id: account?.id || null,
           licenseKeyPrefix: maskSecret(account?.license_key || null),
@@ -3458,9 +3460,10 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         site_hash: sanitizeStripeMetadataValue(siteRecord?.site_hash)
           || sanitizeStripeMetadataValue(metadataSiteKey)
           || bodyIdentity.siteHash,
-        site_install_id: sanitizeStripeMetadataValue(siteRecord?.site_hash)
-          || sanitizeStripeMetadataValue(metadataSiteKey)
-          || bodyIdentity.siteInstallId,
+        // Hashed here from the raw X-Site-Key (or the stored site_hash), the
+        // plugin formula. Never the body site_install_id: newer plugins send it
+        // hashed, older ones raw.
+        site_install_id: installIdFromSiteKey(metadataSiteKey || siteRecord?.site_hash || null) || undefined,
         user_id: sanitizeStripeMetadataValue(req.user?.id)
           || sanitizeStripeMetadataValue(account?.id)
           || bodyIdentity.userId,
@@ -3802,7 +3805,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         logger.error('[site] billing_subscription_site_healing_failed', {
           request_id: req.id || null,
           account_id: account.id || null,
-          site_hash: siteKey || null,
+          ...siteRefForLog(siteKey || null, req),
           site_url: req.header('X-Site-URL') || null,
           error: resolved.error,
           site_write_error: resolved.diagnostics?.site_write_error || null,
@@ -3819,7 +3822,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         logger.warn('[billing] subscription_site_not_held', {
           request_id: req.id || null,
           account_id: account.id || null,
-          site_hash: maskSecret(siteKey || null)
+          ...siteRefForLog(siteKey || null, req)
         });
         return res.json({ success: true, data: await planFromLicense(licenseKey, null) || freePlan });
       }
@@ -3831,7 +3834,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         logger.info('[billing] subscription_source_resolved', {
           source: 'site_subscriptions',
           site_id: effectiveSite.id,
-          site_hash: effectiveSite.site_hash || null,
+          ...siteRefForLog(effectiveSite.site_hash || null, req),
           stripe_subscription_id: siteSubscription.stripe_subscription_id || null
         });
         return res.json({
@@ -3867,7 +3870,7 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       logger.info('[billing] subscription_source_resolved', {
         source: 'licenses',
         site_id: site.id,
-        site_hash: site.site_hash || null,
+        ...siteRefForLog(site.site_hash || null),
         stripe_subscription_id: license?.stripe_subscription_id || null
       });
     }

@@ -673,3 +673,36 @@ describe('unrecognised site credentials on billing paths', () => {
     }
   });
 });
+
+describe('checkout metadata site_install_id is hashed by the backend from X-Site-Key', () => {
+  // sha256('oppti-install-v1:hash-nnnnnnnnnnnnnnnn'), the plugin formula.
+  const EXPECTED_INSTALL_ID = 'de7d38e0a860196b7772ed84e538cb4729a6be7627cbc41f78da2c14b3606373';
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-Site-Hash': 'hash-nnnnnnnnnnnnnnnn',
+    'X-Site-Key': 'hash-nnnnnnnnnnnnnnnn',
+    'X-Site-URL': 'https://november.example'
+  };
+  const body = (pluginVersion, siteInstallId) => ({
+    priceId: 'price_pro',
+    successUrl: 'https://november.example/wp-admin/admin.php?page=bbai&checkout=success',
+    cancelUrl: 'https://november.example/wp-admin/admin.php?page=bbai&checkout=cancel',
+    plugin_version: pluginVersion,
+    site_install_id: siteInstallId
+  });
+
+  test.each([
+    ['4.6.143 (raw body site_install_id)', '4.6.143', 'hash-nnnnnnnnnnnnnnnn'],
+    ['4.6.144 (already-hashed body site_install_id)', '4.6.144', EXPECTED_INSTALL_ID],
+    ['no body site_install_id', '4.6.144', undefined]
+  ])('%s gives the same single-hashed value', async (_label, version, bodyId) => {
+    seed();
+    const { app, stripe } = buildApp();
+    const res = await send(request(app).post('/billing/checkout'), headers).send(body(version, bodyId));
+    expect(res.status).toBe(200);
+    const { metadata } = stripe.checkout.sessions.create.mock.calls[0][0];
+    expect(metadata.site_install_id).toBe(EXPECTED_INSTALL_ID);
+    // The site row id travels for webhook and renewal lookups.
+    expect(metadata.site_id).toBe('site-n');
+  });
+});

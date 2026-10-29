@@ -357,7 +357,7 @@ describe('billing truth-source cleanup', () => {
     expect(infoSpy).toHaveBeenCalledWith('[billing] subscription_source_resolved', expect.objectContaining({
       source: 'site_subscriptions',
       site_id: 'site_paid',
-      site_hash: 'site_hash_paid',
+      has_site_key: true,
       stripe_subscription_id: 'sub_***'
     }));
     expect(resolveCanonicalSite).toHaveBeenCalledWith(
@@ -417,7 +417,7 @@ describe('billing truth-source cleanup', () => {
     expect(infoSpy).toHaveBeenCalledWith('[billing] subscription_source_resolved', expect.objectContaining({
       source: 'licenses',
       site_id: 'site_free',
-      site_hash: 'site_hash_free',
+      has_site_key: true,
       stripe_subscription_id: null
     }));
   });

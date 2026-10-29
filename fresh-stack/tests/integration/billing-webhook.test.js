@@ -921,7 +921,7 @@ describe('POST /billing/webhook', () => {
     expect(trackPlanUpgraded).not.toHaveBeenCalled();
   });
 
-  test('uses metadata license_key as fallback distinct id before site and Stripe ids when no account is resolved', async () => {
+  test('never uses the metadata license_key as distinct id; falls back to the site id when no account is resolved', async () => {
     const supabase = createSupabaseMock({
       sites: [
         {
@@ -959,7 +959,7 @@ describe('POST /billing/webhook', () => {
     expect(res.status).toBe(200);
     expect(captureServerEvent).toHaveBeenCalledWith({
       event: 'payment_succeeded',
-      distinctId: 'lic_meta',
+      distinctId: 'site_internal_123',
       properties: expect.objectContaining({
         stripe_event_id: 'evt_checkout_metadata',
         license_key: 'lic_meta',
