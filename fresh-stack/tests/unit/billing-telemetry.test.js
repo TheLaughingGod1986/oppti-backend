@@ -234,16 +234,29 @@ describe('billing attribution sent to PostHog', () => {
     ['https://duckduckgo.com/', 'duckduckgo.com'],
     ['https://wordpress.org/plugins/x/', 'wordpress.org'],
     ['https://app.oppti.dev/pricing?ref=1', 'app.oppti.dev'],
+    ['https://oppti.dev/', 'oppti.dev'],
     ['https://t.co/abc', 't.co'],
     ['https://x.com/someone/status/1', 'x.com'],
     ['https://l.facebook.com/l.php?u=x', 'l.facebook.com'],
+    ['https://m.facebook.com/', 'm.facebook.com'],
+    ['https://www.facebook.com/', 'facebook.com'],
     ['https://www.linkedin.com/feed/', 'linkedin.com'],
+    ['https://lnkd.in/abc', 'lnkd.in'],
     ['https://m.youtube.com/watch?v=1', 'm.youtube.com'],
-    ['https://old.reddit.com/r/wordpress', 'old.reddit.com'],
-    ['https://shop.customer-brand.co.uk/wp-admin/admin.php?page=bbai', 'other'],
+    ['https://www.reddit.com/r/wordpress', 'reddit.com'],
+    ['https://out.reddit.com/t3_x', 'out.reddit.com'],
+    ['https://dev.to/someone/post', 'dev.to'],
+    ['https://www.producthunt.com/posts/x', 'producthunt.com'],
+    ['https://alternativeto.net/software/x/', 'alternativeto.net'],
+    ['https://www.saashub.com/x', 'saashub.com'],
+    ['https://shop.customer-brand.co.uk/wp-admin/admin.php?page=bbai', 'wp_admin'],
+    ['https://customer.example/blog/wp-admin/upload.php', 'wp_admin'],
+    ['https://shop.customer-brand.co.uk/pricing', 'other'],
+    ['https://old.reddit.com/r/wordpress', 'other'],
     ['https://google.com.attacker.test/', 'other'],
     ['https://notgoogle.com/', 'other'],
     ['https://oppti.dev.evil.test/', 'other'],
+    ['javascript:alert(1)', 'other'],
     ['not a url', 'other'],
     ['', null],
     [null, null]
@@ -286,7 +299,8 @@ describe('billing attribution sent to PostHog', () => {
       utm_source: 'newsletter',
       utm_medium: 'email',
       utm_campaign: 'october',
-      referrer_host: 'other'
+      referrer_host: 'wp_admin'
     }));
+    expect(canonical).not.toHaveProperty('acquisition_channel');
   });
 });

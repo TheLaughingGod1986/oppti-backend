@@ -79,13 +79,6 @@ function calculateArrDelta(mrrDelta) {
   return roundMoney(mrrDelta * 12);
 }
 
-function inferAcquisitionChannel(attribution = {}) {
-  if (attribution.acquisition_channel) return attribution.acquisition_channel;
-  if (attribution.utm_source) return String(attribution.utm_source).toLowerCase();
-  if (attribution.referrer) return 'referral';
-  return null;
-}
-
 function resolveAttributionFromMetadata(metadata = {}) {
   const read = (keys) => {
     for (const key of keys) {
@@ -109,60 +102,72 @@ function resolveAttributionFromMetadata(metadata = {}) {
   };
 }
 
-// Referrers become a host label only, and only for known search, social and
-// Oppti hosts. Any other host (including the customer's own site) is 'other'.
-// Full referrer, landing page and source page URLs never reach PostHog.
+// Referrers become a bucket only: an allowed search, social, directory or
+// Oppti host; 'wp_admin' for any WordPress admin page (no host, since that is
+// usually the customer's own site); otherwise 'other'. Full referrer, landing
+// page and source page URLs, paths and query strings never reach PostHog.
 const REFERRER_HOST_ALLOWLIST = Object.freeze([
   'bing.com',
   'duckduckgo.com',
   'wordpress.org',
-  'oppti.dev',
   'x.com',
   't.co',
   'facebook.com',
+  'l.facebook.com',
+  'm.facebook.com',
   'linkedin.com',
+  'lnkd.in',
   'youtube.com',
-  'reddit.com'
+  'm.youtube.com',
+  'reddit.com',
+  'out.reddit.com',
+  'dev.to',
+  'producthunt.com',
+  'alternativeto.net',
+  'saashub.com'
 ]);
-// google.* and yahoo.* on any country domain (google.com, google.co.uk, uk.yahoo.com).
-const REFERRER_BRAND_PATTERNS = Object.freeze([
+// oppti.dev and its subdomains; google.* and yahoo.* on any country domain.
+const REFERRER_HOST_PATTERNS = Object.freeze([
+  /(^|\.)oppti\.dev$/,
   /(^|\.)google\.(com|[a-z]{2,3})(\.[a-z]{2})?$/,
   /(^|\.)yahoo\.(com|[a-z]{2,3})(\.[a-z]{2})?$/
 ]);
-const MAX_UTM_LENGTH = 100;
+const MAX_LABEL_LENGTH = 100;
 
 function classifyReferrerHost(referrer) {
   if (typeof referrer !== 'string' || !referrer.trim()) return null;
-  let host;
+  let url;
   try {
-    host = new URL(referrer.trim()).hostname.toLowerCase();
+    url = new URL(referrer.trim());
   } catch (_error) {
     return 'other';
   }
-  host = host.replace(/^www\./, '').replace(/\.$/, '');
+  if (!['http:', 'https:'].includes(url.protocol)) return 'other';
+  if (/\/wp-admin(\/|$)/i.test(url.pathname)) return 'wp_admin';
+  const host = url.hostname.toLowerCase().replace(/\.$/, '').replace(/^www\./, '');
   if (!host) return 'other';
-  const listed = REFERRER_HOST_ALLOWLIST.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
-  if (listed || REFERRER_BRAND_PATTERNS.some((pattern) => pattern.test(host))) {
+  if (REFERRER_HOST_ALLOWLIST.includes(host) || REFERRER_HOST_PATTERNS.some((pattern) => pattern.test(host))) {
     return host;
   }
   return 'other';
 }
 
-function capUtm(value) {
+// Short label for PostHog: never an email, URL or path.
+function sanitizeLabel(value) {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, MAX_UTM_LENGTH) : null;
+  if (!trimmed || /[@/:?#]/.test(trimmed)) return null;
+  return trimmed.slice(0, MAX_LABEL_LENGTH);
 }
 
-// Attribution as sent to PostHog: three UTM fields, a referrer host label and
-// the derived channel. No URLs, no utm_content/utm_term free text.
+// Attribution as sent to PostHog: utm_source, utm_medium, utm_campaign and the
+// referrer bucket. Nothing else (no utm_content/utm_term, no URLs).
 function buildAnalyticsAttribution(attribution = {}) {
   return {
-    utm_source: capUtm(attribution.utm_source),
-    utm_medium: capUtm(attribution.utm_medium),
-    utm_campaign: capUtm(attribution.utm_campaign),
-    referrer_host: classifyReferrerHost(attribution.referrer),
-    acquisition_channel: capUtm(inferAcquisitionChannel(attribution))
+    utm_source: sanitizeLabel(attribution.utm_source),
+    utm_medium: sanitizeLabel(attribution.utm_medium),
+    utm_campaign: sanitizeLabel(attribution.utm_campaign),
+    referrer_host: classifyReferrerHost(attribution.referrer)
   };
 }
 
@@ -245,8 +250,8 @@ function buildCanonicalProperties({
     stripe_event_type: eventProperties.stripe_event_type || null,
     $insert_id: stripeEventId,
     ...buildAnalyticsAttribution(attribution),
-    trigger_feature: eventProperties.trigger_feature || null,
-    trigger_location: eventProperties.trigger_location || null,
+    trigger_feature: sanitizeLabel(eventProperties.trigger_feature),
+    trigger_location: sanitizeLabel(eventProperties.trigger_location),
     target_plan: eventProperties.target_plan || null,
     identity_path: eventProperties.identity_path || null
   };
