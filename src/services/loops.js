@@ -1,7 +1,6 @@
 const crypto = require('crypto');
 const logger = require('../../fresh-stack/lib/logger');
 const { getPlugin, normalizePluginId, LOOPS_SOURCE_BY_PLUGIN } = require('./pluginIdentity');
-const { isWebsiteUrlForRegisteredSite } = require('../../fresh-stack/services/redirectAllowlist');
 
 const LOOPS_BASE = 'https://app.loops.so/api/v1';
 const LOOPS_TIMEOUT_MS = Number(process.env.LOOPS_TIMEOUT_MS || 5000);
@@ -558,24 +557,19 @@ async function trackPaymentSucceeded({
 
 async function trackImageSeoAuditRequested({
   email,
-  websiteUrl,
-  normalizedDomain,
   auditId,
-  registeredSiteHosts = [],
   source = 'image-seo-audit'
 }) {
   if (isLoopsSkippedEmail(email)) {
     logSkippedEmail(email, { context: 'trackImageSeoAuditRequested' });
     return null;
   }
-  await upsertAuditLeadContact({ email, websiteUrl, normalizedDomain, registeredSiteHosts, source });
+  await upsertAuditLeadContact({ email, source });
   await loopsPost('/events/send', {
     email,
     eventName: 'image_seo_audit_requested',
     eventProperties: {
       auditId,
-      websiteUrl,
-      normalizedDomain,
       source
     }
   });
@@ -583,14 +577,11 @@ async function trackImageSeoAuditRequested({
 
 async function trackImageSeoAuditCompleted({
   email,
-  websiteUrl,
-  normalizedDomain,
   auditId,
   auditScore,
   pagesScanned,
   imagesScanned,
   missingAltPercent,
-  registeredSiteHosts = [],
   source = 'image-seo-audit'
 }) {
   if (isLoopsSkippedEmail(email)) {
@@ -599,9 +590,6 @@ async function trackImageSeoAuditCompleted({
   }
   await upsertAuditLeadContact({
     email,
-    websiteUrl,
-    normalizedDomain,
-    registeredSiteHosts,
     source,
     auditScore,
     pagesScanned,
@@ -613,8 +601,6 @@ async function trackImageSeoAuditCompleted({
     eventName: 'image_seo_audit_completed',
     eventProperties: {
       auditId,
-      websiteUrl,
-      normalizedDomain,
       auditScore,
       pagesScanned,
       imagesScanned,
@@ -626,39 +612,28 @@ async function trackImageSeoAuditCompleted({
 
 async function trackImageSeoAuditFailed({
   email,
-  websiteUrl,
-  normalizedDomain,
   auditId,
   errorCode,
-  registeredSiteHosts = [],
   source = 'image-seo-audit'
 }) {
   if (isLoopsSkippedEmail(email)) {
     logSkippedEmail(email, { context: 'trackImageSeoAuditFailed' });
     return null;
   }
-  await upsertAuditLeadContact({ email, websiteUrl, normalizedDomain, registeredSiteHosts, source });
+  await upsertAuditLeadContact({ email, source });
   await loopsPost('/events/send', {
     email,
     eventName: 'image_seo_audit_failed',
     eventProperties: {
       auditId,
-      websiteUrl,
-      normalizedDomain,
       errorCode,
       source
     }
   });
 }
 
-// A contact's websiteUrl is kept only when its host is one of the site hosts
-// registered to that email's account (www/bare and subdomains match). Anything
-// else, including an audit lead with no account, is dropped. No flag.
 async function upsertAuditLeadContact({
   email,
-  websiteUrl,
-  normalizedDomain,
-  registeredSiteHosts = [],
   source,
   auditScore = null,
   pagesScanned = null,
@@ -669,18 +644,8 @@ async function upsertAuditLeadContact({
     logSkippedEmail(email, { path: '/contacts/create', method: 'POST' });
     return null;
   }
-  const body = {
-    email,
-    normalizedDomain
-  };
-  if (websiteUrl && isWebsiteUrlForRegisteredSite(websiteUrl, registeredSiteHosts)) {
-    body.websiteUrl = websiteUrl;
-  } else if (websiteUrl) {
-    logger.info('[loops] contact websiteUrl dropped', {
-      reason: 'host_not_registered',
-      registered_host_count: Array.isArray(registeredSiteHosts) ? registeredSiteHosts.length : 0
-    });
-  }
+  // Lead contacts carry the email and audit metrics only: no site URL or domain.
+  const body = { email };
   if (auditScore !== null) body.auditScore = auditScore;
   if (pagesScanned !== null) body.pagesScanned = pagesScanned;
   if (imagesScanned !== null) body.imagesScanned = imagesScanned;

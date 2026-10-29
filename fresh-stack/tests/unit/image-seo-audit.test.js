@@ -192,39 +192,15 @@ describe('image SEO audit service', () => {
       auditId: '00000000-0000-4000-8000-000000000001',
       source: 'image-seo-audit'
     }));
+    for (const helper of ['trackImageSeoAuditRequested', 'trackImageSeoAuditCompleted']) {
+      const [args] = loops[helper].mock.calls[0];
+      expect(args).not.toHaveProperty('websiteUrl');
+      expect(args).not.toHaveProperty('normalizedDomain');
+    }
     expect(loops.trackImageSeoAuditCompleted).toHaveBeenCalledWith(expect.objectContaining({
       email: 'user@example.com',
-      normalizedDomain: 'example.com',
       source: 'image-seo-audit',
       auditScore: expect.any(Number)
     }));
-    // No database, so no account: nothing is registered and Loops drops websiteUrl.
-    expect(loops.trackImageSeoAuditRequested.mock.calls[0][0].registeredSiteHosts).toEqual([]);
-  });
-
-  test('passes the lead account\'s registered site hosts to Loops (websiteUrl rule)', async () => {
-    const { createTableMock } = require('../helpers/tableMock');
-    const { runImageSeoAudit } = require('../../services/imageSeoAudit');
-    const loops = require('../../../src/services/loops');
-    global.fetch = jest.fn(async (url) => mockFetchResponse(String(url), '<html><body></body></html>'));
-
-    const supabase = createTableMock({
-      licenses: [{ id: 'acct-1', license_key: 'lic-1', email: 'owner@qa.oppti.dev' }],
-      sites: [
-        { id: 'site-1', license_key: 'lic-1', site_url: 'https://www.example.com' },
-        { id: 'site-2', owner_user_id: 'acct-1', site_url: 'https://shop.example.org/' },
-        { id: 'site-x', license_key: 'someone-else', site_url: 'https://other.test' }
-      ],
-      site_memberships: []
-    });
-    await runImageSeoAudit({
-      supabase,
-      auditId: '00000000-0000-4000-8000-000000000002',
-      email: 'Owner@qa.oppti.dev',
-      siteUrl: 'https://example.com'
-    });
-    const hosts = loops.trackImageSeoAuditRequested.mock.calls[0][0].registeredSiteHosts;
-    expect(hosts.sort()).toEqual(['example.com', 'shop.example.org']);
-    expect(loops.trackImageSeoAuditCompleted.mock.calls[0][0].registeredSiteHosts.sort()).toEqual(['example.com', 'shop.example.org']);
   });
 });

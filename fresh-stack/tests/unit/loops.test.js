@@ -442,47 +442,8 @@ describe('Loops multi-plugin integration', () => {
     pagesScanned: 0,
     imagesScanned: 0,
     missingAltPercent: 0,
-    errorCode: 'AUDIT_FAILED',
-    // The lead's account has example.com registered, so websiteUrl is kept.
-    registeredSiteHosts: ['example.com']
+    errorCode: 'AUDIT_FAILED'
   };
-
-  describe('contact websiteUrl only for a registered site host', () => {
-    const contactBody = () => JSON.parse(global.fetch.mock.calls[0][1].body);
-
-    test.each([
-      ['exact host', 'https://example.com/', ['example.com']],
-      ['www vs bare', 'https://www.example.com/shop', ['example.com']],
-      ['bare vs www registration', 'https://example.com/', ['www.example.com']],
-      ['subdomain of a registered host', 'https://blog.example.com/', ['example.com']]
-    ])('kept: %s', async (_label, websiteUrl, registeredSiteHosts) => {
-      const loops = require('../../../src/services/loops');
-      await loops.trackImageSeoAuditRequested({ ...auditArgs, websiteUrl, registeredSiteHosts });
-      expect(contactBody().websiteUrl).toBe(websiteUrl);
-    });
-
-    test.each([
-      ['hostile host', 'https://evil-example.com/', ['example.com']],
-      ['lookalike suffix', 'https://example.com.evil.test/', ['example.com']],
-      ['no registered site (audit lead without an account)', 'https://example.com/', []],
-      ['registered hosts not passed', 'https://example.com/', undefined],
-      ['non-http scheme', 'javascript:alert(1)', ['example.com']]
-    ])('dropped: %s', async (_label, websiteUrl, registeredSiteHosts) => {
-      const loops = require('../../../src/services/loops');
-      await loops.trackImageSeoAuditCompleted({ ...auditArgs, websiteUrl, registeredSiteHosts });
-      const body = contactBody();
-      expect(body).not.toHaveProperty('websiteUrl');
-      expect(body.email).toBe(auditArgs.email);
-      expect(body.normalizedDomain).toBe(auditArgs.normalizedDomain);
-    });
-
-    test('dropped on the 409 update path too', async () => {
-      global.fetch.mockResolvedValueOnce({ ok: false, status: 409, json: jest.fn().mockResolvedValue({}) });
-      const loops = require('../../../src/services/loops');
-      await loops.trackImageSeoAuditFailed({ ...auditArgs, websiteUrl: 'https://attacker.test/', registeredSiteHosts: ['example.com'] });
-      expect(JSON.parse(global.fetch.mock.calls[1][1].body)).not.toHaveProperty('websiteUrl');
-    });
-  });
 
   test.each([
     'trackImageSeoAuditRequested',
@@ -525,8 +486,6 @@ describe('Loops multi-plugin integration', () => {
     const body = JSON.parse(options.body);
     expect(body).toEqual({
       email: auditArgs.email,
-      websiteUrl: auditArgs.websiteUrl,
-      normalizedDomain: auditArgs.normalizedDomain,
       ...metrics
     });
     for (const key of ['subscribed', 'userGroup', 'source', 'firstName']) {
@@ -547,10 +506,28 @@ describe('Loops multi-plugin integration', () => {
       missingAltPercent: null
     });
     expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual({
-      email: auditArgs.email,
-      websiteUrl: auditArgs.websiteUrl,
-      normalizedDomain: auditArgs.normalizedDomain
+      email: auditArgs.email
     });
+  });
+
+  test.each([
+    'trackImageSeoAuditRequested',
+    'trackImageSeoAuditCompleted',
+    'trackImageSeoAuditFailed'
+  ])('%s sends no site URL or domain to Loops (contact create, update or event)', async (helper) => {
+    global.fetch.mockResolvedValueOnce({ ok: false, status: 409, json: jest.fn().mockResolvedValue({}) });
+    const loops = require('../../../src/services/loops');
+    await loops[helper]({ ...auditArgs, websiteUrl: 'https://shop.customer-brand.co.uk/', normalizedDomain: 'shop.customer-brand.co.uk' });
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    for (const [, options] of global.fetch.mock.calls) {
+      const raw = String(options.body);
+      expect(raw).not.toContain('customer-brand');
+      const body = JSON.parse(raw);
+      for (const key of ['websiteUrl', 'normalizedDomain', 'domain']) {
+        expect(body).not.toHaveProperty(key);
+        if (body.eventProperties) expect(body.eventProperties).not.toHaveProperty(key);
+      }
+    }
   });
 
   test('audit failures other than conflicts do not update the contact or send events', async () => {

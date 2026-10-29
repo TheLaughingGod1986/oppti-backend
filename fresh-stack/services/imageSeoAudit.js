@@ -5,7 +5,6 @@ const cheerio = require('cheerio');
 const PDFDocument = require('pdfkit');
 const logger = require('../lib/logger');
 const { sendImageSeoAuditEmail } = require('../lib/email');
-const { loadSiteHostsForEmail } = require('./redirectAllowlist');
 const {
   trackImageSeoAuditRequested,
   trackImageSeoAuditCompleted,
@@ -948,8 +947,6 @@ async function runImageSeoAudit({
 
   const url = normalizeAuditUrl(siteUrl);
   const normalizedDomain = url.hostname.replace(/^www\./, '').toLowerCase();
-  // Loops gets websiteUrl only for a host registered to this email's account.
-  const registeredSiteHosts = await loadSiteHostsForEmail(supabase, normalizedEmail);
 
   await recordAuditStatus(supabase, {
     id: auditId,
@@ -962,10 +959,7 @@ async function runImageSeoAudit({
   try {
     await trackImageSeoAuditRequested({
       email: normalizedEmail,
-      websiteUrl: url.toString(),
-      normalizedDomain,
       auditId,
-      registeredSiteHosts,
       source
     });
   } catch (error) {
@@ -1005,14 +999,11 @@ async function runImageSeoAudit({
     try {
       await trackImageSeoAuditCompleted({
         email: normalizedEmail,
-        websiteUrl: audit.siteUrl,
-        normalizedDomain: audit.normalizedDomain,
         auditId,
         auditScore: audit.summary.score,
         pagesScanned: audit.summary.pagesScanned,
         imagesScanned: audit.summary.imagesScanned,
         missingAltPercent: audit.summary.missingAltPercent,
-        registeredSiteHosts,
         source
       });
     } catch (error) {
@@ -1041,11 +1032,8 @@ async function runImageSeoAudit({
     try {
       await trackImageSeoAuditFailed({
         email: normalizedEmail,
-        websiteUrl: url.toString(),
-        normalizedDomain,
         auditId,
         errorCode,
-        registeredSiteHosts,
         source
       });
     } catch (loopsError) {
