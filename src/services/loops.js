@@ -381,22 +381,45 @@ async function trackGenerationMilestone({
   });
 }
 
+// Called only after the caller has confirmed the site's wallet is empty and
+// the site has no active, trialing or past_due subscription (see
+// fresh-stack/services/usage.js resolvePaywallEligibility). The plan is the
+// account's real plan id; it is never assumed to be 'free'.
 async function trackCreditsExhausted({
   email,
   userId,
   pluginId,
   pluginVersion,
   imagesUnprocessed,
-  periodStart
+  periodStart,
+  plan,
+  paywallHitAt = new Date().toISOString()
 }) {
-  await sendEvent('credits_exhausted', {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { path: '/events/send', method: 'POST', event_name: 'credits_exhausted' });
+    return null;
+  }
+  const plugin = getPlugin(pluginId);
+  const planId = typeof plan === 'string' && plan.trim() ? plan.trim().toLowerCase() : 'unknown';
+  // Loops workflows branch on contact properties, so record which plugin hit
+  // the paywall on the contact before the event that starts the workflow.
+  await loopsRequest('PUT', '/contacts/update', {
+    email,
+    ...(userId ? { userId: String(userId) } : {}),
+    paywallPluginId: plugin.id,
+    paywallHitAt,
+    plan: planId
+  });
+  return sendEvent('credits_exhausted', {
     email,
     userId,
-    pluginId,
+    pluginId: plugin.id,
     pluginVersion,
+    // Once per account, plugin and billing period (Loops idempotency key).
     idempotencyParts: [periodStart || 'current'],
     imagesUnprocessed: imagesUnprocessed || 0,
-    plan: 'free'
+    plan: planId,
+    paywallHitAt
   });
 }
 
