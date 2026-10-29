@@ -271,16 +271,15 @@ describe('site-header-only checkout', () => {
     site_install_id: 'hash-nnnnnnnnnnnnnnnn'
   });
 
-  // Chief's ruling: checkout needs an account credential for every licence,
-  // with or without a subscription. Site headers alone get the sign-in reply.
-  test.each(['price_pro', 'price_credits'])('logged-out Alt Text %s checkout for a licensed site with no subscription gets the sign-in reply and no Stripe call', async (priceId) => {
+  // Chief's ruling (29 Oct): site headers alone may open a new checkout for
+  // the site's own licence; the reply is the Stripe checkout URL and nothing else.
+  test.each(['price_pro', 'price_credits'])('logged-out Alt Text %s checkout for its own licensed site with no subscription gets only the checkout URL', async (priceId) => {
     const { app, stripe } = buildApp();
     const res = await send(request(app).post('/billing/checkout'), loggedOutAltText('hash-nnnnnnnnnnnnnnnn', 'https://november.example'))
       .send(altTextBody(priceId));
-    expect(res.status).toBe(401);
-    expect(res.text).toBe(SIGN_IN_REQUIRED_TEXT);
-    expect(JSON.stringify(res.body)).not.toContain(N.license_key);
-    expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(res.text).toBe(JSON.stringify({ url: 'https://checkout.stripe.test/c/1' }));
+    expect(stripe.checkout.sessions.create).toHaveBeenCalledTimes(1);
   });
 
   test('the same checkout with the licence key still creates a session; metadata carries the site row id, not the site key', async () => {
@@ -333,7 +332,12 @@ describe('one sign-in reply for every refused site-header-only billing call', ()
     for (const headers of headerSets) {
       for (const [name, call] of ROUTES) {
         const res = await call(app, headers);
-        // N's site has no subscription; its checkout is refused all the same.
+        // N's site has no subscription, so its own checkout opens (URL only).
+        if (headers['X-Site-Key'] === 'hash-nnnnnnnnnnnnnnnn' && name.startsWith('POST /billing/checkout')) {
+          expect(res.status).toBe(200);
+          expect(Object.keys(res.body)).toEqual(['url']);
+          continue;
+        }
         expect(res.status).toBe(401);
         bodies.add(res.text);
       }
@@ -344,7 +348,7 @@ describe('one sign-in reply for every refused site-header-only billing call', ()
     expect(stripe.subscriptions.list).not.toHaveBeenCalled();
     expect(stripe.subscriptions.retrieve).not.toHaveBeenCalled();
     expect(stripe.customers.retrieve).not.toHaveBeenCalled();
-    expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+    expect(stripe.checkout.sessions.create).toHaveBeenCalledTimes(2);
   });
 
   test('a refused checkout writes no site membership', async () => {
@@ -456,13 +460,18 @@ describe('checkout prefill', () => {
     ['subscription', 'price_pro', 'cus_NNNNNNNNNNNN3333'],
     ['one-off credits', 'price_credits', 'cus_NNNNNNNNNNNN3333'],
     ['subscription, no Stripe customer', 'price_pro', null]
-  ])('site headers only (%s): sign-in reply, no session, no prefill', async (_label, priceId, customerId) => {
+  ])('site headers only (%s): checkout URL only, no customer or customer_email, metadata names the own licence and site row', async (_label, priceId, customerId) => {
     if (customerId) tables.licenses.find((row) => row.id === N.id).stripe_customer_id = customerId;
     const { app, stripe } = buildApp();
     const res = await send(request(app).post('/billing/checkout'), siteOnly).send({ priceId });
-    expect(res.status).toBe(401);
-    expect(res.text).toBe(SIGN_IN_REQUIRED_TEXT);
-    expect(createParams(stripe)).toHaveLength(0);
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body)).toEqual(['url']);
+    expect(res.text).not.toMatch(/@|cus_|sub_|lic-/);
+    const [params] = createParams(stripe);
+    expect(params).not.toHaveProperty('customer');
+    expect(params).not.toHaveProperty('customer_email');
+    expect(params.metadata).toMatchObject({ account_id: N.id, license_key: N.license_key, site_id: 'site-n' });
+    expect(params.metadata).not.toHaveProperty('site_hash');
   });
 
   test('licence key: customer_email still prefilled for an account without a Stripe customer', async () => {
@@ -539,13 +548,13 @@ describe('refused calls count in the rate limiter', () => {
       if (paying.status === 429) limited.push(paying.text);
       if (free.status === 429) limited.push(free.text);
     }
-    // Both licensed sites are refused (no account credential) and both hit
-    // the same checkout limit after the same number of tries.
+    // The paying site is refused, the free site opens its own checkout, and
+    // both hit the same checkout limit after the same number of tries.
     expect(statuses.paying).toEqual([401, 401, 401, 429]);
-    expect(statuses.free).toEqual([401, 401, 401, 429]);
+    expect(statuses.free).toEqual([200, 200, 200, 429]);
     expect(new Set(limited).size).toBe(1);
     expect(JSON.parse(limited[0]).code).toBe('CHECKOUT_RATE_LIMIT_EXCEEDED');
-    expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+    expect(stripe.checkout.sessions.create).toHaveBeenCalledTimes(3);
   });
 
   test('refused reads and portal calls count per IP and then get one fixed 429 on every route', async () => {
@@ -632,10 +641,10 @@ describe('unrecognised site credentials on billing paths', () => {
     expect(unknown.map(([, t]) => t)).toEqual(paying.map(([, t]) => t));
     expect(unknown[0][1]).toBe(SIGN_IN_REQUIRED_TEXT);
     expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
-    // A licensed site with no subscription is refused too (account credential needed).
+    // A licensed site with no subscription opens its own checkout (URL only).
     const free = await send(request(app).post('/billing/checkout'), freeSite).send({ priceId: 'price_pro' });
-    expect(free.status).toBe(401);
-    expect(free.text).toBe(SIGN_IN_REQUIRED_TEXT);
+    expect(free.status).toBe(200);
+    expect(Object.keys(free.body)).toEqual(['url']);
   });
 
   test('checkout from an unknown site still validates the request first, like a known one', async () => {
@@ -702,5 +711,130 @@ describe('checkout metadata site_install_id is hashed by the backend from X-Site
     expect(metadata.site_install_id).toBe(EXPECTED_INSTALL_ID);
     // The site row id travels for webhook and renewal lookups.
     expect(metadata.site_id).toBe('site-n');
+  });
+});
+
+// Chief's ruling (29 Oct): an Alt Text 4.6.143 install with no stored licence
+// key or token (get_auth_headers, class-api-client-v2.php:524-547) may open a
+// checkout for its own licensed site and gets the Stripe checkout URL only
+// (the plugin reads $result['url'], class-bbai-core.php:1736). A site key
+// cannot open checkout for another site or licence.
+describe('site-key-only checkout for the caller\'s own site', () => {
+  const M = { id: 'acct-m', license_key: 'lic-mmmmmmmmmmmm', email: 'm@qa.oppti.dev', plan: 'free', status: 'active', stripe_customer_id: 'cus_MMMMMMMMMMMM4444' };
+  const altText143 = (hash, extra = {}) => ({
+    'Content-Type': 'application/json',
+    'X-Site-Hash': hash,
+    'X-Site-Key': hash,
+    'X-Site-URL': 'https://november.example',
+    'X-Site-Fingerprint': 'fp-qa-143',
+    'X-WP-User-ID': '1',
+    ...extra
+  });
+  const body143 = (priceId) => ({
+    priceId,
+    successUrl: 'https://november.example/wp-admin/admin.php?page=bbai&checkout=success',
+    cancelUrl: 'https://november.example/wp-admin/admin.php?page=bbai&checkout=cancel',
+    admin_country: 'GB',
+    admin_country_source: 'wp_locale',
+    plugin_version: '4.6.143',
+    site_install_id: 'hash-nnnnnnnnnnnnnnnn'
+  });
+  const allowedBody = { url: 'https://checkout.stripe.test/c/1' };
+  const secrets = () => [N.license_key, M.license_key, N.email, M.email, 'hash-nnnnnnnnnnnnnnnn', 'hash-mmmmmmmmmmmmmmmm', 'cus_', 'sub_', 'cs_test_'];
+
+  beforeEach(() => {
+    require('../../lib/checkoutRateLimit').checkoutRateBuckets.clear();
+    tables.licenses.push({ ...M });
+    tables.sites.push({ id: 'site-m', site_hash: 'hash-mmmmmmmmmmmmmmmm', wp_install_uuid: 'uuid-mmmm-0001', license_key: M.license_key, owner_user_id: 'acct-m', status: 'active', site_url: 'https://mike.example', last_seen_at: '2026-10-18' });
+    tables.sites.find((row) => row.id === 'site-n').wp_install_uuid = 'uuid-nnnn-0001';
+  });
+
+  test.each(['price_starter', 'price_pro', 'price_agency', 'price_credits'])('4.6.143 headers, no licence or token, %s: 200 with the checkout URL and nothing else', async (priceId) => {
+    const { app, stripe } = buildApp();
+    const res = await send(request(app).post('/billing/checkout'), altText143('hash-nnnnnnnnnnnnnnnn')).send(body143(priceId));
+    expect(res.status).toBe(200);
+    expect(res.text).toBe(JSON.stringify(allowedBody));
+    for (const value of secrets()) expect(res.text).not.toContain(value);
+    expect(stripe.checkout.sessions.create).toHaveBeenCalledTimes(1);
+    const [params] = stripe.checkout.sessions.create.mock.calls[0];
+    expect(params.metadata).toMatchObject({ account_id: N.id, license_key: N.license_key, site_id: 'site-n' });
+    expect(params).not.toHaveProperty('customer');
+    expect(params).not.toHaveProperty('customer_email');
+  });
+
+  test('body fields naming another licence or site do not change whose checkout it is', async () => {
+    const { app, stripe } = buildApp();
+    const res = await send(request(app).post('/billing/checkout'), altText143('hash-nnnnnnnnnnnnnnnn')).send({
+      ...body143('price_pro'),
+      // (A licence key in the body is a credential for that licence, like
+      // X-License-Key, so it is not part of this case.)
+      account_id: M.id, accountId: M.id, user_id: M.id,
+      site_id: 'site-m', siteId: 'site-m', site_hash: 'hash-mmmmmmmmmmmmmmmm', email: M.email
+    });
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body)).toEqual(['url']);
+    const { metadata, client_reference_id: ref } = stripe.checkout.sessions.create.mock.calls[0][0];
+    expect(metadata).toMatchObject({ account_id: N.id, license_key: N.license_key, site_id: 'site-n' });
+    expect(JSON.stringify(metadata)).not.toMatch(/acct-m|lic-mmmm|site-m"|hash-mmmm|m@qa/);
+    expect(ref).toBe(N.id);
+  });
+
+  test('site headers that resolve to licence N with the X-Site-Key of M\'s site: sign-in reply, no Stripe call, no write', async () => {
+    const { app, stripe } = buildApp();
+    const before = JSON.stringify(tables);
+    const res = await send(request(app).post('/billing/checkout'), altText143('hash-mmmmmmmmmmmmmmmm', { 'X-Install-UUID': 'uuid-nnnn-0001', 'X-Site-URL': 'https://mike.example' }))
+      .send(body143('price_pro'));
+    expect(res.status).toBe(401);
+    expect(res.text).toBe(SIGN_IN_REQUIRED_TEXT);
+    expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+    expect(JSON.stringify(tables)).toBe(before);
+  });
+
+  test('a site key for an unknown site cannot open checkout for the licence the other headers resolved to', async () => {
+    const { app, stripe } = buildApp();
+    const res = await send(request(app).post('/billing/checkout'), altText143('unknown-site-key-0000', { 'X-Install-UUID': 'uuid-nnnn-0001', 'X-Site-URL': 'https://unrelated.example', 'X-Site-Fingerprint': 'fp-unrelated' }))
+      .send(body143('price_pro'));
+    expect(res.status).toBe(401);
+    expect(res.text).toBe(SIGN_IN_REQUIRED_TEXT);
+    expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  test('own site with an existing subscription: sign-in reply (no portal, no billing data)', async () => {
+    tables.site_subscriptions.push({ id: 'ss-n', site_id: 'site-n', status: 'active', plan_id: 'pro', stripe_customer_id: 'cus_NNNNNNNNNNNN3333', stripe_subscription_id: 'sub_NNNNNNNNNNNN3333', current_period_end: '2026-12-01' });
+    const { app, stripe } = buildApp();
+    const res = await send(request(app).post('/billing/checkout'), altText143('hash-nnnnnnnnnnnnnnnn')).send(body143('price_pro'));
+    expect(res.status).toBe(401);
+    expect(res.text).toBe(SIGN_IN_REQUIRED_TEXT);
+    expect(stripe.billingPortal.sessions.create).not.toHaveBeenCalled();
+    expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  test('site-key-only checkout writes no site membership and heals no owner', async () => {
+    const { app } = buildApp();
+    const sitesBefore = JSON.stringify(tables.sites);
+    const res = await send(request(app).post('/billing/checkout'), altText143('hash-nnnnnnnnnnnnnnnn')).send(body143('price_pro'));
+    expect(res.status).toBe(200);
+    expect(tables.site_memberships).toHaveLength(0);
+    expect(JSON.stringify(tables.sites)).toBe(sitesBefore);
+  });
+
+  test('the licence key or a JWT still gets the full checkout reply', async () => {
+    const { app } = buildApp();
+    const res = await send(request(app).post('/billing/checkout'), altText143('hash-nnnnnnnnnnnnnnnn', { 'X-License-Key': N.license_key })).send(body143('price_pro'));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ success: true, url: allowedBody.url, sessionId: 'cs_test_SessionAbcdef9876' });
+  });
+
+  // Billing log lines only: the auth middleware's own lines are covered by the
+  // site-identity log guard on the site branch.
+  test('checkout log lines never carry the site key or licence key', async () => {
+    const { app } = buildApp();
+    await send(request(app).post('/billing/checkout'), altText143('hash-nnnnnnnnnnnnnnnn')).send(body143('price_pro'));
+    await send(request(app).post('/billing/checkout'), altText143('hash-mmmmmmmmmmmmmmmm', { 'X-Install-UUID': 'uuid-nnnn-0001', 'X-Site-URL': 'https://mike.example' })).send(body143('price_pro'));
+    const logged = JSON.stringify(spies.flatMap((spy) => spy.mock.calls).filter(([msg]) => String(msg).startsWith('[billing]')));
+    expect(logged).toContain('checkout_outcome');
+    for (const value of ['hash-nnnnnnnnnnnnnnnn', 'hash-mmmmmmmmmmmmmmmm', 'uuid-nnnn-0001', N.license_key, M.license_key]) {
+      expect(logged).not.toContain(value);
+    }
   });
 });

@@ -3241,12 +3241,16 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       || buildPlansList(catalogPriceIds, { currency: billingCurrency }).find((plan) => plan.priceId === priceId)
       || null;
 
-    // Without an account credential, checkout for any licence (with or
-    // without a subscription) gets the sign-in reply: before site resolution
-    // (no writes) and before any Stripe call. A guest checkout with no
-    // licence at all is unchanged.
+    // Chief's ruling (29 Oct): a caller signed in by its site headers alone
+    // (authMethod 'site') may open a new checkout session for its own site's
+    // licence, and gets only the Stripe checkout URL back. A licence that
+    // already has a subscription (portal, billing data) and every other caller
+    // without an account credential get the sign-in reply: before site
+    // resolution (no writes) and before any Stripe call. A guest checkout with
+    // no licence at all is unchanged.
     const credentialRejected = req.billingCredentialRejected === true && !account;
-    if (credentialRejected || (account && !hasAccountCredential(req))) {
+    const siteKeyOnly = Boolean(account) && !hasAccountCredential(req) && req.authMethod === 'site';
+    const refuseSignIn = () => {
       // Counted in the same checkout bucket a new session would use, so the
       // limit is reached after the same number of attempts either way.
       const checkoutRateLimit = checkCheckoutRateLimit(req, {
@@ -3260,11 +3264,32 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         });
       }
       return reply(401, SIGN_IN_REQUIRED_BODY, { outcome: 'rejected', error_code: 'SIGN_IN_REQUIRED' });
+    };
+    if (credentialRejected || (account && !hasAccountCredential(req) && !siteKeyOnly)) {
+      return refuseSignIn();
+    }
+    if (siteKeyOnly) {
+      let existing = { subscription: null };
+      try {
+        existing = supabase ? await selectBillingSiteSubscriptionForLicense(supabase, account) : existing;
+      } catch (error) {
+        return reply(500, {
+          error: 'Failed to create checkout session',
+          code: 'CHECKOUT_SESSION_FAILED',
+          message: 'Stripe could not start checkout right now. Please try again in a minute.'
+        }, { outcome: 'error', error_code: 'SUBSCRIPTION_LOOKUP_FAILED', error_message: error?.message });
+      }
+      if (existing.subscription) return refuseSignIn();
     }
 
     let siteRecord = null;
     let metadataSiteKey = siteKey;
-    if (supabase && siteKey) {
+    if (supabase && siteKey && siteKeyOnly) {
+      // Site headers alone: the X-Site-Key must be the stored key of a site on
+      // this licence. No licence fallback, no create, no owner or membership
+      // healing.
+      siteRecord = await findSiteByHash(supabase, siteKey);
+    } else if (supabase && siteKey) {
       const siteIdentity = buildSiteIdentity({
         siteHash: siteKey,
         installUuid: siteKey,
@@ -3306,6 +3331,12 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         siteRecord = null;
         metadataSiteKey = null;
       }
+    }
+
+    // A site key opens checkout only for its own site: the X-Site-Key site
+    // must be on the licence the site headers resolved to.
+    if (siteKeyOnly && !(siteRecord && siteOwnedByAccount(siteRecord, account))) {
+      return refuseSignIn();
     }
 
     logContext.siteId = siteRecord?.id || null;
@@ -3524,6 +3555,16 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
       // Same params within Stripe's 24h idempotency window return the existing
       // open session instead of a new one; that is a success, not a failure.
       const reused = isIdempotentReplay(session);
+      // Site headers alone: the Stripe checkout URL and nothing else (Alt
+      // Text 4.6.143 reads only url; resolve_checkout_url_from_result).
+      if (siteKeyOnly) {
+        return reply(200, { url: session.url }, {
+          outcome: reused ? 'session_reused' : 'session_created',
+          mode,
+          session_id: session.id,
+          idempotent_replayed: reused
+        });
+      }
       const responseBody = {
         success: true,
         url: session.url,
