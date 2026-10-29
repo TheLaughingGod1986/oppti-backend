@@ -1,6 +1,7 @@
 const logger = require('../lib/logger');
 const { recordPluginConnection } = require('./pluginConnections');
 const { trackPluginConnected } = require('../../src/services/loops');
+const { isProductEmailsOptedOut } = require('../lib/productEmailOptOut');
 
 const PLUGIN_ID = 'internal_linking';
 
@@ -44,7 +45,8 @@ async function recordInternalLinkingConnection(supabase, { account, pluginVersio
           userId: accountId,
           pluginId: PLUGIN_ID,
           pluginVersion,
-          emitEvent: true
+          emitEvent: true,
+          productEmailsOptOut: isProductEmailsOptedOut(account)
         });
       } catch (error) {
         logger.warn('[internal-linking] plugin_connected_loops_failed', {

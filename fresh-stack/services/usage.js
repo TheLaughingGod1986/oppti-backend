@@ -4,6 +4,7 @@ const logger = require('../lib/logger');
 const { serializeSupabaseError } = require('../lib/supabaseErrors');
 const { isInternalTelemetryHost } = require('../lib/siteIdentity');
 const { pluginIdFromFeatureType } = require('../../src/services/pluginIdentity');
+const { isProductEmailsOptedOut } = require('../lib/productEmailOptOut');
 
 /**
  * Check if a string is a valid UUID format
@@ -490,12 +491,21 @@ async function trackLoopsAfterGeneration(supabase, {
   featureType
 }) {
   if (!userEmail || !licenseKey) return { milestone: false, creditsExhausted: false };
-  const { data: license } = await supabase
+  const selectLicense = (columns) => supabase
     .from('licenses')
-    .select('plan, status, stripe_subscription_id, billing_day_of_month')
+    .select(columns)
     .eq('license_key', licenseKey)
     .single();
+  const baseColumns = 'plan, status, stripe_subscription_id, billing_day_of_month';
+  let { data: license, error: licenseError } = await selectLicense(`${baseColumns}, product_emails_opt_out`);
+  if (licenseError && isTelemetrySchemaError(licenseError)) {
+    // product_emails_opt_out migration not applied yet: nobody has opted out.
+    ({ data: license } = await selectLicense(baseColumns));
+  }
   if (!license) return { milestone: false, creditsExhausted: false };
+  if (isProductEmailsOptedOut(license)) {
+    return { milestone: false, creditsExhausted: false, reason: 'product_emails_opt_out' };
+  }
 
   const periodStart = computePeriodStart(license.billing_day_of_month || 1, new Date());
   const { data: logs } = await supabase
