@@ -45,8 +45,12 @@ function scenario({
   usedCredits = 50,
   subscriptions = [],
   quota = { remaining_credits: 0, purchased_credits_balance: 0, bonus_credits_balance: 0 },
-  sites = [{ id: SITE_ID }]
+  sites = [{ id: SITE_ID }],
+  accountSites = null,
+  memberships = [],
+  failTables = []
 } = {}) {
+  const fail = (table) => (failTables.includes(table) ? { data: null, error: { message: `${table} unavailable` } } : null);
   return makeSupabase({
     usage_logs: (state) => {
       if (state.op === 'insert') return { data: [{ id: 'log-1' }], error: null };
@@ -66,10 +70,21 @@ function scenario({
       },
       error: null
     }),
-    sites: () => ({ data: sites, error: null }),
+    sites: (state) => {
+      const byLicence = state.filters.some(([op, col]) => op === 'eq' && col === 'license_key');
+      if (byLicence) return fail('sites') || { data: accountSites || sites, error: null };
+      return { data: sites, error: null };
+    },
+    site_memberships: () => fail('site_memberships') || { data: memberships, error: null },
     site_subscriptions: (state) => {
       const statusFilter = state.filters.find(([op, col]) => op === 'in' && col === 'status');
-      const rows = statusFilter ? subscriptions.filter((s) => statusFilter[2].includes(s.status)) : subscriptions;
+      const siteEq = state.filters.find(([op, col]) => op === 'eq' && col === 'site_id');
+      const siteIn = state.filters.find(([op, col]) => op === 'in' && col === 'site_id');
+      let rows = subscriptions.map((r) => ({ site_id: SITE_ID, ...r }));
+      if (statusFilter) rows = rows.filter((r) => statusFilter[2].includes(r.status));
+      if (siteEq) rows = rows.filter((r) => r.site_id === siteEq[2]);
+      if (siteIn) rows = rows.filter((r) => siteIn[2].includes(r.site_id));
+      if (siteIn && failTables.includes('site_subscriptions')) return fail('site_subscriptions');
       return { data: rows, error: null };
     },
     site_quotas: () => ({ data: quota ? [quota] : [], error: null })
@@ -197,6 +212,76 @@ describe('credits_exhausted paywall guard', () => {
     expect(keys).toHaveLength(3);
     expect(keys[0]).toBe(keys[1]);
     expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  const planWrites = () => loopsBodies('/contacts/update').map(({ body }) => body).filter((b) => 'plan' in b);
+
+  describe('account-wide paying check', () => {
+    const SECOND_SITE = 'site-2';
+
+    test('free second site on an account with a paying first site sends nothing and writes no plan', async () => {
+      await generate(scenario({
+        sites: [{ id: SECOND_SITE }],
+        accountSites: [{ id: SITE_ID }, { id: SECOND_SITE }],
+        subscriptions: [{ id: 'sub-1', site_id: SITE_ID, status: 'active', plan_id: 'pro' }]
+      }));
+      expect(exhaustedEvents()).toHaveLength(0);
+      expect(planWrites()).toHaveLength(0);
+    });
+
+    test.each(['trialing', 'past_due'])('a %s subscription on another site also blocks', async (status) => {
+      await generate(scenario({
+        sites: [{ id: SECOND_SITE }],
+        accountSites: [{ id: SITE_ID }, { id: SECOND_SITE }],
+        subscriptions: [{ id: 'sub-1', site_id: SITE_ID, status, plan_id: 'starter' }]
+      }));
+      expect(exhaustedEvents()).toHaveLength(0);
+      expect(planWrites()).toHaveLength(0);
+    });
+
+    test('a paying site reached only through site_memberships blocks', async () => {
+      await generate(scenario({
+        sites: [{ id: SECOND_SITE }],
+        accountSites: [{ id: SECOND_SITE }],
+        memberships: [{ site_id: SITE_ID }],
+        subscriptions: [{ id: 'sub-1', site_id: SITE_ID, status: 'active', plan_id: 'agency' }]
+      }));
+      expect(exhaustedEvents()).toHaveLength(0);
+      expect(planWrites()).toHaveLength(0);
+    });
+
+    test('former payers (canceled, incomplete_expired) are not blocked', async () => {
+      await generate(scenario({
+        sites: [{ id: SECOND_SITE }],
+        accountSites: [{ id: SITE_ID }, { id: SECOND_SITE }],
+        subscriptions: [
+          { id: 'sub-1', site_id: SITE_ID, status: 'canceled', plan_id: 'pro' },
+          { id: 'sub-2', site_id: SITE_ID, status: 'incomplete_expired', plan_id: 'pro' }
+        ]
+      }));
+      expect(exhaustedEvents()).toHaveLength(1);
+      expect(exhaustedEvents()[0].body.eventProperties.plan).toBe('free');
+    });
+
+    test.each(['sites', 'site_memberships', 'site_subscriptions'])(
+      'a failed %s account lookup sends nothing (fails closed)',
+      async (table) => {
+        await generate(scenario({
+          sites: [{ id: SECOND_SITE }],
+          accountSites: [{ id: SECOND_SITE }],
+          failTables: [table]
+        }));
+        expect(exhaustedEvents()).toHaveLength(0);
+        expect(planWrites()).toHaveLength(0);
+      }
+    );
+
+    test('Internal Linking still sends the event for a free account at zero', async () => {
+      await generate(scenario(), { featureType: 'internal_linking' });
+      const events = exhaustedEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].body.eventProperties).toEqual(expect.objectContaining({ pluginId: 'internal_linking', plan: 'free' }));
+    });
   });
 
   test('LOOPS_SKIP_DOMAINS still suppresses the event and contact update', async () => {

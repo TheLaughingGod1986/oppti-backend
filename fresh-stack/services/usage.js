@@ -420,9 +420,54 @@ function toCreditCount(value) {
  *  - the site's current site_quotas row has remaining_credits +
  *    purchased_credits_balance + bonus_credits_balance === 0, and
  *  - the site has no site_subscriptions row in active/trialing/past_due, and
- *  - the licence carries no legacy paid entitlement evidence.
+ *  - the licence carries no legacy paid entitlement evidence, and
+ *  - no other site on the account (sites.license_key or site_memberships)
+ *    has an active/trialing/past_due site subscription. (public.subscriptions
+ *    is legacy: billing no longer writes it, so it is not read here.)
+ * Former payers (canceled, incomplete, unpaid) are not blocked.
  */
-async function resolvePaywallEligibility(supabase, { siteHash, license, now = new Date() } = {}) {
+async function accountHasPayingSubscription(supabase, { licenseKey, licenseId, siteId }) {
+  const siteIds = new Set(siteId ? [siteId] : []);
+
+  if (licenseKey) {
+    const { data, error } = await supabase
+      .from('sites')
+      .select('id')
+      .eq('license_key', licenseKey);
+    if (error) return { error: 'account_sites_lookup_failed' };
+    for (const row of (Array.isArray(data) ? data : [])) if (row?.id) siteIds.add(row.id);
+  }
+
+  if (licenseId) {
+    const { data, error } = await supabase
+      .from('site_memberships')
+      .select('site_id')
+      .eq('user_id', licenseId);
+    if (error) return { error: 'account_memberships_lookup_failed' };
+    for (const row of (Array.isArray(data) ? data : [])) if (row?.site_id) siteIds.add(row.site_id);
+  }
+
+  if (siteIds.size > 0) {
+    const { data, error } = await supabase
+      .from('site_subscriptions')
+      .select('id, site_id, status, plan_id')
+      .in('site_id', Array.from(siteIds))
+      .in('status', PAYWALL_BLOCKING_SUBSCRIPTION_STATUSES)
+      .limit(1);
+    if (error) return { error: 'account_subscriptions_lookup_failed' };
+    if (Array.isArray(data) ? data.length > 0 : Boolean(data)) return { paying: true };
+  }
+
+  return { paying: false };
+}
+
+async function resolvePaywallEligibility(supabase, {
+  siteHash,
+  license,
+  licenseKey = null,
+  licenseId = null,
+  now = new Date()
+} = {}) {
   if (!supabase || !siteHash) return { eligible: false, reason: 'no_site' };
   const nowIso = now.toISOString();
 
@@ -454,6 +499,16 @@ async function resolvePaywallEligibility(supabase, { siteHash, license, now = ne
   if (hasLegacyPaidEntitlementEvidence(license)) {
     return { eligible: false, reason: 'legacy_paid_licence' };
   }
+
+  // Account-wide: a free second site on an account that pays for any other
+  // site (or has an account-level Stripe subscription) is not a paywall hit.
+  const accountPaid = await accountHasPayingSubscription(supabase, {
+    licenseKey,
+    licenseId: license?.id || licenseId || null,
+    siteId
+  });
+  if (accountPaid.error) return { eligible: false, reason: accountPaid.error };
+  if (accountPaid.paying) return { eligible: false, reason: 'account_paying_site' };
 
   const { data: quotas, error: quotaError } = await supabase
     .from('site_quotas')
@@ -496,7 +551,7 @@ async function trackLoopsAfterGeneration(supabase, {
     .select(columns)
     .eq('license_key', licenseKey)
     .single();
-  const baseColumns = 'plan, status, stripe_subscription_id, billing_day_of_month';
+  const baseColumns = 'id, plan, status, stripe_subscription_id, billing_day_of_month';
   let { data: license, error: licenseError } = await selectLicense(`${baseColumns}, product_emails_opt_out`);
   if (licenseError && isTelemetrySchemaError(licenseError)) {
     // product_emails_opt_out migration not applied yet: nobody has opted out.
@@ -527,7 +582,7 @@ async function trackLoopsAfterGeneration(supabase, {
     imagesUnprocessed: 0
   });
 
-  const eligibility = await resolvePaywallEligibility(supabase, { siteHash, license });
+  const eligibility = await resolvePaywallEligibility(supabase, { siteHash, license, licenseKey, licenseId });
   if (!eligibility.eligible) {
     logger.debug('[Loops] credits_exhausted not sent', { reason: eligibility.reason, plugin_id: pluginId });
     return { milestone: true, creditsExhausted: false, reason: eligibility.reason };
