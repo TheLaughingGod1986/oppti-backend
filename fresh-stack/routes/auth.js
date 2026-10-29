@@ -1466,25 +1466,25 @@ function createAuthRouter({ supabase }) {
         });
       }
 
-      // Check if token has expired
-      if (user.password_reset_expires) {
-        const expiresAt = new Date(user.password_reset_expires);
-        const now = new Date();
-        if (now > expiresAt) {
-          resetLogger.warn('[Auth] Expired reset token', { email: user.email, expiresAt });
-          return res.status(400).json({
-            error: 'TOKEN_EXPIRED',
-            code: 'TOKEN_EXPIRED',
-            message: 'Reset token has expired. Please request a new password reset.',
-          });
-        }
+      // Check if token has expired. A token row with no (or an unreadable)
+      // expiry is treated as expired: tokens are always issued with one.
+      const expiresAt = user.password_reset_expires ? new Date(user.password_reset_expires) : null;
+      if (!expiresAt || Number.isNaN(expiresAt.getTime()) || new Date() > expiresAt) {
+        resetLogger.warn('[Auth] Expired reset token', { email: user.email, expiresAt: user.password_reset_expires || null });
+        return res.status(400).json({
+          error: 'TOKEN_EXPIRED',
+          code: 'TOKEN_EXPIRED',
+          message: 'Reset token has expired. Please request a new password reset.',
+        });
       }
 
       // Hash the new password
       const password_hash = await bcrypt.hash(newPassword, 10);
 
-      // Update password and clear reset token
-      const { error: updateError } = await supabase
+      // Update password and clear reset token. The update is conditional on
+      // the token hash still being stored, so of two concurrent resets with
+      // the same token only the first one to write succeeds.
+      const { data: updatedRows, error: updateError } = await supabase
         .from('licenses')
         .update({ 
           password_hash,
@@ -1492,7 +1492,9 @@ function createAuthRouter({ supabase }) {
           password_reset_expires: null,
           updated_at: new Date().toISOString()
         })
-        .eq('id', user.id);
+        .eq('id', user.id)
+        .eq('password_reset_token', user.password_reset_token)
+        .select('id');
 
       if (updateError) {
         resetLogger.error('[Auth] Failed to update password', {
@@ -1503,6 +1505,15 @@ function createAuthRouter({ supabase }) {
           error: 'UPDATE_FAILED',
           code: 'UPDATE_FAILED',
           message: 'Failed to update password. Please try again.',
+        });
+      }
+
+      if (!Array.isArray(updatedRows) || updatedRows.length === 0) {
+        resetLogger.warn('[Auth] Reset token already used', { email: user.email });
+        return res.status(400).json({
+          error: 'INVALID_TOKEN',
+          code: 'INVALID_TOKEN',
+          message: 'Invalid or expired reset token',
         });
       }
 

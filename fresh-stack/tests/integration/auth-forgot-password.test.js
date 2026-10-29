@@ -57,19 +57,22 @@ function createSupabaseMock() {
     if (table !== 'licenses') throw new Error(`unexpected table ${table}`);
     const filters = [];
     let pendingUpdate = null;
+    let returnRows = false;
+    // Updates run when awaited, after every filter is applied (like PostgREST).
+    const runUpdate = () => {
+      const rows = licenses.filter((row) => filters.every(([c, v]) => row[c] === v));
+      rows.forEach((row) => Object.assign(row, pendingUpdate));
+      updates.push({ filters: [...filters], values: pendingUpdate });
+      return { data: returnRows ? rows.map((row) => ({ id: row.id })) : null, error: null };
+    };
     const builder = {
-      select() { return builder; },
-      eq(column, value) {
-        filters.push([column, value]);
-        if (pendingUpdate) {
-          const rows = licenses.filter((row) => filters.every(([c, v]) => row[c] === v));
-          rows.forEach((row) => Object.assign(row, pendingUpdate));
-          updates.push({ filters: [...filters], values: pendingUpdate });
-          return Promise.resolve({ data: null, error: null });
-        }
-        return builder;
-      },
+      select() { if (pendingUpdate) returnRows = true; return builder; },
+      eq(column, value) { filters.push([column, value]); return builder; },
       update(values) { pendingUpdate = values; return builder; },
+      then(resolve, reject) {
+        if (!pendingUpdate) return Promise.resolve({ data: null, error: null }).then(resolve, reject);
+        return Promise.resolve().then(runUpdate).then(resolve, reject);
+      },
       maybeSingle() {
         const rows = licenses.filter((row) => filters.every(([c, v]) => row[c] === v));
         return Promise.resolve({ data: rows[0] ? { ...rows[0] } : null, error: null });
@@ -321,6 +324,37 @@ describe('reset-password', () => {
     expect(wrong.status).toBe(400);
     expect(unknown.text).toBe(wrong.text);
     expect(tokenOnly.text).toBe(wrong.text);
+    expect(supabase.licenses[0].password_hash).toBe('old');
+  });
+
+  test('two simultaneous resets with the same token: exactly one succeeds', async () => {
+    const supabase = createSupabaseMock();
+    const token = await issueToken(supabase);
+    const app = buildApp(supabase);
+    const [a, b] = await Promise.all([
+      request(app).post('/auth/reset-password').send({ token, password: 'racer-password-a1' }),
+      request(app).post('/auth/reset-password').send({ email: KNOWN_EMAIL, token, password: 'racer-password-b2' })
+    ]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([200, 400]);
+    const loser = a.status === 400 ? a : b;
+    expect(loser.body.code).toBe('INVALID_TOKEN');
+    const winnerPassword = a.status === 200 ? 'racer-password-a1' : 'racer-password-b2';
+    expect(await bcrypt.compare(winnerPassword, supabase.licenses[0].password_hash)).toBe(true);
+    expect(supabase.licenses[0].password_reset_token).toBeNull();
+    const resetUpdates = supabase.updates.filter((u) => 'password_hash' in u.values);
+    for (const u of resetUpdates) {
+      expect(u.filters).toEqual(expect.arrayContaining([['password_reset_token', hashResetToken(token)]]));
+    }
+  });
+
+  test('a token row with no expiry is treated as expired and leaves the password unchanged', async () => {
+    const supabase = createSupabaseMock();
+    const token = await issueToken(supabase);
+    supabase.licenses[0].password_reset_expires = null;
+    const res = await request(buildApp(supabase)).post('/auth/reset-password').send({ token, password: 'new-password-123' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('TOKEN_EXPIRED');
     expect(supabase.licenses[0].password_hash).toBe('old');
   });
 
