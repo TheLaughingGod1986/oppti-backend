@@ -192,9 +192,13 @@ describe('image SEO audit service', () => {
       auditId: '00000000-0000-4000-8000-000000000001',
       source: 'image-seo-audit'
     }));
+    for (const helper of ['trackImageSeoAuditRequested', 'trackImageSeoAuditCompleted']) {
+      const [args] = loops[helper].mock.calls[0];
+      expect(args).not.toHaveProperty('websiteUrl');
+      expect(args).not.toHaveProperty('normalizedDomain');
+    }
     expect(loops.trackImageSeoAuditCompleted).toHaveBeenCalledWith(expect.objectContaining({
       email: 'user@example.com',
-      normalizedDomain: 'example.com',
       source: 'image-seo-audit',
       auditScore: expect.any(Number)
     }));
