@@ -3,6 +3,8 @@
  * Uses Redis if available, otherwise in-memory fallback.
  */
 
+const logger = require('../lib/logger');
+
 const PLAN_LIMITS = {
   free: 60,
   pro: 120,
@@ -51,7 +53,10 @@ async function incrementBucket({ redis, memoryBuckets, bucketKey, windowMs }) {
   return recent.length;
 }
 
-function rateLimitResponse(res, limit) {
+// One structured line per blocked request: a fixed limiter label and the
+// limit only. Never the path, IP, email, site key, licence key or token.
+function rateLimitResponse(res, limit, limiter) {
+  logger.warn('[rate-limit] blocked', { limiter, limit, window_seconds: 60 });
   return res.status(429).json({
     error: 'RATE_LIMIT_EXCEEDED',
     message: `Rate limit of ${limit} requests/minute exceeded`,
@@ -90,7 +95,7 @@ function rateLimitMiddleware({ redis, perSiteOverride, globalOverride }) {
           windowMs
         });
         if (authCount > authLimit) {
-          return rateLimitResponse(res, authLimit);
+          return rateLimitResponse(res, authLimit, 'auth-ip');
         }
       }
 
@@ -102,7 +107,7 @@ function rateLimitMiddleware({ redis, perSiteOverride, globalOverride }) {
           windowMs
         });
         if (siteIpCount > siteIpLimit) {
-          return rateLimitResponse(res, siteIpLimit);
+          return rateLimitResponse(res, siteIpLimit, 'alt-text-site-ip');
         }
 
         const userCount = await incrementBucket({
@@ -112,7 +117,7 @@ function rateLimitMiddleware({ redis, perSiteOverride, globalOverride }) {
           windowMs
         });
         if (userCount > userLimit) {
-          return rateLimitResponse(res, userLimit);
+          return rateLimitResponse(res, userLimit, 'alt-text-user');
         }
       } else {
         const key = req.license?.license_key || req.header('X-License-Key') || ip;
@@ -123,7 +128,7 @@ function rateLimitMiddleware({ redis, perSiteOverride, globalOverride }) {
           windowMs
         });
         if (count > limit) {
-          return rateLimitResponse(res, limit);
+          return rateLimitResponse(res, limit, 'api-licence-or-ip');
         }
       }
 
@@ -135,7 +140,7 @@ function rateLimitMiddleware({ redis, perSiteOverride, globalOverride }) {
           windowMs
         });
         if (globalCount > globalLimit) {
-          return rateLimitResponse(res, globalLimit);
+          return rateLimitResponse(res, globalLimit, 'global');
         }
       }
 
