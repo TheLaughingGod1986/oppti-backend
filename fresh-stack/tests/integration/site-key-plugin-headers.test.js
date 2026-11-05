@@ -81,6 +81,19 @@ const plugins = {
     'X-Plugin': 'internal_linking',
     'X-Plugin-ID': 'internal_linking',
     'X-Plugin-Version': '0.1.4'
+  }),
+  'content-refresh-0.1.1': () => ({
+    'Content-Type': 'application/json',
+    'X-License-Key': '',
+    'X-Site-Hash': RAW,
+    'X-Site-Key': RAW,
+    'X-Site-URL': 'https://cr.example.com',
+    'X-Install-Hash': INSTALL,
+    'X-Install-UUID': INSTALL,
+    'X-Site-Fingerprint': 'fp-cr',
+    'X-Plugin': 'content_refresh',
+    'X-Plugin-ID': 'content_refresh',
+    'X-Plugin-Version': '0.1.1'
   })
 };
 
@@ -88,6 +101,7 @@ const GENERATION_PATHS = [
   ['post', '/api/alt-text'],
   ['post', '/api/titles/generate'],
   ['post', '/api/internal-linking/suggest'],
+  ['post', '/api/content-refresh/suggest'],
   ['post', '/api/jobs'],
   ['post', '/dashboard/image-states/sync']
 ];
@@ -146,7 +160,7 @@ describe('site-key-only plugin callers keep generation and sync', () => {
   });
 
   test('generation, credit-spend and sync routers carry no account-credential gate', () => {
-    for (const file of ['altText.js', 'titles.js', 'internalLinking.js', 'jobs.js', 'dashboard.js']) {
+    for (const file of ['altText.js', 'titles.js', 'internalLinking.js', 'contentRefresh.js', 'jobs.js', 'dashboard.js']) {
       const source = fs.readFileSync(path.resolve(__dirname, '../../routes', file), 'utf8');
       expect(source).not.toMatch(/requireAccountCredential|hasAccountCredential/);
     }
