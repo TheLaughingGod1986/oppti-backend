@@ -101,7 +101,8 @@ describe('Loops multi-plugin integration', () => {
   test.each([
     ['alt_text', 'alt-text'],
     ['titles', 'titles'],
-    ['internal_linking', 'internal-linking']
+    ['internal_linking', 'internal-linking'],
+    ['content_refresh', 'content-refresh']
   ])('account creation for %s sets its origin and free group', async (pluginId, source) => {
     const { trackAccountCreated } = require('../../../src/services/loops');
     await trackAccountCreated({ email: 'user@example.com', userId: 'account-1', pluginId });
@@ -260,7 +261,8 @@ describe('Loops multi-plugin integration', () => {
     const PLUGIN_FIELDS = [
       ['alt_text', 'altText'],
       ['titles', 'titles'],
-      ['internal_linking', 'internalLinking']
+      ['internal_linking', 'internalLinking'],
+      ['content_refresh', 'contentRefresh']
     ];
 
     test.each(PLUGIN_FIELDS)('new contact via %s gets its per-plugin FirstSeenAt', async (pluginId, prefix) => {
@@ -368,7 +370,7 @@ describe('Loops multi-plugin integration', () => {
     });
   });
 
-  test.each(['alt_text', 'titles', 'internal_linking'])(
+  test.each(['alt_text', 'titles', 'internal_linking', 'content_refresh'])(
     'connection and generation updates for %s preserve origin and group', async (pluginId) => {
       const { trackPluginConnected, trackGenerationMilestone } = require('../../../src/services/loops');
       const args = { email: 'user@example.com', userId: 'account-1', pluginId };
