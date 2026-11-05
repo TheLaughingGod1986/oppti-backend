@@ -1,0 +1,54 @@
+name: open-cr-pr
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/content-refresh-routes]
+    paths:
+      - '.github/workflows/open-cr-pr.yml'
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  open-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create PR if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          existing=$(gh api "repos/TheLaughingGod1986/oppti-backend/pulls?head=TheLaughingGod1986:feat/content-refresh-routes&base=main&state=open" --jq '.[0].html_url // empty' || true)
+          if [ -n "$existing" ]; then
+            echo "PR already exists: $existing"
+          else
+            url=$(gh api repos/TheLaughingGod1986/oppti-backend/pulls \
+              -f title='Content Refresh routes (merge only after QA PASS)' \
+              -f head='feat/content-refresh-routes' \
+              -f base='main' \
+              -f body="$(printf '%s\n' \
+                '## Summary' \
+                'Implements Content Refresh backend routes for the shared wallet.' \
+                '' \
+                '- `POST /api/content-refresh/suggest`' \
+                '- `GET /api/content-refresh/quota`' \
+                '- Shared wallet / credit spend path' \
+                '- `feature_type`: `content_refresh`' \
+                '- Migration `029` / `20261105145000` widens `plugin_id` checks for Content Refresh plugin connections' \
+                '' \
+                '## Merge gate' \
+                '**DO NOT MERGE until Content Refresh plugin QA PASS.**' \
+                '' \
+                '## Notes' \
+                '- No Render / key changes in this PR' \
+                '- No new required env vars (reuses OPENAI_API_KEY / ALTTEXT_OPENAI_API_KEY; optional OPENAI_CONTENT_REFRESH_MODEL)' \
+                '- Tests: **1544 passed** locally before push')" \
+              --jq '.html_url')
+            echo "Created: $url"
+          fi
+
+          # Remove this helper workflow from the feature branch
+          sha=$(gh api 'repos/TheLaughingGod1986/oppti-backend/contents/.github/workflows/open-cr-pr.yml?ref=feat/content-refresh-routes' --jq .sha)
+          gh api -X DELETE repos/TheLaughingGod1986/oppti-backend/contents/.github/workflows/open-cr-pr.yml \
+            -f message='ci: remove open-cr-pr helper workflow' \
+            -f sha="$sha" \
+            -f branch='feat/content-refresh-routes'
