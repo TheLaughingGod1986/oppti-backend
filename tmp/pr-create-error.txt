@@ -1,0 +1,4 @@
+status=1
+stdout={"message":"GitHub Actions is not permitted to create or approve pull requests.","documentation_url":"https://docs.github.com/rest/pulls/pulls#create-a-pull-request","status":"403"}
+stderr=gh: GitHub Actions is not permitted to create or approve pull requests. (HTTP 403)
+{"message":"GitHub Actions is not permitted to create or approve pull requests.","documentation_url":"https://docs.github.com/rest/pulls/pulls#create-a-pull-request","status":"403"}gh: GitHub Actions is not permitted to create or approve pull requests. (HTTP 403)
