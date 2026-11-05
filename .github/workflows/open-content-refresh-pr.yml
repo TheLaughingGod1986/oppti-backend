@@ -1,0 +1,90 @@
+name: Open Content Refresh PR
+on:
+  push:
+    branches: [feat/content-refresh-routes]
+    paths:
+      - '.github/workflows/open-content-refresh-pr.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create PR if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --head feat/content-refresh-routes --base main --state open --json number,url --jq '.[0].url // empty')"
+          if [ -n "$existing" ]; then
+            echo "PR already open: $existing"
+            echo "PR_URL=$existing" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          url="$(gh pr create \
+            --base main \
+            --head feat/content-refresh-routes \
+            --title 'Content Refresh routes (merge only after QA PASS)' \
+            --body "$(cat <<'EOF'
+## Summary
+Implements OpptiAI Content Refresh generation routes, mirroring Internal Linking.
+
+### Endpoints
+- `POST /api/content-refresh/suggest` — licence + site-identity auth → reserve 1 shared credit → OpenAI → finalize → `recordUsage` with `featureType: content_refresh`
+- `GET /api/content-refresh/quota` — shared wallet snapshot (`source: site_quotas_shared`)
+
+### Behaviour
+- Reuses existing licence / site-identity auth, shared credit wallet, and sibling rate limits
+- Paywall returns **402** with `QUOTA_EXCEEDED` / `TRIAL_EXHAUSTED` / `DAILY_QUOTA_EXCEEDED` + `entitlement_state`
+- Input validated + size-capped (`content_excerpt` ≤ 8k)
+- Usage tagged `content_refresh`; Loops `usesContentRefresh`
+- Licence keys are never returned in JSON responses
+
+### Migration (required for plugin connections)
+- `fresh-stack/migrations/029_allow_content_refresh_plugin_connections.sql`
+- `supabase/migrations/20261105145000_allow_content_refresh_plugin_connections.sql`
+- Widens `account_plugin_connections.plugin_id` and `licenses.signup_plugin` checks to include `content_refresh`. No new tables/columns.
+
+### Env
+No new required env vars. Reuses `OPENAI_API_KEY` / `ALTTEXT_OPENAI_API_KEY`. Optional: `OPENAI_CONTENT_REFRESH_MODEL`.
+
+### Tests
+Full suite locally: **136 suites / 1544 tests passed**.
+
+## Do not merge yet
+**Merge only after Content Refresh plugin QA PASS.** Merging `main` auto-deploys to Render. Do not rotate keys.
+EOF
+)")"
+          echo "Created: $url"
+          echo "PR_URL=$url" >> "$GITHUB_ENV"
+
+      - name: Delete docs-only branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${{ github.repository }}/git/ref/heads/docs%2Fcontent-refresh-do-not-merge" >/dev/null 2>&1; then
+            gh api -X DELETE "repos/${{ github.repository }}/git/ref/heads/docs%2Fcontent-refresh-do-not-merge"
+            echo "Deleted docs/content-refresh-do-not-merge"
+          else
+            echo "docs/content-refresh-do-not-merge already gone"
+          fi
+
+      - name: Remove this helper workflow from the branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Avoid leaving a permanent CI helper on the feature branch.
+          # Use the API so we don't need a full checkout/push loop.
+          path='.github/workflows/open-content-refresh-pr.yml'
+          sha="$(gh api "repos/${{ github.repository }}/contents/${path}?ref=feat/content-refresh-routes" --jq .sha)"
+          gh api -X DELETE "repos/${{ github.repository }}/contents/${path}" \
+            -f message='ci: remove open-content-refresh-pr helper workflow' \
+            -f sha="$sha" \
+            -f branch='feat/content-refresh-routes'
