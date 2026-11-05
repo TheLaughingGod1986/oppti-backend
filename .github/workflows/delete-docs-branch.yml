@@ -1,0 +1,22 @@
+name: delete-docs-branch
+on:
+  push:
+    branches: [feat/content-refresh-routes]
+    paths: ['.github/workflows/delete-docs-branch.yml']
+permissions:
+  contents: write
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete docs-only branch and self
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api -X DELETE repos/TheLaughingGod1986/oppti-backend/git/refs/heads/docs/content-refresh-do-not-merge || true
+          sha=$(gh api 'repos/TheLaughingGod1986/oppti-backend/contents/.github/workflows/delete-docs-branch.yml?ref=feat/content-refresh-routes' --jq .sha)
+          gh api -X DELETE repos/TheLaughingGod1986/oppti-backend/contents/.github/workflows/delete-docs-branch.yml \
+            -f message='ci: remove delete-docs-branch helper' \
+            -f sha="$sha" \
+            -f branch='feat/content-refresh-routes'
