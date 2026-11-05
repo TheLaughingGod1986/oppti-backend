@@ -29,7 +29,8 @@ function membershipExtra(pluginId, firstSeenAt) {
   const prefix = {
     alt_text: 'altText',
     titles: 'titles',
-    internal_linking: 'internalLinking'
+    internal_linking: 'internalLinking',
+    content_refresh: 'contentRefresh'
   }[pluginId];
   return { [`${prefix}FirstSeenAt`]: firstSeenAt };
 }

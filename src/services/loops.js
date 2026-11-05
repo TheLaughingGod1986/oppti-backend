@@ -135,7 +135,8 @@ async function loopsPost(path, body, options = {}) {
 const PLUGIN_PROPERTY_PREFIX = Object.freeze({
   alt_text: 'altText',
   titles: 'titles',
-  internal_linking: 'internalLinking'
+  internal_linking: 'internalLinking',
+  content_refresh: 'contentRefresh'
 });
 
 function pluginFirstSeenKey(pluginId) {
@@ -148,7 +149,8 @@ function pluginContactProperties(pluginId, pluginVersion, timestamp, { includeFi
   const flag = {
     alt_text: 'usesAltText',
     titles: 'usesTitles',
-    internal_linking: 'usesInternalLinking'
+    internal_linking: 'usesInternalLinking',
+    content_refresh: 'usesContentRefresh'
   }[plugin.id];
   return {
     lastActivePluginId: plugin.id,

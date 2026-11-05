@@ -7,7 +7,8 @@ const logger = require('../lib/logger');
 const STALE_AFTER_MS = 30 * 60 * 1000;
 const RECOVERABLE_ENDPOINTS = [
   'api/alt-text', 'api/jobs', 'api/titles/generate', 'api/titles/jobs',
-  'api/internal-linking/suggest'
+  'api/internal-linking/suggest',
+  'api/content-refresh/suggest'
 ];
 
 /** Recover durable orphan rows after an outage/restart, never billing events. */

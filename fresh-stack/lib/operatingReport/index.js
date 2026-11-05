@@ -1,9 +1,33 @@
 const DAY = 86400000;
-const PRODUCTS = { 'beepbeep-ai-alt-text-generator': 'alt_text', 'opptiai-titles': 'title_meta', 'opptiai-internal-linking': 'internal_linking' };
+const PRODUCTS = {
+  'beepbeep-ai-alt-text-generator': 'alt_text',
+  'opptiai-titles': 'title_meta',
+  'opptiai-internal-linking': 'internal_linking',
+  'oppti-content-refresh': 'content_refresh'
+};
 // Older builds sent the repository / text-domain slug instead of the WP.org slug.
-const LEGACY_SLUGS = { 'beepbeep-titles': 'title_meta', 'oppti-internal-linking': 'internal_linking' };
-const ALIASES = { alt_text: 'alt_text', 'alt-text': 'alt_text', title_meta: 'title_meta', meta_titles_descriptions: 'title_meta', titles: 'title_meta', internal_linking: 'internal_linking', website: 'website' };
-const SUCCESS = { alt_text: 'alt_generated', title_meta: 'title_meta_generated', internal_linking: 'link_inserted' };
+const LEGACY_SLUGS = {
+  'beepbeep-titles': 'title_meta',
+  'oppti-internal-linking': 'internal_linking',
+  'opptiai-content-refresh': 'content_refresh'
+};
+const ALIASES = {
+  alt_text: 'alt_text',
+  'alt-text': 'alt_text',
+  title_meta: 'title_meta',
+  meta_titles_descriptions: 'title_meta',
+  titles: 'title_meta',
+  internal_linking: 'internal_linking',
+  content_refresh: 'content_refresh',
+  'content-refresh': 'content_refresh',
+  website: 'website'
+};
+const SUCCESS = {
+  alt_text: 'alt_generated',
+  title_meta: 'title_meta_generated',
+  internal_linking: 'link_inserted',
+  content_refresh: 'content_refreshed'
+};
 const unavailable = reason => ({ value: null, status: 'U', reason });
 const measured = value => ({ value, status: 'measured' });
 // HogQL exports can return JSON booleans as the strings 'true'/'false'.

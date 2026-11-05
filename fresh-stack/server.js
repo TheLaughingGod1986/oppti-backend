@@ -24,6 +24,7 @@ const { createContactRouter } = require('./routes/contact');
 const { createImageSeoAuditRouter } = require('./routes/imageSeoAudit');
 const { createOptimizerRouter } = require('./routes/optimizer');
 const { createInternalLinkingRouter } = require('./routes/internalLinking');
+const { createContentRefreshRouter } = require('./routes/contentRefresh');
 const { createAccountDashboardRouter } = require('./routes/accountDashboard');
 const { createAnalyticsRouter } = require('./routes/analytics');
 const { createLoopsWebhookHandler } = require('./routes/loopsWebhook');
@@ -73,7 +74,8 @@ const PROTECTED_API_PREFIXES = [
   '/api/usage',
   '/api/auth',
   '/api/optimizer',
-  '/api/internal-linking'
+  '/api/internal-linking',
+  '/api/content-refresh'
 ];
 
 let supabase = null;
@@ -381,6 +383,13 @@ function createApp({
   // Oppti Internal Linking plugin — AI internal-link suggestions. Spends the
   // shared credit wallet (feature_type='internal_linking'); same auth rails.
   app.use('/api/internal-linking', createInternalLinkingRouter({
+    supabase: supabaseClient,
+    checkRateLimit: async (siteKey) => checkRateLimit(siteKey)
+  }));
+
+  // Oppti Content Refresh plugin — AI refresh suggestions for decaying posts.
+  // Shared credit wallet (feature_type='content_refresh'); same auth rails.
+  app.use('/api/content-refresh', createContentRefreshRouter({
     supabase: supabaseClient,
     checkRateLimit: async (siteKey) => checkRateLimit(siteKey)
   }));

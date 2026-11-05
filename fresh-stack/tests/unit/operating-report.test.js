@@ -2,7 +2,12 @@ const { productOf, exclusion, deduplicate, calculate, windows } = require('../..
 const props = { plugin_slug: 'opptiai-titles', product: 'title_meta', environment: 'production', telemetry_consent: true, traffic_origin: 'customer_action', site_install_id: 'install-a' };
 const event = (name, timestamp, extra = {}) => ({ event: name, timestamp, properties: { ...props, operation_id: timestamp, ...extra } });
 const options = { start: '2026-10-01T00:00:00Z', end: '2026-10-20T00:00:00Z', product: 'title_meta', coverage: { productionVerified: true, successComplete: true, activationComplete: true, historyComplete: true } };
-test.each([['beepbeep-ai-alt-text-generator', 'alt_text'], ['opptiai-titles', 'title_meta'], ['opptiai-internal-linking', 'internal_linking']])('attributes %s without relying on event name', (slug, product) => expect(productOf({ plugin_slug: slug })).toBe(product));
+test.each([
+  ['beepbeep-ai-alt-text-generator', 'alt_text'],
+  ['opptiai-titles', 'title_meta'],
+  ['opptiai-internal-linking', 'internal_linking'],
+  ['oppti-content-refresh', 'content_refresh']
+])('attributes %s without relying on event name', (slug, product) => expect(productOf({ plugin_slug: slug })).toBe(product));
 test('ambiguous generic successes remain Unclassified', () => expect(productOf({ event: 'generation_completed' })).toBe('Unclassified'));
 test('conflicting explicit attribution is Unclassified', () => expect(productOf({ plugin_slug: 'opptiai-titles', product: 'alt_text' })).toBe('Unclassified'));
 test.each([{ environment: 'staging' }, { is_test: true }, { is_internal: 'true' }, { site_host: 'demo.tastewp.com' }, { site_url: 'https://example.com/page' }, { traffic_type: 'Automation' }, { telemetry_consent: false }, { traffic_origin: undefined }])('fails closed for exclusions %j', extra => expect(exclusion({ ...props, ...extra })).not.toBeNull());

@@ -10,9 +10,11 @@ function deliveryQuery(end) {
     properties.plugin_slug = 'beepbeep-ai-alt-text-generator' AND (empty(coalesce(toString(properties.product), '')) OR properties.product IN ('alt_text','alt-text')), 'alt_text',
     properties.plugin_slug = 'opptiai-titles' AND (empty(coalesce(toString(properties.product), '')) OR properties.product IN ('title_meta','titles','meta_titles_descriptions')), 'title_meta',
     properties.plugin_slug = 'opptiai-internal-linking' AND (empty(coalesce(toString(properties.product), '')) OR properties.product = 'internal_linking'), 'internal_linking',
+    properties.plugin_slug IN ('oppti-content-refresh','opptiai-content-refresh') AND (empty(coalesce(toString(properties.product), '')) OR properties.product IN ('content_refresh','content-refresh')), 'content_refresh',
     empty(coalesce(toString(properties.plugin_slug), '')) AND properties.product IN ('alt_text','alt-text'), 'alt_text',
     empty(coalesce(toString(properties.plugin_slug), '')) AND properties.product IN ('title_meta','titles','meta_titles_descriptions'), 'title_meta',
     empty(coalesce(toString(properties.plugin_slug), '')) AND properties.product = 'internal_linking', 'internal_linking',
+    empty(coalesce(toString(properties.plugin_slug), '')) AND properties.product IN ('content_refresh','content-refresh'), 'content_refresh',
     empty(coalesce(toString(properties.plugin_slug), '')) AND (properties.source_surface = 'website' OR (properties.$lib = 'web' AND properties.$host IN ('oppti.dev','www.oppti.dev'))), 'website',
     'Unclassified')`;
   const base = `SELECT event, timestamp, uuid, properties, $virt_traffic_type AS traffic, ${product} AS product FROM events WHERE timestamp >= ${from} AND timestamp < ${time} AND event NOT IN ('wporg_downloads_daily','wporg_stats_snapshot') AND event NOT LIKE '$%'`;
