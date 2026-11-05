@@ -1,0 +1,39 @@
+name: assemble-loops-restore
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/content-refresh-routes]
+    paths:
+      - '.restore-tmp/**'
+      - '.github/workflows/assemble-loops-restore.yml'
+permissions:
+  contents: write
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/content-refresh-routes
+      - name: Assemble and commit loops.js
+        run: |
+          set -euo pipefail
+          cat .restore-tmp/loops.part0.txt \
+              .restore-tmp/loops.part1.txt \
+              .restore-tmp/loops.part2.txt \
+              .restore-tmp/loops.part3.txt \
+              .restore-tmp/loops.part4.txt > src/services/loops.js
+          expected=f4b3d397386ebe0c2746381a86a9044dc888e40a61f9323c78b4ffbd2af7922e
+          actual=$(sha256sum src/services/loops.js | awk '{print $1}')
+          echo "sha256=$actual"
+          test "$actual" = "$expected"
+          rm -rf .restore-tmp
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/services/loops.js .restore-tmp
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git commit -m "Restore src/services/loops.js Content Refresh Loops mappings"
+          git push
