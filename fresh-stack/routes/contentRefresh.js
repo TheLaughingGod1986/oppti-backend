@@ -303,7 +303,7 @@ function createContentRefreshRouter({ supabase, checkRateLimit } = {}) {
         success: false,
         error: status.error,
         code: status.error,
-        message: 'Could not load content refresh quota'
+        message: status.message || 'Could not load content refresh quota'
       });
     }
 
