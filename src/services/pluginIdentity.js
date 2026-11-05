@@ -13,6 +13,11 @@ const PLUGINS = Object.freeze({
     id: 'internal_linking',
     title: 'OpptiAI Internal Linking',
     featureType: 'internal_linking'
+  }),
+  content_refresh: Object.freeze({
+    id: 'content_refresh',
+    title: 'OpptiAI Content Refresh',
+    featureType: 'content_refresh'
   })
 });
 
@@ -20,7 +25,8 @@ const PLUGIN_IDS = Object.freeze(Object.keys(PLUGINS));
 const LOOPS_SOURCE_BY_PLUGIN = Object.freeze({
   alt_text: 'alt-text',
   titles: 'titles',
-  internal_linking: 'internal-linking'
+  internal_linking: 'internal-linking',
+  content_refresh: 'content-refresh'
 });
 
 function normalizePluginId(value, fallback = 'alt_text') {
@@ -36,6 +42,7 @@ function getPlugin(value, fallback = 'alt_text') {
 function pluginIdFromFeatureType(featureType) {
   if (featureType === 'titles' || featureType === 'title_meta') return 'titles';
   if (featureType === 'internal_linking') return 'internal_linking';
+  if (featureType === 'content_refresh') return 'content_refresh';
   return 'alt_text';
 }
 
