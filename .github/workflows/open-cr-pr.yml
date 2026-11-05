@@ -1,0 +1,48 @@
+name: open-cr-pr
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/content-refresh-routes]
+    paths:
+      - '.github/workflows/open-cr-pr.yml'
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  open-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create PR if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh pr list --base main --head feat/content-refresh-routes --state open --json number --jq 'length' | grep -qx '0'; then
+            gh pr create \
+              --base main \
+              --head feat/content-refresh-routes \
+              --title 'Content Refresh routes (merge only after QA PASS)' \
+              --body "$(cat <<'EOF'
+          ## Summary
+          Implements Content Refresh backend routes for the shared wallet.
+
+          - `POST /api/content-refresh/suggest`
+          - `GET /api/content-refresh/quota`
+          - Shared wallet / credit spend path
+          - `feature_type`: `content_refresh`
+          - Migration `029` / `20261105145000` widens `plugin_id` checks for Content Refresh plugin connections
+
+          ## Merge gate
+          **DO NOT MERGE until Content Refresh plugin QA PASS.**
+
+          ## Notes
+          - No Render / key changes in this PR
+          - Tests: **1544 passed** locally before push
+          EOF
+          )"
+          else
+            gh pr list --base main --head feat/content-refresh-routes --state open --json url --jq '.[0].url'
+          fi
