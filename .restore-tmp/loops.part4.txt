@@ -1,0 +1,171 @@
+l,
+  planName = null,
+  purchaseType = 'unknown',
+  billingPeriod = 'unknown',
+  amount = null,
+  currency = null,
+  checkoutSessionId = null,
+  invoiceId = null,
+  paymentLinkId = null,
+  stripeEventId = null
+}) {
+  const succeededAt = new Date().toISOString();
+  await loopsRequest('PUT', '/contacts/update', {
+    email,
+    plan: planName || '',
+    userGroup: 'paid',
+    lastSuccessfulPaymentAt: succeededAt,
+    lastSuccessfulPaymentPlan: planName || '',
+    lastSuccessfulPaymentPurchaseType: purchaseType || '',
+    lastPaymentFailureRecoverability: ''
+  });
+  await loopsRequest('POST', '/events/send', {
+    email,
+    eventName: 'payment_succeeded',
+    eventProperties: {
+      plan: planName,
+      purchaseType,
+      billingPeriod,
+      amount,
+      currency,
+      checkoutSessionId,
+      invoiceId,
+      paymentLinkId,
+      stripeEventId
+    }
+  }, { idempotencyKey: stripeEventId });
+}
+
+async function trackImageSeoAuditRequested({
+  email,
+  auditId,
+  source = 'image-seo-audit'
+}) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { context: 'trackImageSeoAuditRequested' });
+    return null;
+  }
+  await upsertAuditLeadContact({ email, source });
+  await loopsPost('/events/send', {
+    email,
+    eventName: 'image_seo_audit_requested',
+    eventProperties: {
+      auditId,
+      source
+    }
+  });
+}
+
+async function trackImageSeoAuditCompleted({
+  email,
+  auditId,
+  auditScore,
+  pagesScanned,
+  imagesScanned,
+  missingAltPercent,
+  source = 'image-seo-audit'
+}) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { context: 'trackImageSeoAuditCompleted' });
+    return null;
+  }
+  await upsertAuditLeadContact({
+    email,
+    source,
+    auditScore,
+    pagesScanned,
+    imagesScanned,
+    missingAltPercent
+  });
+  await loopsPost('/events/send', {
+    email,
+    eventName: 'image_seo_audit_completed',
+    eventProperties: {
+      auditId,
+      auditScore,
+      pagesScanned,
+      imagesScanned,
+      missingAltPercent,
+      source
+    }
+  });
+}
+
+async function trackImageSeoAuditFailed({
+  email,
+  auditId,
+  errorCode,
+  source = 'image-seo-audit'
+}) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { context: 'trackImageSeoAuditFailed' });
+    return null;
+  }
+  await upsertAuditLeadContact({ email, source });
+  await loopsPost('/events/send', {
+    email,
+    eventName: 'image_seo_audit_failed',
+    eventProperties: {
+      auditId,
+      errorCode,
+      source
+    }
+  });
+}
+
+async function upsertAuditLeadContact({
+  email,
+  source,
+  auditScore = null,
+  pagesScanned = null,
+  imagesScanned = null,
+  missingAltPercent = null
+}) {
+  if (isLoopsSkippedEmail(email)) {
+    logSkippedEmail(email, { path: '/contacts/create', method: 'POST' });
+    return null;
+  }
+  // Lead contacts carry the email and audit metrics only: no site URL or domain.
+  const body = { email };
+  if (auditScore !== null) body.auditScore = auditScore;
+  if (pagesScanned !== null) body.pagesScanned = pagesScanned;
+  if (imagesScanned !== null) body.imagesScanned = imagesScanned;
+  if (missingAltPercent !== null) body.missingAltPercent = missingAltPercent;
+
+  try {
+    await loopsRequest('POST', '/contacts/create', {
+      ...body,
+      userGroup: 'lead',
+      source,
+      subscribed: true
+    });
+  } catch (error) {
+    if (error.status !== 409) {
+      throw error;
+    }
+    await loopsRequest('PUT', '/contacts/update', body);
+  }
+}
+
+module.exports = {
+  DEFAULT_LOOPS_SKIP_DOMAINS,
+  buildIdempotencyKey,
+  findExistingContact,
+  getRequestEmails,
+  getSkipDomains,
+  isLoopsSkippedEmail,
+  upsertAuditLeadContact,
+  pluginContactProperties,
+  sendEvent,
+  trackAccountCreated,
+  trackCreditsExhausted,
+  trackGenerationMilestone,
+  trackImageSeoAuditCompleted,
+  trackImageSeoAuditFailed,
+  trackImageSeoAuditRequested,
+  trackPaymentFailed,
+  trackPaymentSucceeded,
+  trackPlanUpgraded,
+  trackPluginConnected,
+  upsertPluginContact
+};
