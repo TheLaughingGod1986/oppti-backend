@@ -11,6 +11,7 @@ const {
   getClientIp,
   recordHit
 } = require('../lib/checkoutRateLimit');
+const { firstRequestPromo, applyCheckoutPromotion } = require('../lib/checkoutPromo');
 
 // Billing logs: emails masked (withEmailRedaction), then Stripe ids masked.
 const logger = (() => {
@@ -3072,6 +3073,7 @@ function logCheckoutOutcome(context = {}, fields = {}) {
     license_key_prefix: context.licenseKeyPrefix || null,
     plugin_version: context.pluginVersion || null
   };
+  if (fields.promo_applied === true) entry.promo_applied = true;
   if (fields.error_message) entry.error_message = String(fields.error_message).slice(0, 300);
   const level = fields.status >= 500 ? 'error' : fields.status >= 400 ? 'warn' : 'info';
   logger[level]('[billing] checkout_outcome', entry);
@@ -3549,6 +3551,16 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         checkoutPayload.payment_intent_data = { metadata };
       }
 
+      // Optional customer-facing promo from the request. Invalid or ineligible
+      // codes are ignored; discounts and allow_promotion_codes are never both set.
+      // The raw code is not logged or copied into metadata.
+      const promoApplied = await applyCheckoutPromotion(
+        stripeClient,
+        checkoutPayload,
+        firstRequestPromo(req.body),
+        chargeCurrency
+      );
+
       const idempotencyKey = buildCheckoutIdempotencyKey({
         licenseKey: metadata.license_key,
         siteId: metadata.site_id,
@@ -3588,7 +3600,8 @@ function createBillingRouter({ supabase, requiredToken, getStripe, priceIds }) {
         outcome: currencyFallback ? 'session_created_gbp_fallback' : (reused ? 'session_reused' : 'session_created'),
         mode,
         session_id: session.id,
-        idempotent_replayed: reused
+        idempotent_replayed: reused,
+        promo_applied: promoApplied === true
       });
     } catch (error) {
       const stripeCode = error?.code || error?.raw?.code || error?.type || null;
