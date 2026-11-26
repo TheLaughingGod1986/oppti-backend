@@ -37,6 +37,9 @@ const LEGACY_AUDITOR_FINDING_MAP = Object.freeze({
 
 const MAX_RAW_LENGTH = 64;
 
+// Values the licenses_signup_plugin_check allowed before website_auditor.
+const LEGACY_SIGNUP_PLUGIN_IDS = Object.freeze(['alt_text', 'titles', 'internal_linking', 'content_refresh']);
+
 function normalizeOne(value) {
   if (typeof value !== 'string') return null;
   if (value.length === 0 || value.length > MAX_RAW_LENGTH) return null;
@@ -72,7 +75,18 @@ async function recordSignupAttribution({ supabase, userId, pluginId, body, reque
     ...attribution
   };
   try {
-    const result = await supabase.from('licenses').update(patch).eq('id', userId);
+    let result = await supabase.from('licenses').update(patch).eq('id', userId);
+    // A database without the widened licenses_signup_plugin_check (migration
+    // 030 not applied) rejects website_auditor. Keep the Auditor fields.
+    if (result && result.error && patch.signup_plugin && !LEGACY_SIGNUP_PLUGIN_IDS.includes(patch.signup_plugin)) {
+      logger.warn('[auth] signup_plugin_value_rejected_retrying_without', {
+        user_id: userId,
+        request_id: requestId,
+        signup_plugin: patch.signup_plugin
+      });
+      const { signup_plugin: _dropped, ...rest } = patch;
+      result = await supabase.from('licenses').update(rest).eq('id', userId);
+    }
     const error = result && result.error;
     if (error) {
       logger.warn('[auth] signup_attribution_failed', {

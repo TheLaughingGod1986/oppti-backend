@@ -145,7 +145,8 @@ function createSupabaseMock({
       sites,
       siteMemberships,
       siteAuditLogs,
-      siteTrials
+      siteTrials,
+      pluginConnections
     },
     from(table) {
       if (table === 'licenses') {
@@ -1223,5 +1224,164 @@ describe('auth log lines mask email addresses', () => {
     } finally {
       spies.forEach((spy) => spy.mockRestore());
     }
+  });
+});
+
+describe('register: plugin_id allow-list', () => {
+  const base = { password: 'Password123!', plugin_version: '1.0.0' };
+
+  async function register(body, supabase = createSupabaseMock()) {
+    const res = await request(createApp(supabase)).post('/auth/register').send(body);
+    return { res, supabase, row: supabase._state.licenses.find((l) => l.email === body.email) };
+  }
+
+  test('website_auditor is accepted and stored as the signup plugin, with no plugin connection row', async () => {
+    const { res, row, supabase } = await register({ ...base, email: 'pid-auditor@example.com', plugin_id: 'website_auditor', finding: 'missing_alt' });
+    expect(res.body.success).toBe(true);
+    expect(row).toMatchObject({ signup_plugin: 'website_auditor', auditor_finding: 'missing_alt', signup_source_auditor: true });
+    expect(supabase._state.pluginConnections).toHaveLength(0);
+  });
+
+  test('internal_linking is accepted, stored and connected', async () => {
+    const { res, row, supabase } = await register({ ...base, email: 'pid-il@example.com', plugin_id: 'internal_linking' });
+    expect(res.body.success).toBe(true);
+    expect(row.signup_plugin).toBe('internal_linking');
+    expect(supabase._state.pluginConnections).toEqual([expect.objectContaining({ plugin_id: 'internal_linking' })]);
+  });
+
+  test('a missing plugin_id still defaults to alt_text', async () => {
+    const { res, row } = await register({ ...base, email: 'pid-none@example.com' });
+    expect(res.body.success).toBe(true);
+    expect(row.signup_plugin).toBe('alt_text');
+  });
+
+  test('an unknown plugin_id is still refused', async () => {
+    const { res, row } = await register({ ...base, email: 'pid-bad@example.com', plugin_id: 'oppti_dev' });
+    expect(res.body.success).toBe(false);
+    expect(res.body.code).toBe('INVALID_REQUEST');
+    expect(row).toBeUndefined();
+  });
+
+  test('before the CHECK is widened, website_auditor is dropped but the Auditor fields are kept', async () => {
+    const supabase = createSupabaseMock();
+    const realFrom = supabase.from.bind(supabase);
+    supabase.from = (table) => {
+      const handle = realFrom(table);
+      if (table !== 'licenses') return handle;
+      return {
+        ...handle,
+        update(payload) {
+          if (payload.signup_plugin === 'website_auditor') {
+            return { eq: () => Promise.resolve({ data: null, error: { code: '23514', message: 'licenses_signup_plugin_check' } }) };
+          }
+          return handle.update(payload);
+        }
+      };
+    };
+    const { res, row } = await register({ ...base, email: 'pid-old-db@example.com', plugin_id: 'website_auditor', finding: 'missing_title' }, supabase);
+    expect(res.body.success).toBe(true);
+    expect(row.signup_plugin).toBeUndefined();
+    expect(row).toMatchObject({ auditor_finding: 'missing_title', signup_source_auditor: true });
+  });
+});
+
+describe('register: Titles guest sign-up markers', () => {
+  const PAST = '2020-01-01T00:00:00.000Z';
+  const sitePayload = {
+    site_id: 'titles-plugin-random-id',
+    install_uuid: 'titles-install',
+    site_url: 'https://guest-titles.example.com'
+  };
+  // A site first seen through the Titles guest path: keyed on the URL-derived
+  // guest key, not on the plugin id the register request carries.
+  const guestSite = () => ({
+    id: 'site_titles_guest',
+    license_key: null,
+    site_hash: 'tg_0123456789abcdef0123456789abcdef01234567',
+    wp_install_uuid: 'tg_0123456789abcdef0123456789abcdef01234567',
+    site_url: 'https://guest-titles.example.com',
+    normalized_site_url: 'guest-titles.example.com',
+    canonical_domain: 'guest-titles.example.com',
+    status: 'active',
+    created_at: PAST,
+    updated_at: PAST
+  });
+  const guestRows = () => ({
+    usageLogs: [
+      { id: 'ul_titles_guest', site_hash: 'tg_0123456789abcdef0123456789abcdef01234567', is_trial: true, auth_state: 'guest_trial', endpoint: 'api/titles/generate', feature_type: 'title_meta', license_id: null, user_id: null, created_at: PAST }
+    ],
+    generationRequests: [
+      { id: 'gr_titles_guest', site_id: 'site_titles_guest', quota_source: 'trial', user_id: null, created_at: PAST }
+    ]
+  });
+  const ORIGINAL = process.env.LINK_GUEST_TRIAL_ON_SIGNUP;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.LINK_GUEST_TRIAL_ON_SIGNUP;
+    else process.env.LINK_GUEST_TRIAL_ON_SIGNUP = ORIGINAL;
+  });
+
+  test('the guest Create account click stores signup_plugin=titles, signup_entry and converted_from_guest', async () => {
+    delete process.env.LINK_GUEST_TRIAL_ON_SIGNUP;
+    const supabase = createSupabaseMock({ guestRows: guestRows() });
+    supabase._state.sites.push(guestSite());
+    const res = await request(createApp(supabase)).post('/auth/register').send({
+      email: 'titles-guest@example.com', password: 'Password123!', plugin_id: 'titles', signup_entry: 'guest_trial', ...sitePayload
+    });
+    expect(res.body.success).toBe(true);
+    const row = supabase._state.licenses.find((l) => l.email === 'titles-guest@example.com');
+    expect(row).toMatchObject({ signup_plugin: 'titles', signup_entry: 'guest_trial', converted_from_guest: true });
+    // The account is linked to the guest site by its id (matched on the URL).
+    expect(res.body.site?.id || supabase._state.siteMemberships[0]?.site_id).toBe('site_titles_guest');
+  });
+
+  test('with linking on, the guest Titles rows are attached to the new account', async () => {
+    process.env.LINK_GUEST_TRIAL_ON_SIGNUP = 'true';
+    const supabase = createSupabaseMock({ guestRows: guestRows() });
+    supabase._state.sites.push(guestSite());
+    const res = await request(createApp(supabase)).post('/auth/register').send({
+      email: 'titles-guest-linked@example.com', password: 'Password123!', plugin_id: 'titles', signup_entry: 'guest_trial', ...sitePayload
+    });
+    expect(res.body.success).toBe(true);
+    const accountId = supabase._state.licenses[0].id;
+    expect(supabase._guest.tables.usage_logs[0]).toMatchObject({ license_id: accountId, is_trial: true });
+    expect(supabase._guest.tables.generation_requests[0]).toMatchObject({ user_id: accountId, quota_source: 'trial' });
+  });
+
+  test('no guest rows: converted_from_guest is not set; an unknown signup_entry is ignored', async () => {
+    const supabase = createSupabaseMock({ guestRows: { usageLogs: [], generationRequests: [] } });
+    const res = await request(createApp(supabase)).post('/auth/register').send({
+      email: 'titles-plain@example.com', password: 'Password123!', plugin_id: 'titles', signup_entry: 'something_else', ...sitePayload
+    });
+    expect(res.body.success).toBe(true);
+    const row = supabase._state.licenses.find((l) => l.email === 'titles-plain@example.com');
+    expect(row.signup_plugin).toBe('titles');
+    expect(row.signup_entry).toBeUndefined();
+    expect(row.converted_from_guest).toBeUndefined();
+  });
+
+  test('sign-up still succeeds and keeps signup_plugin when the marker columns are missing', async () => {
+    const supabase = createSupabaseMock({ guestRows: guestRows() });
+    supabase._state.sites.push(guestSite());
+    const realFrom = supabase.from.bind(supabase);
+    supabase.from = (table) => {
+      const handle = realFrom(table);
+      if (table !== 'licenses') return handle;
+      return {
+        ...handle,
+        update(payload) {
+          if ('signup_entry' in payload || 'converted_from_guest' in payload) {
+            return { eq: () => Promise.resolve({ data: null, error: { code: '42703', message: 'column signup_entry does not exist' } }) };
+          }
+          return handle.update(payload);
+        }
+      };
+    };
+    const res = await request(createApp(supabase)).post('/auth/register').send({
+      email: 'titles-old-db@example.com', password: 'Password123!', plugin_id: 'titles', signup_entry: 'guest_trial', ...sitePayload
+    });
+    expect(res.body.success).toBe(true);
+    const row = supabase._state.licenses.find((l) => l.email === 'titles-old-db@example.com');
+    expect(row.signup_plugin).toBe('titles');
+    expect(row.signup_entry).toBeUndefined();
   });
 });

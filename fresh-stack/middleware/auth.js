@@ -9,6 +9,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 
 function supportsAnonymousTrialPath(path = '') {
   return path === '/api/alt-text'
+    || path === '/api/titles/generate'
     || path === '/api/usage'
     || path === '/api/usage/trial-batch-plan'
     || path === '/usage'

@@ -13,6 +13,17 @@ const {
 } = require('../services/titleQuota');
 const { recordUsage } = require('../services/usage');
 const { isFlagOn } = require('../services/redirectAllowlist');
+const { buildAnonymousContext } = require('../lib/anonymousIdentity');
+const { buildAnonymousTrialStatus, getAnonymousTrialLimit } = require('../services/anonymousTrial');
+const { buildEntitlementState } = require('../services/entitlementState');
+const { buildTrialGenerationForSingleRequest } = require('../lib/trialGenerationContract');
+const { normalizeDomain } = require('../lib/siteIdentity');
+const { siteRefForLog } = require('../lib/logIdentity');
+const {
+  TITLES_GUEST_CREDITS_PER_TRY,
+  buildGuestReservationKeys,
+  buildGuestSiteIdentity
+} = require('../services/titlesGuestTrial');
 
 // X-Request-Source the Titles plugin sends for Autopilot (paid feature).
 const TITLES_AUTOPILOT_SOURCE = 'beepbeep_titles_autopilot';
@@ -155,6 +166,262 @@ function buildEntitlementSnapshot(reservationPayload) {
 // (title = 1 credit, meta = 1 credit). Drawn from the shared wallet.
 const CREDITS_PER_PAGE = 2;
 
+const TITLES_GENERATE_ENDPOINT = 'api/titles/generate';
+
+/**
+ * Trial status for a guest response, from the reservation payload when it
+ * has one (no extra database read).
+ */
+function guestTrialStatusFromReservation(payload, anonId) {
+  const limit = Number(payload?.total_limit);
+  const remaining = Number(payload?.remaining_credits);
+  const normalizedLimit = Number.isFinite(limit) && limit > 0 ? limit : getAnonymousTrialLimit();
+  const used = Number.isFinite(remaining)
+    ? Math.max(normalizedLimit - remaining, 0)
+    : Number(payload?.credits_used) || 0;
+  return buildAnonymousTrialStatus({ used, limit: normalizedLimit, anonId });
+}
+
+/**
+ * Signed-out Titles generation (guest first result). See
+ * services/titlesGuestTrial.js for the design. Order matters:
+ *   1. resolve the per-site guest key from the site URL;
+ *   2. per-site/per-client rate limit (as Alt Text);
+ *   3. check AND reserve one try from the site's trial bucket;
+ *   4. only then generate. Nothing earlier can return a result.
+ */
+async function handleGuestGenerate(req, res, { supabase, checkRateLimit, page, options, previous }) {
+  const guest = buildGuestSiteIdentity(req);
+  if (guest.error) {
+    return res.status(guest.error === 'GUEST_SITE_URL_REQUIRED' ? 400 : 403).json({
+      success: false,
+      error: guest.error,
+      code: guest.error,
+      message: guest.error === 'GUEST_SITE_URL_REQUIRED'
+        ? 'A site URL is required for a guest generation.'
+        : 'Site identity could not be resolved.'
+    });
+  }
+  const { siteIdentity, guestSiteKey } = guest;
+  const anonymousContext = req.anonymous || buildAnonymousContext({ req, body: req.body, siteIdentity });
+  const anonId = anonymousContext?.anonId || null;
+
+  const rateLimitKey = `titles-guest:${guestSiteKey}:${anonymousContext?.riskKey || anonId || 'anonymous'}:${req.ip || 'unknown-ip'}`;
+  if (typeof checkRateLimit === 'function' && !(await checkRateLimit(rateLimitKey))) {
+    return res.status(429).json({
+      success: false,
+      error: 'RATE_LIMIT_EXCEEDED',
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Rate limit exceeded'
+    });
+  }
+
+  const userInfo = extractUserInfo(req);
+  const baseFingerprint = buildTitleRequestFingerprint({
+    siteKey: guestSiteKey,
+    userInfo,
+    page,
+    options,
+    previous
+  });
+  const { idempotencyKey, requestFingerprint } = buildGuestReservationKeys(baseFingerprint);
+
+  const reservation = await reserveTitleGenerationQuota(supabase, {
+    account: null,
+    licenseKey: null,
+    siteIdentity,
+    creditsNeeded: TITLES_GUEST_CREDITS_PER_TRY,
+    quotaMode: 'trial',
+    idempotencyKey,
+    requestFingerprint,
+    requestMetadata: {
+      endpoint: TITLES_GENERATE_ENDPOINT,
+      guest: true,
+      guest_site_key: guestSiteKey,
+      auth_state: 'guest_trial',
+      regenerate: Boolean(previous && (previous.title || previous.meta)),
+      credits_per_page: TITLES_GUEST_CREDITS_PER_TRY,
+      plugin_version: userInfo?.plugin_version || null,
+      request_source: req.header('X-Request-Source') || null,
+      anon_id: anonId,
+      anonymous_risk_key: anonymousContext?.riskKey || null,
+      anonymous_ip_hash: anonymousContext?.ipHash || null
+    },
+    requestId: req.id || null
+  });
+
+  if (reservation.error) {
+    const trialInfo = reservation.error === 'TRIAL_EXHAUSTED'
+      ? guestTrialStatusFromReservation(reservation.payload, anonId)
+      : null;
+    logger.warn('[titles] guest_quota_denied', {
+      ...siteRefForLog(reservation.site?.site_hash || guestSiteKey, req),
+      code: reservation.error,
+      credits_used: trialInfo?.credits_used ?? null,
+      credits_total: trialInfo?.credits_total ?? null
+    });
+    if (!trialInfo) {
+      return res.status(reservation.status || 500).json({
+        success: false,
+        error: reservation.error,
+        code: reservation.error,
+        message: reservation.message || 'Guest generation unavailable'
+      });
+    }
+    // Same body as the Alt Text guest cap (routes/altText.js, TRIAL_EXHAUSTED).
+    return res.status(402).json({
+      success: false,
+      error: 'TRIAL_EXHAUSTED',
+      code: 'TRIAL_EXHAUSTED',
+      message: 'Free trial exhausted. Create a free account to keep generating titles and meta.',
+      credits_used: trialInfo.credits_used,
+      credits_remaining: trialInfo.credits_remaining,
+      credits_total: trialInfo.credits_total,
+      total_limit: trialInfo.total_limit,
+      remaining: trialInfo.credits_remaining,
+      ...trialInfo,
+      trial_exhausted: true,
+      entitlement_state: buildEntitlementState(trialInfo, { isLoggedIn: false, isTrial: true }),
+      trial_generation: buildTrialGenerationForSingleRequest({
+        outcome: 'quota_denied',
+        trialLimit: trialInfo.trial_limit,
+        trialUsedBefore: trialInfo.trial_used,
+        trialRemainingBefore: trialInfo.trial_remaining,
+        trialUsedAfter: trialInfo.trial_used,
+        trialRemainingAfter: trialInfo.trial_remaining
+      })
+    });
+  }
+
+  // Keys are unique per request, so a replay can only mean something else
+  // answered for this key. Never generate on it.
+  if (reservation.reservation?.duplicate) {
+    logger.warn('[titles] guest_duplicate_reservation_refused', {
+      ...siteRefForLog(reservation.site?.site_hash || guestSiteKey, req),
+      generation_request_id: reservation.reservation?.generation_request_id || null
+    });
+    return res.status(409).json({
+      success: false,
+      error: 'GUEST_DUPLICATE_REQUEST',
+      code: 'GUEST_DUPLICATE_REQUEST',
+      message: 'This request was already handled.'
+    });
+  }
+
+  const generationRequestId = reservation.reservation?.generation_request_id || null;
+  const effectiveSite = reservation.site || null;
+  const trialAfter = guestTrialStatusFromReservation(reservation.reservation, anonId);
+  const trialBefore = buildAnonymousTrialStatus({
+    used: Math.max(trialAfter.trial_used - TITLES_GUEST_CREDITS_PER_TRY, 0),
+    limit: trialAfter.trial_limit,
+    anonId
+  });
+
+  const genStart = Date.now();
+  try {
+    const result = await generateTitleAndMeta({ page, options, previous });
+    const generationTimeMs = Date.now() - genStart;
+
+    const finalizeResult = await finalizeTitleGenerationQuota(supabase, {
+      generationRequestId,
+      success: true,
+      finalMetadata: {
+        guest: true,
+        guest_site_key: guestSiteKey,
+        model_used: result.meta_info?.modelUsed || null,
+        total_tokens: result.usage?.total_tokens || null,
+        regenerated: Boolean(previous)
+      }
+    });
+
+    const siteUrl = siteIdentity.siteUrl || null;
+    const usageWrite = await recordUsage(supabase, {
+      licenseKey: null,
+      licenseId: null,
+      siteHash: effectiveSite?.site_hash || guestSiteKey,
+      installHash: null,
+      siteUrl,
+      domain: normalizeDomain(siteUrl),
+      userId: null,
+      userEmail: null,
+      pluginVersion: userInfo?.plugin_version,
+      authState: 'guest_trial',
+      planKey: 'trial',
+      isTrial: true,
+      creditsUsed: TITLES_GUEST_CREDITS_PER_TRY,
+      promptTokens: result.usage?.prompt_tokens,
+      completionTokens: result.usage?.completion_tokens,
+      totalTokens: result.usage?.total_tokens,
+      cached: false,
+      modelUsed: result.meta_info?.modelUsed || null,
+      generationTimeMs,
+      endpoint: TITLES_GENERATE_ENDPOINT,
+      eventType: 'generation',
+      status: 'success',
+      featureType: TITLES_FEATURE_TYPE,
+      requestSource: req.header('X-Request-Source') || null,
+      pluginChannel: req.header('X-Plugin-Channel') || null,
+      environment: req.header('X-Environment') || null,
+      requestId: req.id || null,
+      userAgent: req.get('user-agent') || null
+    });
+    if (usageWrite?.error) {
+      logger.warn('[titles] guest_usage_log_write_failed', {
+        ...siteRefForLog(effectiveSite?.site_hash || guestSiteKey, req),
+        generation_request_id: generationRequestId
+      });
+    }
+
+    return res.json({
+      success: true,
+      title: result.title,
+      meta: result.meta,
+      credits_used: trialAfter.credits_used,
+      credits_remaining: trialAfter.credits_remaining,
+      credits_total: trialAfter.credits_total,
+      usage: result.usage || null,
+      meta_info: result.meta_info || null,
+      ...trialAfter,
+      entitlement_state: buildEntitlementState(trialAfter, { isLoggedIn: false, isTrial: true }),
+      trial_generation: buildTrialGenerationForSingleRequest({
+        outcome: 'success',
+        trialLimit: trialAfter.trial_limit,
+        trialUsedBefore: trialBefore.trial_used,
+        trialRemainingBefore: trialBefore.trial_remaining,
+        trialUsedAfter: trialAfter.trial_used,
+        trialRemainingAfter: trialAfter.trial_remaining
+      }),
+      generation_request_id: generationRequestId,
+      finalize_status: finalizeResult?.data?.status || null
+    });
+  } catch (error) {
+    // A failed generation releases the try, as on the Alt Text guest path.
+    await finalizeTitleGenerationQuota(supabase, {
+      generationRequestId,
+      success: false,
+      finalMetadata: {
+        guest: true,
+        guest_site_key: guestSiteKey,
+        error_message: error.message || 'Generation failed',
+        error_code: error.code || 'GENERATION_FAILED'
+      }
+    });
+
+    const status = error.httpStatus
+      || (error.code === 'BACKEND_CONFIG_ERROR' ? 500
+        : error.code === 'UPSTREAM_RATE_LIMITED' ? 429
+          : 502);
+
+    return res.status(status).json({
+      success: false,
+      error: error.code || 'GENERATION_FAILED',
+      code: error.code || 'GENERATION_FAILED',
+      message: error.message || 'Title generation failed',
+      retryable: Boolean(error.isRetryable)
+    });
+  }
+}
+
 function createTitlesRouter({
   supabase,
   checkRateLimit,
@@ -176,6 +443,13 @@ function createTitlesRouter({
     }
 
     const { page, options = {}, previous = null, idempotency_key: clientIdempotencyKey } = parsed.data;
+
+    // Signed-out site: the auth middleware only sets trialMode when no
+    // licence, API key or bearer token came with the request.
+    if (req.trialMode) {
+      return handleGuestGenerate(req, res, { supabase, checkRateLimit, page, options, previous });
+    }
+
     const licenseKey = resolveLicenseKey(req);
     if (!licenseKey) {
       return res.status(401).json({
@@ -235,7 +509,7 @@ function createTitlesRouter({
       idempotencyKey,
       requestFingerprint,
       requestMetadata: {
-        endpoint: 'api/titles/generate',
+        endpoint: TITLES_GENERATE_ENDPOINT,
         page_url: page.url || null,
         regenerate: Boolean(previous && (previous.title || previous.meta)),
         credits_per_page: CREDITS_PER_PAGE,
