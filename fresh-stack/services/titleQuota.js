@@ -28,6 +28,9 @@ async function reserveTitleGenerationQuota(supabase, {
   licenseKey = null,
   siteIdentity,
   creditsNeeded = 2,
+  // 'trial' draws from the site's guest trial bucket (site_trials), as the
+  // Alt Text guest path does. Signed-in requests always use 'site'.
+  quotaMode = 'site',
   idempotencyKey = null,
   requestFingerprint = null,
   requestMetadata = {},
@@ -38,7 +41,7 @@ async function reserveTitleGenerationQuota(supabase, {
     licenseKey,
     siteIdentity,
     creditsNeeded,
-    quotaMode: 'site',
+    quotaMode: quotaMode === 'trial' ? 'trial' : 'site',
     idempotencyKey,
     requestFingerprint,
     requestMetadata: {

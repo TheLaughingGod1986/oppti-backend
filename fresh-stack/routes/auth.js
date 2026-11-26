@@ -25,9 +25,17 @@ const {
 
 const { trackAccountCreated, trackPluginConnected, isLoopsSkippedEmail } = require('../../src/services/loops');
 const { PLUGIN_IDS } = require('../../src/services/pluginIdentity');
+
+// Ids /auth/register accepts as the account's first-touch plugin. Wider than
+// PLUGIN_IDS: Website Auditor can create accounts but has no plugin
+// connection row or Loops plugin properties of its own, so it is only stored
+// as licenses.signup_plugin. A missing plugin_id still defaults to alt_text.
+const REGISTER_PLUGIN_IDS = Object.freeze([...PLUGIN_IDS, 'website_auditor']);
+const connectionPluginIdFor = (pluginId) => (PLUGIN_IDS.includes(pluginId) ? pluginId : null);
 const { recordPluginConnection } = require('../services/pluginConnections');
 const { recordSignupAttribution } = require('../services/auditorAttribution');
 const { linkGuestTrialRowsOnSignup } = require('../services/guestTrialLink');
+const { normalizeSignupEntry, recordGuestSignupMarkers } = require('../services/guestSignup');
 const { normalizeSignupSource } = require('../lib/signupSource');
 const { normalizeProductEmailsOptOut, isProductEmailsOptedOut } = require('../lib/productEmailOptOut');
 const { identifyServerUser } = require('../lib/posthog');
@@ -694,7 +702,7 @@ function createAuthRouter({ supabase }) {
       network_id: z.number().optional(),
       is_multisite: z.boolean().optional(),
       plugin_version: z.string().optional(),
-      plugin_id: z.enum(PLUGIN_IDS).optional().default('alt_text'),
+      plugin_id: z.enum(REGISTER_PLUGIN_IDS).optional().default('alt_text'),
       wordpress_version: z.string().optional(),
       // Website Auditor attribution. Accepted as anything so a bad value can
       // never fail registration; normalised in services/auditorAttribution.
@@ -704,6 +712,10 @@ function createAuthRouter({ supabase }) {
       // by normalizeSignupSource so a bad value can never fail sign-up.
       signup_source: z.any().optional(),
       signup_source_other: z.any().optional(),
+      // Where in the plugin the account was created ('guest_trial' from the
+      // guest flow's Create account click). Accepted loosely; unknown values
+      // are dropped by normalizeSignupEntry so sign-up never fails on it.
+      signup_entry: z.any().optional(),
       // Unticked by default in every sign-up form. Accepted loosely and
       // normalised so a bad value can never fail sign-up.
       product_emails_opt_out: z.any().optional()
@@ -848,10 +860,12 @@ function createAuthRouter({ supabase }) {
         requestId: req.id || null
       });
       registerTrace.license_key_prefix = redactLicenseKey(user.license_key);
+      // website_auditor has no plugin connection row (not a PLUGIN_IDS member).
+      const connectionPluginId = connectionPluginIdFor(parsed.data.plugin_id);
       await ensurePluginConnection({
         supabase,
         userId: user.id,
-        pluginId: parsed.data.plugin_id,
+        pluginId: connectionPluginId,
         pluginVersion: parsed.data.plugin_version
       });
       await recordSignupAttribution({
@@ -870,7 +884,9 @@ function createAuthRouter({ supabase }) {
       registerTrace.loops_account_created = await fireLoopsAccountCreated({
         email,
         userId: user.id,
-        pluginId: parsed.data.plugin_id,
+        // Unchanged for Loops: an id without Loops plugin properties keeps the
+        // alt_text fallback it had before website_auditor was accepted.
+        pluginId: connectionPluginId || 'alt_text',
         pluginVersion: parsed.data.plugin_version,
         requestId: req.id || null,
         productEmailsOptOut
@@ -899,6 +915,7 @@ function createAuthRouter({ supabase }) {
       registerTrace.site_membership.error = siteLink.trace?.site_membership?.error || null;
       registerTrace.site_id = siteLink.site?.id || null;
 
+      let guestLink = null;
       if (siteLink.site) {
         await observeAnonymousSignupMerge({
           supabase,
@@ -908,7 +925,7 @@ function createAuthRouter({ supabase }) {
           connectionSource: 'register',
           anonymousContext
         });
-        await linkGuestTrialRowsOnSignup({
+        guestLink = await linkGuestTrialRowsOnSignup({
           supabase,
           account: user,
           site: siteLink.site,
@@ -917,6 +934,13 @@ function createAuthRouter({ supabase }) {
           requestId: req.id || null
         });
       }
+      await recordGuestSignupMarkers({
+        supabase,
+        user,
+        signupEntry: normalizeSignupEntry(parsed.data),
+        linkResult: guestLink,
+        requestId: req.id || null
+      });
 
       if (siteLink.error === 'AMBIGUOUS_SITE_MATCH') {
         registerTrace.final_state = 'ambiguous_site_match';
